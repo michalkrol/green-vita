@@ -1,3 +1,5 @@
+#![feature(type_alias_impl_trait)]
+
 use vita_newlib_shims as _;
 
 mod api;
@@ -44,6 +46,19 @@ mod fs_utils {
 
 fn main() -> anyhow::Result<()> {
     let _app_util = safe_memory::AppUtil::initialize()?;
+    // Pin the main/UI thread to CPU0 so the rtc-recv RX thread (core 1) is never
+    // starved by render/GUI load; failures are non-fatal (mask may be restricted).
+    unsafe {
+        let result = vitasdk_sys::sceKernelChangeThreadCpuAffinityMask(
+            vitasdk_sys::SCE_KERNEL_THREAD_ID_SELF as _,
+            0b0001,
+        );
+        if result != 0 {
+            eprintln!("main thread affinity pin failed: {result}");
+        }
+    }
+    // Raise clocks / enable wireless mode for the whole app lifetime; restored on exit.
+    let _streaming_power = shell::power::engage();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

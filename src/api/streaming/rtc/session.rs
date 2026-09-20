@@ -3,7 +3,7 @@ use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
-use rtc::peer_connection::RTCPeerConnection;
+use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use rtc::peer_connection::event::{RTCDataChannelEvent, RTCPeerConnectionEvent, RTCTrackEvent};
 use rtc::peer_connection::message::RTCMessage;
 use rtc::peer_connection::sdp::RTCSessionDescription;
@@ -12,11 +12,35 @@ use rtc::peer_connection::transport::RTCIceCandidateInit;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::sansio::Protocol;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(300);
+/// Sustained keyframe demand means recovery is failing; spamming PLI/IDR requests
+/// every 300 ms overloads the console encoder and deepens its backlog.
+const KEYFRAME_STORM_WINDOW: Duration = Duration::from_secs(4);
+const KEYFRAME_STORM_THRESHOLD: usize = 3;
+const KEYFRAME_STORM_COOLDOWN: Duration = Duration::from_millis(2000);
+/// When measured glass lag stays above this for LAG_FLUSH_SUSTAIN, assume the
+/// console-side queue is backlogged and force an encoder reconfigure to flush it.
+const LAG_FLUSH_THRESHOLD_US: u64 = 150_000;
+const LAG_FLUSH_SUSTAIN: Duration = Duration::from_secs(1);
+const LAG_FLUSH_MIN_INTERVAL: Duration = Duration::from_secs(10);
+/// Independent trigger: each dropped access unit corresponds to a console-side
+/// shed/skip event whose pacer slip never recovers; flush after this many new
+/// drops even if the (re-anchoring) lag reading hasn't caught up.
+const DROP_FLUSH_THRESHOLD: u64 = 25;
 const INITIAL_VIDEO_GRACE: Duration = Duration::from_millis(500);
 const INITIAL_VIDEO_KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
+/// Glitch-phase probe: at session start the stream decodes with partial-pixel
+/// artifacts yet lag is IMPERCEPTIBLE; drift begins only once an IDR lands and
+/// the stream 'catches up' clean (the console then settles into its paced,
+/// stale-stamping regime). When true, NO client action ever requests a keyframe
+/// (initial watchdog, recovery PLI, control-channel JSON) so nothing we do can
+/// trigger that transition. Expect prolonged decode artifacts while active;
+/// resyncs stall until the console emits its own GOP-boundary IDR. Default
+/// false = normal operation.
+const SUPPRESS_KEYFRAME_REQUESTS: bool = false;
 
 pub(crate) struct RtcSessionConfig {
     pub stun_server: &'static str,
@@ -43,7 +67,13 @@ pub(crate) trait RtcSessionBackend {
     fn send_gamepad_frame(&mut self, peer: &mut RTCPeerConnection, frame: GamepadFrame) -> bool;
     fn send_pointer_event(&mut self, peer: &mut RTCPeerConnection, event: PointerEvent);
     fn notify_keyframe_requested(&mut self, peer: &mut RTCPeerConnection);
+    /// Provider hook to force a console-side stream/encoder reconfiguration.
+    fn notify_stream_flush(&mut self, peer: &mut RTCPeerConnection);
     fn server_video_size(&self) -> Option<(u32, u32)>;
+    /// Optional provider-specific HUD suffix (handshake/input state etc.).
+    fn debug_state(&self) -> String {
+        String::new()
+    }
 }
 
 pub(crate) struct RtcSession<B: RtcSessionBackend> {
@@ -54,6 +84,10 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     pub(crate) video: VideoReceiver,
     pub(crate) audio: AudioReceiver,
     last_keyframe_request: Option<Instant>,
+    recent_keyframe_requests: Vec<Instant>,
+    lag_high_since: Option<Instant>,
+    last_lag_flush: Option<Instant>,
+    drops_at_last_flush: u64,
     initial_video_watchdog_started_at: Option<Instant>,
     last_initial_video_keyframe_request: Option<Instant>,
     pub status: String,
@@ -78,6 +112,10 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             video,
             audio: AudioReceiver::new(config.audio_sample_rate, config.audio_payload_type),
             last_keyframe_request: None,
+            recent_keyframe_requests: Vec::new(),
+            lag_high_since: None,
+            last_lag_flush: None,
+            drops_at_last_flush: 0,
             initial_video_watchdog_started_at: None,
             last_initial_video_keyframe_request: None,
             status: "Negotiating WebRTC connection".to_owned(),
@@ -128,16 +166,23 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         {
             let _ = self.peer.handle_timeout(now);
         }
-        if self.initial_video_keyframe_due(now) {
+        if !SUPPRESS_KEYFRAME_REQUESTS && self.initial_video_keyframe_due(now) {
             eprintln!("No initial video RTP after WebRTC connected; requesting a keyframe");
             keyframe_requested = true;
         }
         self.request_keyframe(keyframe_requested, now);
+        // REMB-only feedback experiment: RTCP stays otherwise silent (no RR/SR),
+        // but browsers continuously refresh the console's bandwidth estimate and
+        // stay smooth; every prior REMB test was confounded by NACK/loss loops.
+        self.video.send_remb(&mut self.peer, now);
+        self.video.send_twcc(&mut self.peer, now);
+        self.maybe_flush_backlog(now);
         if let Some(status) = self.video.status(now) {
+            let debug_state = self.backend.debug_state();
             self.status = if let Some((width, height)) = self.backend.server_video_size() {
-                format!("srv:{width}x{height} {status}")
+                format!("srv:{width}x{height} {status} {debug_state}")
             } else {
-                format!("srv:? {status}")
+                format!("srv:? {status} {debug_state}")
             };
             eprintln!("{}", self.status);
         }
@@ -225,7 +270,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             match message {
                 RTCMessage::RtpPacket(track_id, packet) => {
                     if self.video.handles(&track_id) {
-                        self.video.receive(packet, &mut keyframe_requested);
+                        self.video.receive(&mut self.peer, packet, &mut keyframe_requested);
                     } else if self.audio.handles(&track_id) {
                         self.audio.receive(packet);
                     }
@@ -244,15 +289,62 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     }
 
     fn request_keyframe(&mut self, requested: bool, now: Instant) {
+        if !requested || SUPPRESS_KEYFRAME_REQUESTS {
+            return;
+        }
+        self.recent_keyframe_requests
+            .retain(|at| now.duration_since(*at) < KEYFRAME_STORM_WINDOW);
+        let cooldown = if self.recent_keyframe_requests.len() >= KEYFRAME_STORM_THRESHOLD {
+            KEYFRAME_STORM_COOLDOWN
+        } else {
+            KEYFRAME_REQUEST_COOLDOWN
+        };
         let cooldown_elapsed = self.last_keyframe_request.is_none_or(|requested_at| {
-            now.duration_since(requested_at) >= KEYFRAME_REQUEST_COOLDOWN
+            now.duration_since(requested_at) >= cooldown
         });
-        if !requested || !cooldown_elapsed {
+        if !cooldown_elapsed {
             return;
         }
 
+        self.recent_keyframe_requests.push(now);
         self.last_keyframe_request = Some(now);
         self.backend.notify_keyframe_requested(&mut self.peer);
         self.video.request_keyframe(&mut self.peer);
+    }
+
+    /// Sustained high measured lag means the console queue is backlogged (client
+    /// pipeline is otherwise clean). Force an encoder reconfigure to flush it and
+    /// re-anchor the HUD so post-flush drift stays measurable.
+    fn maybe_flush_backlog(&mut self, now: Instant) {
+        use crate::streaming::video::metrics::METRICS;
+        if self.connection_state != RTCPeerConnectionState::Connected {
+            return;
+        }
+        let total_drops = self.video.total_drops();
+        let drops_since_flush = total_drops.saturating_sub(self.drops_at_last_flush);
+        let lag_us = METRICS.stream_lag_us.load(Ordering::Relaxed);
+        let eligible = lag_us >= LAG_FLUSH_THRESHOLD_US || drops_since_flush >= DROP_FLUSH_THRESHOLD;
+        if !eligible {
+            return;
+        }
+        let since = *self.lag_high_since.get_or_insert(now);
+        if now.duration_since(since) < LAG_FLUSH_SUSTAIN {
+            return;
+        }
+        if self
+            .last_lag_flush
+            .is_some_and(|at| now.duration_since(at) < LAG_FLUSH_MIN_INTERVAL)
+        {
+            return;
+        }
+        self.last_lag_flush = Some(now);
+        self.lag_high_since = None;
+        self.drops_at_last_flush = total_drops;
+        eprintln!(
+            "stream flush: lag={lag_us}us drops_since={drops_since_flush} total={total_drops}"
+        );
+        METRICS.flushes.fetch_add(1, Ordering::Relaxed);
+        self.backend.notify_stream_flush(&mut self.peer);
+        self.video.reset_lag_anchor();
     }
 }

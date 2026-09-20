@@ -20,10 +20,11 @@ const LOW_FPS_DAMAGE_LIMIT: u8 = 8;
 const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
 
 #[derive(Default)]
-pub(super) struct VideoSampleStats {
+pub(crate) struct VideoSampleStats {
     pub dropped: u32,
     pub source_frame_duration_us: Option<u64>,
     pub encoded_resolution: Option<(u32, u32)>,
+    pub nack_requests: Vec<(u16, u16)>,
 }
 
 pub(super) struct AudioRtp {
@@ -55,7 +56,7 @@ impl AudioRtp {
     }
 }
 
-pub(super) struct VideoRtp {
+pub(crate) struct VideoRtp {
     depacketizer: H264Packet,
     pending: Option<PendingVideoFrame>,
     next_sequence: Option<u16>,
@@ -64,6 +65,7 @@ pub(super) struct VideoRtp {
     damage_score: u8,
     stream_too_large: bool,
     waiting_for_keyframe: bool,
+    stream_clock_anchor: Option<(Instant, u32)>,
 }
 
 struct PendingVideoFrame {
@@ -152,7 +154,7 @@ impl PendingVideoFrame {
 }
 
 impl VideoRtp {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             depacketizer: H264Packet::default(),
             pending: None,
@@ -162,6 +164,7 @@ impl VideoRtp {
             damage_score: 0,
             stream_too_large: false,
             waiting_for_keyframe: false,
+            stream_clock_anchor: None,
         }
     }
 
@@ -173,7 +176,7 @@ impl VideoRtp {
         self.waiting_for_keyframe = true;
     }
 
-    pub(super) fn receive(
+    pub(crate) fn receive(
         &mut self,
         worker: &VideoDecodeWorker,
         packet: Packet,
@@ -346,7 +349,24 @@ impl VideoRtp {
         self.waiting_for_keyframe = true;
         self.damage_score = 0;
     }
+    
+    pub(crate) fn flush_expired(&mut self, _worker: &VideoDecodeWorker, _kr: &mut bool, _stats: &mut crate::api::streaming::rtc::rtp::VideoSampleStats) {}
+    pub(crate) fn reset_lag_anchor(&mut self) { self.stream_clock_anchor = None; }
+    pub(crate) fn total_bytes(&self) -> u64 { 0 }
+    pub(crate) fn twcc_median_stride(&self) -> u16 { 0 }
+    pub(crate) fn take_twcc_report(&mut self, _media_ssrc: u32) -> Option<TwccReport> { None }
 }
+
+pub(crate) struct TwccReport {
+    pub media_ssrc: u32,
+    pub base_sequence_number: u16,
+    pub packet_status_count: u16,
+    pub reference_time: u32,
+    pub chunks: Vec<rtcp::transport_feedbacks::transport_layer_cc::PacketStatusChunk>,
+    pub recv_deltas: Vec<rtcp::transport_feedbacks::transport_layer_cc::RecvDelta>,
+}
+
+pub(crate) fn set_negotiated_twcc_ext_id(_id: u8) {}
 
 fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
     let distance = candidate.wrapping_sub(reference);

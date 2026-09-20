@@ -54,6 +54,7 @@ pub(crate) struct ConnectingStream {
     pub(crate) return_selected: usize,
 }
 
+#[derive(Clone)]
 pub(crate) struct StreamStartTarget {
     pub(crate) kind: StreamKind,
     pub(crate) target_id: String,
@@ -180,7 +181,7 @@ impl App {
                             poll_job: poll_task,
                             wait_estimate_job,
                         }
-                    } else {
+} else {
                         session.next_poll_at = Instant::now() + Duration::from_millis(500);
 
                         let mut stream = session.stream.clone();
@@ -217,6 +218,14 @@ impl App {
         match result {
             Ok((stream, StreamState::Provisioned)) => {
                 session.stream = stream;
+                if let Some(ip) = self
+                    .settings
+                    .home_console_ip
+                    .as_deref()
+                    .and_then(|value| value.trim().parse::<std::net::Ipv4Addr>().ok())
+                {
+                    session.stream.set_console_lan_ip(ip);
+                }
                 self.service.auth = MsalAuth::new();
                 let title_id = session.game_id.clone();
                 match StreamingSession::start_xbox(

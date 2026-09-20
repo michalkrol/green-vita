@@ -49,6 +49,7 @@ pub struct Stream {
     pub session_id: String,
     session_path: String,
     pub state: StreamState,
+    console_lan_ip: Option<Ipv4Addr>,
 }
 
 #[derive(Deserialize)]
@@ -75,7 +76,14 @@ impl Stream {
             session_id,
             session_path: response.session_path,
             state: StreamState::New,
+            console_lan_ip: None,
         }
+    }
+
+    /// Overrides the Teredo-decoded WAN endpoint for home-stream ICE candidates with the
+    /// console's LAN IPv4, so media traffic skips the router's NAT hairpin entirely.
+    pub fn set_console_lan_ip(&mut self, ip: Ipv4Addr) {
+        self.console_lan_ip = Some(ip);
     }
 
     pub fn session_path(&self) -> String {
@@ -151,7 +159,21 @@ impl Stream {
             .await?;
         let response = self.wait_for_sdp_response().await?;
         check_exchange_error(&response)?;
-        extract_answer_sdp(&response)
+        let answer = extract_answer_sdp(&response);
+
+        // Persist both SDPs for protocol diffing against working clients (pull via FTP).
+        if let Ok(answer_sdp) = &answer {
+            let _ = crate::fs_utils::write_file_truncating(
+                "ux0:data/xcloud-rust/last-offer.sdp",
+                sdp,
+            );
+            let _ = crate::fs_utils::write_file_truncating(
+                "ux0:data/xcloud-rust/last-answer.sdp",
+                answer_sdp,
+            );
+        }
+
+        answer
     }
 
     pub async fn wait_for_sdp_response(&self) -> Result<Value> {
@@ -206,7 +228,10 @@ impl Stream {
             return Ok(None);
         }
         check_exchange_error(&value)?;
-        Ok(Some(extract_remote_candidates(&value)))
+        Ok(Some(extract_remote_candidates(
+            &value,
+            self.console_lan_ip,
+        )))
     }
 
     pub async fn send_keepalive(&self) -> Result<Value> {
@@ -288,7 +313,10 @@ fn serialize_local_candidate(candidate: &RTCIceCandidateInit) -> String {
     serde_json::to_string(&value).expect("ICE candidate JSON serialization should not fail")
 }
 
-fn extract_remote_candidates(response: &Value) -> Vec<RTCIceCandidateInit> {
+fn extract_remote_candidates(
+    response: &Value,
+    lan_override: Option<Ipv4Addr>,
+) -> Vec<RTCIceCandidateInit> {
     let Some(exchange) = response.get("exchangeResponse").and_then(Value::as_str) else {
         return Vec::new();
     };
@@ -310,7 +338,10 @@ fn extract_remote_candidates(response: &Value) -> Vec<RTCIceCandidateInit> {
         // A console publishes itself over Teredo, so its reachable IPv4 endpoint only exists
         // tunnelled inside the IPv6 candidate. Derive it before the address-family filter below
         // drops that candidate, otherwise a home session is left with nothing to connect to.
-        decoded.extend(teredo_host_candidates(&candidate));
+        // With `lan_override`, the derived WAN address is swapped for the console's LAN IPv4:
+        // same listening ports, but the traffic takes the plain LAN path instead of the router's
+        // NAT hairpin, which is slow/lossy on many routers and shows up as ever-growing video lag.
+        decoded.extend(teredo_host_candidates(&candidate, lan_override));
         if let Some(candidate) = normalize_decoded_candidate(candidate) {
             decoded.push(candidate);
         }
@@ -339,14 +370,20 @@ fn normalize_decoded_candidate(mut candidate: RTCIceCandidateInit) -> Option<RTC
 /// Rebuilds the host candidates a Teredo address tunnels, matching how Greenlight reaches a
 /// console. Teredo (RFC 4380) stores the client's IPv4 address in the last 32 bits and its UDP
 /// port in bits 80..96, both one's-complemented, under the `2001:0::/32` prefix.
-fn teredo_host_candidates(candidate: &RTCIceCandidateInit) -> Vec<RTCIceCandidateInit> {
+fn teredo_host_candidates(
+    candidate: &RTCIceCandidateInit,
+    lan_override: Option<Ipv4Addr>,
+) -> Vec<RTCIceCandidateInit> {
     let Some((client, port)) = candidate_address(&candidate.candidate).and_then(teredo_endpoint)
     else {
         return Vec::new();
     };
+    let address = lan_override
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| client.to_string());
 
     let derive = |foundation: u8, port: u16| RTCIceCandidateInit {
-        candidate: format!("candidate:{foundation} 1 UDP 1 {client} {port} typ host"),
+        candidate: format!("candidate:{foundation} 1 UDP 1 {address} {port} typ host"),
         sdp_mid: Some("0".to_owned()),
         sdp_mline_index: Some(0),
         username_fragment: candidate.username_fragment.clone(),

@@ -9,8 +9,9 @@ use crate::streaming::video::{
     STREAM_WIDTH, UNLOCKED_VIDEO_FPS,
 };
 use anyhow::Result;
-use rtc::peer_connection::RTCPeerConnection;
 use rtc::peer_connection::sdp::RTCSessionDescription;
+
+use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 
 struct XboxRtcWorkerProvider {
     stream: Stream,
@@ -41,9 +42,13 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
     }
 
     async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<String> {
-        self.stream
-            .send_sdp_offer(&sdp::request_video_fps(&offer.sdp, self.video_fps))
-            .await
+        let sdp = sdp::cap_video_bitrate(&offer.sdp, sdp::VIDEO_BITRATE_CAP_KBPS);
+        let sdp = sdp::request_video_fps(&sdp, 30);
+        let answer = self.stream.send_sdp_offer(&sdp).await?;
+        let twcc_id = sdp::extract_extmap_id(&answer, super::peer::TWCC_URI).unwrap_or(0);
+        eprintln!("negotiated twcc ext id: {twcc_id}");
+        crate::api::streaming::rtc::rtp::set_negotiated_twcc_ext_id(twcc_id);
+        Ok(answer)
     }
 }
 

@@ -9,6 +9,7 @@ pub const HW_OUTPUT_WIDTH: u32 = 960;
 pub const HW_OUTPUT_HEIGHT: u32 = 544;
 pub(crate) const DEFAULT_VIDEO_FPS: u32 = 30;
 pub(crate) const UNLOCKED_VIDEO_FPS: u32 = 60;
+pub(crate) const NUM_TEXTURES: usize = 3;
 
 pub use memory::reserve_decoder_cdram;
 pub use metrics::video_performance_summary;
@@ -16,10 +17,12 @@ pub use worker::VideoDecodeWorker;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-// Wait at most about one Vita refresh before replacing an unpresented decoded frame.
-const MAX_PENDING_TEXTURE_WAIT: Duration = Duration::from_millis(16);
+// With double buffering (2 textures), the decoder writes into one texture while
+// the renderer displays the other.  It must wait up to one VSYNC interval for the
+// renderer to finish with the pending texture.  16.7ms matches 60 Hz VSYNC.
+const MAX_PENDING_TEXTURE_WAIT: Duration = Duration::from_micros(16_700);
 
 #[derive(Clone, Copy)]
 pub(crate) struct VideoTextureTarget {
@@ -29,8 +32,9 @@ pub(crate) struct VideoTextureTarget {
 }
 
 struct DirectVideoOutputState {
-    targets: Option<[VideoTextureTarget; 2]>,
+    targets: Option<[VideoTextureTarget; NUM_TEXTURES]>,
     displayed: Option<usize>,
+    last_displayed: Option<usize>,
     pending: Option<(usize, u64)>,
     next_generation: u64,
 }
@@ -52,6 +56,7 @@ impl DirectVideoOutput {
             state: Mutex::new(DirectVideoOutputState {
                 targets: None,
                 displayed: None,
+                last_displayed: None,
                 pending: None,
                 next_generation: 0,
             }),
@@ -62,10 +67,11 @@ impl DirectVideoOutput {
         }
     }
 
-    pub(crate) fn set_targets(&self, targets: [VideoTextureTarget; 2]) {
+    pub(crate) fn set_targets(&self, targets: [VideoTextureTarget; NUM_TEXTURES]) {
         if let Ok(mut state) = self.state.lock() {
             state.targets = Some(targets);
             state.displayed = None;
+            state.last_displayed = None;
             state.pending = None;
         }
     }
@@ -82,6 +88,7 @@ impl DirectVideoOutput {
     pub(crate) fn mark_displayed(&self, index: usize, generation: u64) {
         let mut cleared_pending = false;
         if let Ok(mut state) = self.state.lock() {
+            state.last_displayed = state.displayed;
             state.displayed = Some(index);
             if state.pending == Some((index, generation)) {
                 state.pending = None;
@@ -110,20 +117,37 @@ impl DirectVideoOutput {
 
     pub(super) fn lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
         let mut state = self.state.lock().ok()?;
-        if state.pending.is_some() {
-            let (waited_state, _) = self
+        let targets = state.targets?;
+
+        // Fast path: find a texture that is neither displayed nor pending.
+        // Also skip the most-recently-displayed texture: the GXM GPU may still
+        // be DMA-reading it from the previous VSYNC cycle.  Waiting one full
+        // display interval before recycling that slot prevents texture-race
+        // artifacts that appear as blocky corruption.
+        let free = (0..NUM_TEXTURES).find(|&i| {
+            state.displayed != Some(i)
+                && state.last_displayed != Some(i)
+                && state.pending.as_ref().map(|(idx, _)| *idx) != Some(i)
+        });
+
+        let index = if let Some(i) = free {
+            i
+        } else {
+            // All NUM_TEXTURES are busy (should be impossible with > 2).
+            // Fall through to the old condvar wait path.
+            let (waited, _) = self
                 .frame_displayed
-                .wait_timeout_while(state, MAX_PENDING_TEXTURE_WAIT, |state| {
-                    state.targets.is_some() && state.pending.is_some()
+                .wait_timeout_while(state, MAX_PENDING_TEXTURE_WAIT, |s| {
+                    s.targets.is_some() && s.pending.is_some()
                 })
                 .ok()?;
-            state = waited_state;
-        }
-        let targets = state.targets?;
-        let index = state
-            .pending
-            .map(|(index, _)| index)
-            .unwrap_or_else(|| state.displayed.map_or(0, |displayed| 1 - displayed));
+            state = waited;
+            (0..NUM_TEXTURES).find(|&i| {
+                state.displayed != Some(i)
+                    && state.pending.as_ref().map(|(idx, _)| *idx) != Some(i)
+            })?
+        };
+
         Some(DirectVideoTargetGuard {
             state,
             target: targets[index],
@@ -150,6 +174,7 @@ impl DirectVideoTargetGuard<'_> {
 pub struct DecodedFrame {
     pub texture_index: usize,
     pub generation: u64,
+    pub published_at: Instant,
 }
 
 #[derive(Clone, Copy)]
