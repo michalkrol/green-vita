@@ -1,4 +1,5 @@
 use crate::api::streaming::{PlaybackBackend, PlaybackBackendEvent};
+use crate::settings::H264Profile;
 use crate::settings::Settings;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
@@ -36,8 +37,17 @@ impl StreamingSession {
         title_id: Option<String>,
         return_selected: usize,
         unlock_video_fps: bool,
+        video_bitrate_kbps: u32,
+        video_h264_profile: H264Profile,
+        periodic_keyframe: bool,
     ) -> Result<Self> {
-        let backend = PlaybackBackend::start_xbox(stream, unlock_video_fps)?;
+        let backend = PlaybackBackend::start_xbox(
+            stream,
+            unlock_video_fps,
+            video_bitrate_kbps,
+            video_h264_profile,
+            periodic_keyframe,
+        )?;
         let return_target = match kind {
             StreamKind::Cloud => StreamReturnTarget::Titles(return_selected),
             StreamKind::Home => StreamReturnTarget::Consoles(return_selected),

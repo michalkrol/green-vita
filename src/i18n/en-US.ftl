@@ -23,10 +23,13 @@ settings-cloud-host = Cloud host: { $host }
 settings-home-host = Home host: { $host }
 settings-stream-debug-info = Show streaming debug info
 settings-unlock-video-fps = Unlock video to 60 FPS
+settings-video-bitrate-cap = Bitrate cap: { $kbps } kbps
+settings-video-h264-profile = H264 profile: { $profile }
+settings-periodic-keyframe = Periodic keyframe (clear artifacts)
 action-back = Back
 
 mode-select-cloud-subtitle = Stream Xbox Cloud Gaming titles
-mode-select-home-subtitle = Not implemented yet — use xVita for now
+mode-select-home-subtitle = Stream your local Xbox console — Remote Play
 
 paused-resume = Return to game
 paused-xbox-button = Xbox button

@@ -66,6 +66,7 @@ pub(crate) struct VideoRtp {
     stream_too_large: bool,
     waiting_for_keyframe: bool,
     stream_clock_anchor: Option<(Instant, u32)>,
+    total_bytes: u64,
 }
 
 struct PendingVideoFrame {
@@ -165,6 +166,7 @@ impl VideoRtp {
             stream_too_large: false,
             waiting_for_keyframe: false,
             stream_clock_anchor: None,
+            total_bytes: 0,
         }
     }
 
@@ -190,6 +192,7 @@ impl VideoRtp {
             }
             return stats;
         }
+        self.total_bytes += 12 + packet.payload.len() as u64;
 
         let packet_timestamp = packet.header.timestamp;
         if let Some(pending) = &self.pending
@@ -352,7 +355,7 @@ impl VideoRtp {
     
     pub(crate) fn flush_expired(&mut self, _worker: &VideoDecodeWorker, _kr: &mut bool, _stats: &mut crate::api::streaming::rtc::rtp::VideoSampleStats) {}
     pub(crate) fn reset_lag_anchor(&mut self) { self.stream_clock_anchor = None; }
-    pub(crate) fn total_bytes(&self) -> u64 { 0 }
+    pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
     pub(crate) fn twcc_median_stride(&self) -> u16 { 0 }
     pub(crate) fn take_twcc_report(&mut self, _media_ssrc: u32) -> Option<TwccReport> { None }
 }

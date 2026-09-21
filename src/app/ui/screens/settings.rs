@@ -4,6 +4,7 @@ use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::smooth_scroll_area;
 use crate::i18n::{I18n, arg_string};
+use crate::settings::H264Profile;
 use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
@@ -17,6 +18,9 @@ pub enum Command {
     SetFrontTouchAuxiliaryButtons { title_id: String, enabled: bool },
     SetUnlockVideoFps(bool),
     SetShowStreamDebugInfo(bool),
+    SetVideoBitrateCap(u32),
+    SetVideoH264Profile(H264Profile),
+    SetPeriodicKeyframe(bool),
 }
 
 #[derive(Clone)]
@@ -28,6 +32,9 @@ enum SettingsRow {
     GameFrontTouchAuxiliary { title_id: String, enabled: bool },
     UnlockVideoFps(bool),
     StreamDebug(bool),
+    VideoBitrateCap(u32),
+    VideoH264Profile(H264Profile),
+    PeriodicKeyframe(bool),
     Back,
 }
 
@@ -72,6 +79,9 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::StreamDebug(
         app.settings.show_stream_debug_info,
     ));
+    rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
+    rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
+    rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
     rows.push(SettingsRow::Back);
     rows
 }
@@ -248,6 +258,49 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                {
+                    let mut args = FluentArgs::new();
+                    args.set("kbps", arg_string(app.settings.video_bitrate_kbps.to_string()));
+                    let label = i18n.text_with("settings-video-bitrate-cap", args);
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = next_bitrate_preset(app.settings.video_bitrate_kbps);
+                        commands.push(Command::SetVideoBitrateCap(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                {
+                    let label = format!("H264 profile: {}", match app.settings.video_h264_profile {
+                        H264Profile::Baseline => "Baseline",
+                        H264Profile::Main => "Main",
+                    });
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.video_h264_profile {
+                            H264Profile::Baseline => H264Profile::Main,
+                            H264Profile::Main => H264Profile::Baseline,
+                        };
+                        commands.push(Command::SetVideoH264Profile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.periodic_keyframe,
+                    i18n.text("settings-periodic-keyframe"),
+                ) {
+                    commands
+                        .push(Command::SetPeriodicKeyframe(!app.settings.periodic_keyframe).into());
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
                 if focus_row(ui, selected_index == row_index, i18n.text("action-back")) {
                     commands.push(InputCommand::Back.into());
                 }
@@ -349,6 +402,16 @@ fn host_text(i18n: &I18n, id: &'static str, host: &str) -> String {
     i18n.text_with(id, args)
 }
 
+const BITRATE_PRESETS_KBPS: &[u32] = &[1_000, 1_500, 2_000, 2_500, 5_000, 10_000, 15_000, 20_000, 30_000, 50_000];
+
+fn next_bitrate_preset(current: u32) -> u32 {
+    BITRATE_PRESETS_KBPS
+        .iter()
+        .copied()
+        .find(|&p| p > current)
+        .unwrap_or(BITRATE_PRESETS_KBPS[0])
+}
+
 impl App {
     pub(crate) fn handle_settings_input(&mut self, command: InputCommand) -> Result<()> {
         let rows = settings_rows(self);
@@ -411,6 +474,21 @@ impl App {
             }
             SettingsRow::StreamDebug(enabled) => {
                 return self.handle_settings_command(Command::SetShowStreamDebugInfo(!enabled));
+            }
+            SettingsRow::VideoBitrateCap(current) => {
+                return self.handle_settings_command(Command::SetVideoBitrateCap(
+                    next_bitrate_preset(*current),
+                ));
+            }
+            SettingsRow::VideoH264Profile(profile) => {
+                let next = match profile {
+                    H264Profile::Baseline => H264Profile::Main,
+                    H264Profile::Main => H264Profile::Baseline,
+                };
+                return self.handle_settings_command(Command::SetVideoH264Profile(next));
+            }
+            SettingsRow::PeriodicKeyframe(enabled) => {
+                return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
             }
             SettingsRow::Back => {}
         }
@@ -489,6 +567,18 @@ impl App {
             }
             Command::SetShowStreamDebugInfo(enabled) => {
                 self.settings.show_stream_debug_info = enabled;
+                self.settings.save();
+            }
+            Command::SetVideoBitrateCap(kbps) => {
+                self.settings.video_bitrate_kbps = kbps.min(50_000).max(1_000);
+                self.settings.save();
+            }
+            Command::SetVideoH264Profile(profile) => {
+                self.settings.video_h264_profile = profile;
+                self.settings.save();
+            }
+            Command::SetPeriodicKeyframe(enabled) => {
+                self.settings.periodic_keyframe = enabled;
                 self.settings.save();
             }
         }
