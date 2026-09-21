@@ -95,6 +95,13 @@ impl Locale {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum H264Profile {
+    #[default]
+    Baseline,
+    Main,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -103,6 +110,22 @@ pub struct Settings {
     pub unlock_video_fps: bool,
     /// Shows internal stream/session state on the `Streaming` screen. Off by default.
     pub show_stream_debug_info: bool,
+    /// Home-console LAN IPv4 override (e.g. "192.168.0.123"). When set, home-stream ICE
+    /// candidates target this address directly instead of the Teredo-decoded WAN endpoint,
+    /// bypassing router NAT hairpin (which can be slow/lossy and cause growing video lag).
+    pub home_console_ip: Option<String>,
+    /// Video bitrate cap in kbps sent to the console via SDP (b=AS / b=TIAS).
+    /// Range 2 000–50 000 kbps, default 15 000 (15 Mbps). Higher values can improve
+    /// visual quality at the cost of network bandwidth and potentially more drift.
+    pub video_bitrate_kbps: u32,
+    /// H264 profile offered to the console in the SDP. Baseline is universally supported
+    /// by the Vita's HW decoder. Main and High may produce artifacts or fail entirely
+    /// depending on tile/bitstream compatibility.
+    pub video_h264_profile: H264Profile,
+    /// When true, a keyframe (IDR) is requested from the console every 200 ms via
+    /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
+    /// cost of slightly larger periodic frames and a small bandwidth overhead.
+    pub periodic_keyframe: bool,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -133,6 +156,10 @@ impl Default for Settings {
             locale: Locale::default(),
             unlock_video_fps: false,
             show_stream_debug_info: false,
+            home_console_ip: None,
+            video_bitrate_kbps: 15_000,
+            video_h264_profile: H264Profile::default(),
+            periodic_keyframe: true,
             game_profiles: HashMap::new(),
         }
     }

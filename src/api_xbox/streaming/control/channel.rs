@@ -1,5 +1,5 @@
 use rtc::data_channel::RTCDataChannelId;
-use rtc::peer_connection::RTCPeerConnection;
+use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -35,6 +35,9 @@ pub(in crate::api_xbox::streaming) fn handle_data_channel_message(
     if let Some(mut control_channel) = pc.data_channel(ids.control) {
         let _ = control_channel.send_text(authorization_request().to_string());
         let _ = control_channel.send_text(gamepad_changed(0, true).to_string());
+        let _ = control_channel.send_text(
+            video_preference(STREAM_WIDTH, STREAM_HEIGHT, video_fps).to_string(),
+        );
     }
     if let Some(mut message_channel) = pc.data_channel(ids.message) {
         for message in startup_messages(video_fps) {
@@ -107,6 +110,19 @@ pub fn gamepad_changed(gamepad_index: u8, was_added: bool) -> Value {
     })
 }
 
+/// Newer-protocol control message declaring the exact stream the client wants;
+/// reference clients send this right after authorization.
+pub fn video_preference(width: u32, height: u32, fps: u32) -> Value {
+    json!({
+        "type": "VideoPreference",
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "videoCodec": "H264",
+        "colorSpaceFlags": 0,
+    })
+}
+
 pub fn video_keyframe_requested(ifr_requested: bool) -> Value {
     json!({
         "message": "videoKeyframeRequested",
@@ -133,7 +149,24 @@ pub fn generate_message(path: &str, data: Value) -> Value {
     })
 }
 
-pub fn startup_messages(video_fps: u32) -> Vec<Value> {
+pub fn dimensions_changed_message(width: u32, height: u32) -> Value {
+    generate_message(
+        "/streaming/characteristics/dimensionschanged",
+        json!({
+            "horizontal": width,
+            "vertical": height,
+            "preferredWidth": width,
+            "preferredHeight": height,
+            "safeAreaLeft": 0,
+            "safeAreaTop": 0,
+            "safeAreaRight": width,
+            "safeAreaBottom": height,
+            "supportsCustomResolution": true,
+        }),
+    )
+}
+
+pub fn startup_messages(_video_fps: u32) -> Vec<Value> {
     let width = STREAM_WIDTH;
     let height = STREAM_HEIGHT;
 
@@ -158,37 +191,12 @@ pub fn startup_messages(video_fps: u32) -> Vec<Value> {
             json!({ "touchInputEnabled": false }),
         ),
         generate_message(
+            // Reference clients declare capabilities as an empty object; the full
+            // form (supportsFps/maxWidth/maxBitrateKbps...) is legacy and may push
+            // the console into conservative pacing.
             "/streaming/characteristics/clientdevicecapabilities",
-            json!({
-                "supportsCustomResolution": true,
-                "supportsHevc": false,
-                "supportsHdr": false,
-                "supportsFps": video_fps,
-                "maxWidth": width,
-                "maxHeight": height,
-                "maxBitrateKbps": 2000,
-                "video": {
-                    "width": width,
-                    "height": height,
-                    "maxWidth": width,
-                    "maxHeight": height,
-                    "maxBitrateKbps": 2000,
-                },
-            }),
+            json!({}),
         ),
-        generate_message(
-            "/streaming/characteristics/dimensionschanged",
-            json!({
-                "horizontal": width,
-                "vertical": height,
-                "preferredWidth": width,
-                "preferredHeight": height,
-                "safeAreaLeft": 0,
-                "safeAreaTop": 0,
-                "safeAreaRight": width,
-                "safeAreaBottom": height,
-                "supportsCustomResolution": true,
-            }),
-        ),
+        dimensions_changed_message(width, height),
     ]
 }

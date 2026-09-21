@@ -14,6 +14,26 @@ pub(crate) struct VideoMetrics {
     pub(crate) queue_full: AtomicU64,
     pub(crate) resyncs: AtomicU64,
     pub(crate) resets: AtomicU64,
+    pub(crate) hw_buffered: AtomicU64,
+    pub(crate) pipeline_age_max_us: AtomicU64,
+    pub(crate) stream_lag_us: AtomicU64,
+    pub(crate) stream_lag_max_us: AtomicU64,
+    pub(crate) rtp_hold_saved: AtomicU64,
+    pub(crate) rtp_hold_expired: AtomicU64,
+    pub(crate) rtp_gaps: AtomicU64,
+    pub(crate) rtp_abandons: AtomicU64,
+    pub(crate) rtp_wait_drops: AtomicU64,
+    pub(crate) rtp_invalid: AtomicU64,
+    pub(crate) dec_queue_full: AtomicU64,
+    pub(crate) flushes: AtomicU64,
+    pub(crate) twcc_sent: AtomicU64,
+    pub(crate) twcc_samples: AtomicU64,
+    pub(crate) rtp_ext_any: AtomicU64,
+    pub(crate) twcc_stride: AtomicU64,
+    pub(crate) video_metadata_sent: AtomicU64,
+    pub(crate) video_bandwidth_kbps: AtomicU64,
+    pub(crate) display_pickup_us: AtomicU64,
+    pub(crate) display_pickup_max_us: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -30,6 +50,26 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     queue_full: AtomicU64::new(0),
     resyncs: AtomicU64::new(0),
     resets: AtomicU64::new(0),
+    hw_buffered: AtomicU64::new(0),
+    pipeline_age_max_us: AtomicU64::new(0),
+    stream_lag_us: AtomicU64::new(0),
+    stream_lag_max_us: AtomicU64::new(0),
+    rtp_hold_saved: AtomicU64::new(0),
+    rtp_hold_expired: AtomicU64::new(0),
+    rtp_gaps: AtomicU64::new(0),
+    rtp_abandons: AtomicU64::new(0),
+    rtp_wait_drops: AtomicU64::new(0),
+    rtp_invalid: AtomicU64::new(0),
+    dec_queue_full: AtomicU64::new(0),
+    flushes: AtomicU64::new(0),
+    twcc_sent: AtomicU64::new(0),
+    twcc_samples: AtomicU64::new(0),
+    rtp_ext_any: AtomicU64::new(0),
+    twcc_stride: AtomicU64::new(0),
+    video_metadata_sent: AtomicU64::new(0),
+    video_bandwidth_kbps: AtomicU64::new(0),
+    display_pickup_us: AtomicU64::new(0),
+    display_pickup_max_us: AtomicU64::new(0),
 };
 
 pub fn video_performance_summary() -> String {
@@ -37,8 +77,9 @@ pub fn video_performance_summary() -> String {
     let rtp_count = METRICS.rtp_assembly_count.swap(0, Ordering::Relaxed);
     let rtp_average = rtp_sum.checked_div(rtp_count).unwrap_or(0);
     let rtp_max = METRICS.rtp_assembly_max_us.swap(0, Ordering::Relaxed);
-    format!(
-        "fps d/p:{}/{} us r:{rtp_average}/{rtp_max} d/a:{}/{} skip:{} cap:{} repl:{} q:{} rs:{} rst:{}",
+    // Two lines: the HUD label clips long single-line output on the Vita panel.
+    let line1 = format!(
+        "d/p:{}/{} d/a:{}/{} skip:{} cap:{} repl:{} q:{} hwb:{} ageMax:{} lag:{} lagMax:{} bw:{}",
         METRICS.decoded.swap(0, Ordering::Relaxed),
         METRICS.presented.swap(0, Ordering::Relaxed),
         METRICS.decode_us.load(Ordering::Relaxed),
@@ -47,7 +88,31 @@ pub fn video_performance_summary() -> String {
         METRICS.rate_limited.swap(0, Ordering::Relaxed),
         METRICS.replaced.swap(0, Ordering::Relaxed),
         METRICS.queue_full.swap(0, Ordering::Relaxed),
+        METRICS.hw_buffered.swap(0, Ordering::Relaxed),
+        METRICS.pipeline_age_max_us.swap(0, Ordering::Relaxed),
+        METRICS.stream_lag_us.load(Ordering::Relaxed),
+        METRICS.stream_lag_max_us.swap(0, Ordering::Relaxed),
+        METRICS.video_bandwidth_kbps.load(Ordering::Relaxed),
+    );
+    let line2 = format!(
+        "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} st:{} md:{} pick:{} pickMax:{}",
         METRICS.resyncs.load(Ordering::Relaxed),
         METRICS.resets.load(Ordering::Relaxed),
-    )
+        METRICS.rtp_wait_drops.swap(0, Ordering::Relaxed),
+        METRICS.rtp_abandons.swap(0, Ordering::Relaxed),
+        METRICS.rtp_hold_saved.swap(0, Ordering::Relaxed),
+        METRICS.rtp_hold_expired.swap(0, Ordering::Relaxed),
+        METRICS.rtp_gaps.swap(0, Ordering::Relaxed),
+        METRICS.rtp_invalid.swap(0, Ordering::Relaxed),
+        METRICS.dec_queue_full.swap(0, Ordering::Relaxed),
+        METRICS.flushes.load(Ordering::Relaxed),
+        METRICS.twcc_sent.load(Ordering::Relaxed),
+        METRICS.twcc_samples.swap(0, Ordering::Relaxed),
+        METRICS.rtp_ext_any.swap(0, Ordering::Relaxed),
+        METRICS.twcc_stride.swap(0, Ordering::Relaxed),
+        METRICS.video_metadata_sent.swap(0, Ordering::Relaxed),
+        METRICS.display_pickup_us.load(Ordering::Relaxed),
+        METRICS.display_pickup_max_us.swap(0, Ordering::Relaxed),
+    );
+    format!("{line1}\n{line2}")
 }

@@ -1,9 +1,9 @@
+use crate::api::streaming::rtc::peer::FeedbackPeer;
 use crate::api::streaming::rtc::session::{RtcSession, RtcSessionConfig};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH};
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use rtc::peer_connection::RTCPeerConnection;
 use rtc::peer_connection::sdp::RTCSessionDescription;
 use rtc::peer_connection::state::RTCPeerConnectionState;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
@@ -25,7 +25,7 @@ const SDP_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(45);
 pub(crate) trait RtcWorkerProvider: Send + 'static {
     type Protocol: super::session::RtcSessionBackend;
 
-    fn create_peer(&self) -> Result<(RTCPeerConnection, Self::Protocol)>;
+    fn create_peer(&self) -> Result<(FeedbackPeer, Self::Protocol)>;
     fn session_config(&self) -> RtcSessionConfig;
     async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<String>;
 }

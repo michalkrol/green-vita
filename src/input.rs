@@ -123,7 +123,38 @@ pub fn read_gamepad_frame(
     rear_touch_enabled: bool,
     front_touch_auxiliary_buttons: bool,
 ) -> Option<GamepadFrame> {
-    let controller = controller?;
+    // No controller attached to the Vita (user playing via the console's own
+    // pad): still emit a neutral frame each tick — the console's input liveness
+    // watchdog freezes the session (~60 s) when reports stop arriving.
+    let Some(controller) = controller else {
+        let touch = |button: RearTouchButton| {
+            f32::from(touch_buttons.pressed(button, rear_touch_enabled, front_touch_auxiliary_buttons))
+        };
+        return Some(GamepadFrame {
+            gamepad_index: 0,
+            nexus: 0.0,
+            menu: 0.0,
+            view: 0.0,
+            a: 0.0,
+            b: 0.0,
+            x: 0.0,
+            y: 0.0,
+            dpad_up: 0.0,
+            dpad_down: 0.0,
+            dpad_left: 0.0,
+            dpad_right: 0.0,
+            left_shoulder: 0.0,
+            right_shoulder: 0.0,
+            left_thumb: touch(RearTouchButton::L3),
+            right_thumb: touch(RearTouchButton::R3),
+            left_thumb_x_axis: 0.0,
+            left_thumb_y_axis: 0.0,
+            right_thumb_x_axis: 0.0,
+            right_thumb_y_axis: 0.0,
+            left_trigger: touch(RearTouchButton::L2),
+            right_trigger: touch(RearTouchButton::R2),
+        });
+    };
     let button = |b: Button| f32::from(controller.button(b));
     Some(GamepadFrame {
         gamepad_index: 0,

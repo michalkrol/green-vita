@@ -1,6 +1,6 @@
 use crate::app::StreamingSession;
 use crate::shell::egui_painter::SdlEguiPainter;
-use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget};
+use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget, NUM_TEXTURES};
 use anyhow::{Context, Result};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{Canvas, Texture};
@@ -13,7 +13,7 @@ pub const HEIGHT: u32 = 544;
 
 pub struct VitaSurface {
     pub(crate) canvas: Canvas<Window>,
-    video_textures: Option<[Texture; 2]>,
+    video_textures: Option<[Texture; NUM_TEXTURES]>,
     displayed_video_texture: Option<usize>,
     direct_video_output: Option<Arc<DirectVideoOutput>>,
     video_width: u32,
@@ -71,9 +71,18 @@ impl VitaSurface {
             return Ok(());
         }
         let index = frame.texture_index;
-        if index >= 2 {
+        if index >= NUM_TEXTURES {
             anyhow::bail!("decoder returned invalid direct texture index {index}");
         }
+        crate::streaming::video::metrics::METRICS
+            .display_pickup_us
+            .store(frame.published_at.elapsed().as_micros() as u64, Ordering::Relaxed);
+        crate::streaming::video::metrics::METRICS
+            .display_pickup_max_us
+            .fetch_max(
+                frame.published_at.elapsed().as_micros() as u64,
+                Ordering::Relaxed,
+            );
         if let Some(output) = &self.direct_video_output {
             output.mark_displayed(index, frame.generation);
         }
@@ -109,8 +118,17 @@ impl VitaSurface {
                 .map_err(anyhow::Error::msg)
                 .context("failed to create direct SDL BGR565 video texture")
         };
-        let mut textures = [create_texture()?, create_texture()?];
-        let mut targets = [
+        let mut textures: [_; NUM_TEXTURES] = [
+            create_texture()?,
+            create_texture()?,
+            create_texture()?,
+        ];
+        let mut targets: [_; NUM_TEXTURES] = [
+            VideoTextureTarget {
+                ptr: 0,
+                pitch: 0,
+                capacity: 0,
+            },
             VideoTextureTarget {
                 ptr: 0,
                 pitch: 0,

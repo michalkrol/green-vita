@@ -6,12 +6,17 @@ use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased, 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // Keep only one compressed frame queued at the default 30 FPS to minimize glass-to-glass
 // latency. Faster streams may still use a larger burst buffer.
 const MIN_PENDING_ACCESS_UNITS: usize = 1;
 const MAX_PENDING_ACCESS_UNITS: usize = 6;
+/// Target decoder pace range: 14-20ms (50-71 fps). Wider than the console's
+/// typical 58-62 fps so brief excursions don't clip.
+const MIN_DECODE_INTERVAL_US: u64 = 14_000;
+const MAX_DECODE_INTERVAL_US: u64 = 20_000;
+const DEFAULT_DECODE_INTERVAL_US: u64 = 16_667;
 
 struct QueuedAccessUnit {
     data: Vec<u8>,
@@ -32,12 +37,38 @@ pub struct VideoDecodeWorker {
     generation: Arc<AtomicU64>,
     pub(crate) latest_result: Arc<Mutex<Option<DecodeResult>>>,
     pub(crate) result_ready: Arc<tokio::sync::Notify>,
+    /// Updated from RTP timestamps to pace the decoder to the console's encoder rate.
+    pub(crate) last_source_duration_us: Arc<AtomicU64>,
 }
 
 impl VideoDecodeWorker {
     pub fn spawn(config: DecoderConfig, direct_output: Arc<DirectVideoOutput>) -> Result<Self> {
-        let decoder =
-            HwVideoDecoder::new(config).context("failed to create hardware H264 decoder")?;
+        // Session teardown is asynchronous: the previous session's RTC thread must observe
+        // channel disconnect, drop its VideoDecodeWorker, and let the decode thread run
+        // sceVideodecTermLibrary before a fresh sceVideodecInitLibrary can succeed. A
+        // frozen/wedged previous session widens that window, so retry instead of failing
+        // the whole session with 0x80620808-class errors.
+        const DECODER_INIT_ATTEMPTS: usize = 20;
+        const DECODER_INIT_RETRY_DELAY: Duration = Duration::from_millis(250);
+        let mut decoder = None;
+        for attempt in 1..=DECODER_INIT_ATTEMPTS {
+            match HwVideoDecoder::new(config) {
+                Ok(created) => {
+                    decoder = Some(created);
+                    break;
+                }
+                Err(error) if attempt < DECODER_INIT_ATTEMPTS => {
+                    eprintln!(
+                        "H264 decoder init failed (attempt {attempt}/{DECODER_INIT_ATTEMPTS}): {error:#}; retrying"
+                    );
+                    std::thread::sleep(DECODER_INIT_RETRY_DELAY);
+                }
+                Err(error) => {
+                    return Err(error).context("failed to create hardware H264 decoder");
+                }
+            }
+        }
+        let decoder = decoder.expect("decoder created after retry loop");
         direct_output.decoder_ready.store(true, Ordering::Release);
         let (access_units, worker_access_units) = bounded(MAX_PENDING_ACCESS_UNITS);
         let (commands, worker_commands) = unbounded();
@@ -48,6 +79,8 @@ impl VideoDecodeWorker {
         let result_ready = Arc::new(tokio::sync::Notify::new());
         let worker_result_ready = Arc::clone(&result_ready);
         let worker_direct_output = Arc::clone(&direct_output);
+        let source_duration = Arc::new(AtomicU64::new(DEFAULT_DECODE_INTERVAL_US));
+        let worker_source_duration = Arc::clone(&source_duration);
 
         std::thread::Builder::new()
             .name("green-vita-video-decode".to_owned())
@@ -63,6 +96,7 @@ impl VideoDecodeWorker {
                     decoder,
                     config,
                     worker_direct_output,
+                    worker_source_duration,
                 )
             })
             .context("failed to spawn video decode worker")?;
@@ -73,10 +107,16 @@ impl VideoDecodeWorker {
             generation,
             latest_result,
             result_ready,
+            last_source_duration_us: source_duration,
         })
     }
 
     pub fn submit_access_unit(&self, data: Vec<u8>, source_frame_duration_us: Option<u64>) -> bool {
+        if let Some(duration) = source_frame_duration_us
+            .filter(|d| (MIN_DECODE_INTERVAL_US..=MAX_DECODE_INTERVAL_US).contains(d))
+        {
+            self.last_source_duration_us.store(duration, Ordering::Relaxed);
+        }
         let source_fps = source_frame_duration_us
             .filter(|duration| *duration > 0)
             .map(|duration| 1_000_000 / duration)
@@ -149,7 +189,14 @@ fn run_decode_loop(
     initial_decoder: HwVideoDecoder,
     config: DecoderConfig,
     direct_output: Arc<DirectVideoOutput>,
+    _source_duration: Arc<AtomicU64>,
 ) {
+    use std::thread::sleep;
+    // Pace the decoder at roughly 62 fps (13 ms sleep + ~3 ms decode per frame)
+    // to keep up with the console's 60 fps encoder rate.  This prevents the
+    // access-unit queue from filling (which delays frames and causes drift).
+    const DECODE_PACE_SLEEP: Duration = Duration::from_micros(13_000);
+
     let mut decoder = Some(initial_decoder);
 
     loop {
@@ -172,6 +219,7 @@ fn run_decode_loop(
                     access_unit,
                     &direct_output,
                 );
+                sleep(DECODE_PACE_SLEEP);
             }
         }
     }
@@ -230,20 +278,26 @@ fn decode_queued_access_unit(
         Ok(Ok(true)) => {
             metrics::METRICS.decoded.fetch_add(1, Ordering::Relaxed);
             let (texture_index, generation) = direct_target.publish();
-            metrics::METRICS.pipeline_age_us.store(
-                access_unit.queued_at.elapsed().as_micros() as u64,
-                Ordering::Relaxed,
-            );
+            let pipeline_age_us = access_unit.queued_at.elapsed().as_micros() as u64;
+            metrics::METRICS
+                .pipeline_age_us
+                .store(pipeline_age_us, Ordering::Relaxed);
+            metrics::METRICS
+                .pipeline_age_max_us
+                .fetch_max(pipeline_age_us, Ordering::Relaxed);
             publish_result(
                 latest_result,
                 result_ready,
                 Ok(DecodedFrame {
                     texture_index,
                     generation,
+                    published_at: Instant::now(),
                 }),
             );
         }
-        Ok(Ok(false)) => {}
+        Ok(Ok(false)) => {
+            metrics::METRICS.hw_buffered.fetch_add(1, Ordering::Relaxed);
+        }
         Ok(Err(error)) => {
             *decoder = None;
             publish_result(latest_result, result_ready, Err(error.to_string()));

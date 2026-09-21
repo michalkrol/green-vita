@@ -3,6 +3,7 @@
 unsafe extern "C" {}
 
 mod egui_painter;
+pub(crate) mod power;
 mod surface;
 
 use crate::app::ui::build_ui;
@@ -28,7 +29,7 @@ const DIRECTION_REPEAT_INITIAL_DELAY: Duration = Duration::from_millis(350);
 const DIRECTION_REPEAT_INTERVAL: Duration = Duration::from_millis(90);
 const STREAM_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(4);
 
-pub(crate) const TARGET_FRAME_TIME: Duration = Duration::from_millis(16);
+pub(crate) const TARGET_FRAME_TIME: Duration = Duration::from_micros(16_700);
 
 pub async fn run(mut app: App) -> Result<()> {
     crate::streaming::video::reserve_decoder_cdram();
