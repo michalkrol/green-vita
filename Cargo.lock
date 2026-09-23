@@ -839,6 +839,7 @@ dependencies = [
  "fluent-bundle",
  "h264-reader",
  "image",
+ "libc",
  "qrcode",
  "reqwest",
  "ring",

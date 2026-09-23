@@ -1,0 +1,14 @@
+void main(
+    float2 pos : POSITION,
+    float2 uv : TEXCOORD0,
+    float4 col : COLOR0,
+    uniform float2 screen_size : PARAM0,
+    out float4 out_pos : POSITION,
+    out float2 out_uv : TEXCOORD0,
+    out float4 out_col : COLOR0
+) {
+    float2 clip = (pos.xy / screen_size.xy) * 2.0 - 1.0;
+    out_pos = float4(clip.x, -clip.y, 0.0, 1.0);
+    out_uv = uv;
+    out_col = col;
+}

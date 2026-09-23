@@ -1,5 +1,5 @@
 mod decoder;
-mod memory;
+pub(crate) mod memory;
 pub(crate) mod metrics;
 mod worker;
 
