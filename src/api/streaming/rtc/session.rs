@@ -45,6 +45,11 @@ pub(crate) struct RtcSessionConfig {
     pub video_fps: u32,
     pub decoder: DecoderConfig,
     pub periodic_keyframe_enabled: bool,
+    pub remb_auto_shock_enabled: bool,
+    /// New drops since last shock required to trigger another shock.
+    pub remb_shock_drop_gap: u32,
+    pub remb_shock_cooldown_secs: u32,
+    pub remb_shock_duration_ms: u32,
 }
 
 /// Provider-specific hooks invoked by the reusable RTC session.
@@ -89,6 +94,16 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     last_periodic_keyframe: Option<Instant>,
     periodic_keyframe_enabled: bool,
     pub status: String,
+    // Auto-REMB-shock config + state
+    remb_auto_shock_enabled: bool,
+    /// Fire a shock every time cumulative drops surpass this many new drops since last shock.
+    remb_shock_drop_gap: u64,
+    /// Minimum seconds between shocks.
+    remb_shock_cooldown: Duration,
+    /// Duration of the REMB low-bitrate pulse.
+    remb_shock_duration: Duration,
+    last_shock_at: Option<Instant>,
+    drops_at_last_shock: u64,
 }
 
 impl<B: RtcSessionBackend> RtcSession<B> {
@@ -119,6 +134,12 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             last_periodic_keyframe: None,
             periodic_keyframe_enabled: config.periodic_keyframe_enabled,
             status: "Negotiating WebRTC connection".to_owned(),
+            remb_auto_shock_enabled: config.remb_auto_shock_enabled,
+            remb_shock_drop_gap: config.remb_shock_drop_gap as u64,
+            remb_shock_cooldown: Duration::from_secs(config.remb_shock_cooldown_secs as u64),
+            remb_shock_duration: Duration::from_millis(config.remb_shock_duration_ms as u64),
+            last_shock_at: None,
+            drops_at_last_shock: 0,
         })
     }
 
@@ -179,6 +200,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         // stay smooth; every prior REMB test was confounded by NACK/loss loops.
         self.video.send_remb(&mut self.peer, now);
         self.video.send_twcc(&mut self.peer, now);
+        self.auto_remb_shock(now);
         self.maybe_flush_backlog(now);
         if let Some(status) = self.video.status(now) {
             let debug_state = self.backend.debug_state();
@@ -360,5 +382,36 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         METRICS.flushes.fetch_add(1, Ordering::Relaxed);
         self.backend.notify_stream_flush(&mut self.peer);
         self.video.reset_lag_anchor();
+    }
+
+    /// Auto-trigger REMB shock when cumulative drops exceed the gap since last shock.
+    /// Rising drops mean the console is shedding backlog — the encoder queue is
+    /// draining, so shocking it via REMB is well-timed to flush the pre-stamp buffer.
+    fn auto_remb_shock(&mut self, now: Instant) {
+        if !self.remb_auto_shock_enabled {
+            return;
+        }
+
+        // Cooldown check
+        if self
+            .last_shock_at
+            .is_some_and(|at| now.duration_since(at) < self.remb_shock_cooldown)
+        {
+            return;
+        }
+
+        let total_drops = self.video.total_drops();
+        let new_drops_since_last_shock = total_drops.saturating_sub(self.drops_at_last_shock);
+        if new_drops_since_last_shock < self.remb_shock_drop_gap {
+            return;
+        }
+
+        eprintln!(
+            "REMB shock: new_drops={new_drops_since_last_shock} gap={} total={total_drops}",
+            self.remb_shock_drop_gap,
+        );
+        self.last_shock_at = Some(now);
+        self.drops_at_last_shock = total_drops;
+        self.video.trigger_remb_shock(self.remb_shock_duration);
     }
 }

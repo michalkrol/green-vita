@@ -37,6 +37,10 @@ impl XboxStreamingBackend {
         periodic_keyframe: bool,
         decode_sleep_ms: u32,
         decode_queue_depth: u32,
+        remb_auto_shock_enabled: bool,
+        remb_shock_drop_gap: u32,
+        remb_shock_cooldown_secs: u32,
+        remb_shock_duration_ms: u32,
     ) -> Result<Self> {
         let worker = worker::spawn(
             stream.clone(),
@@ -46,6 +50,10 @@ impl XboxStreamingBackend {
             periodic_keyframe,
             decode_sleep_ms,
             decode_queue_depth,
+            remb_auto_shock_enabled,
+            remb_shock_drop_gap,
+            remb_shock_cooldown_secs,
+            remb_shock_duration_ms,
         )?;
         Ok(Self {
             stream,

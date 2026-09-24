@@ -7,14 +7,15 @@ use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
 const REMB_INTERVAL: Duration = Duration::from_millis(500);
 const TWCC_INTERVAL: Duration = Duration::from_millis(100);
-/// Matches the SDP bitrate cap so pacing never becomes the limit.
-const REMB_BITRATE_BPS: f32 = 15_000_000.0;
+/// Shared REMB bitrate knob accessible from main thread for shock triggers.
+pub(crate) static REMB_BPS: AtomicU32 = AtomicU32::new(15_000_000);
+pub(crate) const REMB_SHOCK_BPS: u32 = 100_000;
 /// Arbitrary stable local RTCP sender SSRC (we transmit no RTP of our own).
 const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
 
@@ -42,6 +43,7 @@ pub(crate) struct VideoReceiver {
     twcc_fb_pkt_count: u8,
     stats: VideoStats,
     direct_output: Arc<DirectVideoOutput>,
+    remb_shock_until: Option<Instant>,
 }
 
 impl VideoReceiver {
@@ -71,6 +73,7 @@ impl VideoReceiver {
             twcc_fb_pkt_count: 0,
             stats: VideoStats::default(),
             direct_output,
+            remb_shock_until: None,
         }
     }
 
@@ -176,10 +179,19 @@ impl VideoReceiver {
     }
 
     /// Sends Receiver Estimated Max Bitrate to keep the console's estimate fresh.
-    /// Currently not called; kept for quick re-enable.
     pub(crate) fn send_remb(&mut self, peer: &mut RTCPeerConnection, now: Instant) {
         let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else {
             return;
+        };
+        // If shock mode is active, send a low REMB to trigger encoder queue purge.
+        let bitrate = if self
+            .remb_shock_until
+            .is_some_and(|shock_until| now < shock_until)
+        {
+            REMB_SHOCK_BPS as f32
+        } else {
+            self.remb_shock_until = None;
+            REMB_BPS.load(Ordering::Relaxed) as f32
         };
         if self
             .last_remb_at
@@ -192,11 +204,20 @@ impl VideoReceiver {
             let remb =
                 rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {
                     sender_ssrc: LOCAL_RTCP_SENDER_SSRC,
-                    bitrate: REMB_BITRATE_BPS,
+                    bitrate,
                     ssrcs: vec![ssrc],
                 };
             let _ = receiver.write_rtcp(vec![Box::new(remb)]);
         }
+    }
+
+    /// Trigger a REMB shock: send ~100 kbps for `duration` to force encoder purge.
+    pub(crate) fn trigger_remb_shock(&mut self, duration: Duration) {
+        self.remb_shock_until = Some(Instant::now() + duration);
+    }
+
+    pub(crate) fn remb_shock_active(&self) -> bool {
+        self.remb_shock_until.is_some()
     }
 
     /// Manual transport-cc feedback: per-packet arrival deltas for the console's

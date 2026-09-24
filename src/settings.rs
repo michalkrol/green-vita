@@ -130,6 +130,16 @@ pub struct Settings {
     pub video_decode_sleep_ms: u32,
     /// Decode queue depth (default 6). Lower values reduce buffering but risk dropped frames.
     pub video_decode_queue_depth: u32,
+    /// When enabled, auto-triggers a REMB shock (drops bitrate to 100 kbps briefly)
+    /// when the frame drop rate exceeds the threshold. The goal is to force the
+    /// console's encoder to flush its internal pre-stamp queue.
+    pub remb_auto_shock_enabled: bool,
+    /// New drops since last shock required to trigger another shock (default 10).
+    pub remb_shock_drop_gap: u32,
+    /// Minimum seconds between shocks (default 15).
+    pub remb_shock_cooldown_secs: u32,
+    /// Duration of the REMB low-bitrate pulse in ms (default 100).
+    pub remb_shock_duration_ms: u32,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -166,6 +176,10 @@ impl Default for Settings {
             periodic_keyframe: true,
             video_decode_sleep_ms: 13,
             video_decode_queue_depth: 6,
+            remb_auto_shock_enabled: false,
+            remb_shock_drop_gap: 10,
+            remb_shock_cooldown_secs: 15,
+            remb_shock_duration_ms: 100,
             game_profiles: HashMap::new(),
         }
     }

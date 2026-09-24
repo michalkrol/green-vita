@@ -125,6 +125,75 @@ pub(super) fn cap_video_bitrate(sdp: &str, max_kbps: u32) -> String {
     result
 }
 
+/// Injects `transport-wide-cc` feedback declaration and both extmap URIs into the
+/// video section.  The console annotates every RTP packet with transport sequence
+/// numbers only when explicitly requested in the SDP offer; without these lines the
+/// console falls back to ~1/s sparse probing, starving client-side TWCC feedback.
+pub(super) fn enable_transport_cc(sdp: &str) -> String {
+    let newline = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
+    let trailing_newline = sdp.ends_with('\n');
+    let lines = sdp
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .collect::<Vec<_>>();
+    let mut output = Vec::with_capacity(lines.len() + 3);
+
+    let mut in_video = false;
+    let mut video_h264_pt = String::new();
+    let mut extmap_injected = false;
+    let mut fb_injected = false;
+
+    for line in lines {
+        // Detect which payload type H264 uses, and insert extmap + rtcp-fb lines
+        // right before the first media-level line of the video section.
+        if line.starts_with("m=") {
+            if in_video && !extmap_injected {
+                output.push(format!("a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"));
+                output.push(format!("a=extmap:4 http://www.webrtc.org/experiments/rtp-hdrext/transport-wide-cc-02"));
+                extmap_injected = true;
+            }
+            in_video = line.starts_with("m=video ");
+        }
+        if in_video && line.starts_with("a=rtpmap:") && line.to_ascii_lowercase().contains("h264") {
+            // Extract payload type from "a=rtpmap:102 H264/90000"
+            if let Some(pt) = line
+                .strip_prefix("a=rtpmap:")
+                .and_then(|rest| rest.split_whitespace().next())
+            {
+                video_h264_pt = pt.to_owned();
+            }
+        }
+        // Inject rtcp-fb line AFTER the last existing rtcp-fb line for the same PT
+        // (or before the next non-rtcp-fb line).
+        if in_video && line.starts_with(&format!("a=rtcp-fb:{video_h264_pt} ")) {
+            // Let the existing line through, then inject ours right after.
+            output.push(line.to_owned());
+            if !fb_injected {
+                output.push(format!("a=rtcp-fb:{video_h264_pt} transport-cc"));
+                fb_injected = true;
+            }
+            continue;
+        }
+        output.push(line.to_owned());
+    }
+
+    // If video section never ended (no `m=` transition) and we missed injection,
+    // inject at the end.
+    if in_video && !extmap_injected {
+        output.push(format!("a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"));
+        output.push(format!("a=extmap:4 http://www.webrtc.org/experiments/rtp-hdrext/transport-wide-cc-02"));
+    }
+    if in_video && !fb_injected && !video_h264_pt.is_empty() {
+        output.push(format!("a=rtcp-fb:{video_h264_pt} transport-cc"));
+    }
+
+    let mut result = output.join(newline);
+    if trailing_newline {
+        result.push_str(newline);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

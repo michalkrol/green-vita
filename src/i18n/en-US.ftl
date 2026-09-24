@@ -28,6 +28,10 @@ settings-video-h264-profile = H264 profile: { $profile }
 settings-periodic-keyframe = Periodic keyframe (clear artifacts)
 settings-video-decode-sleep-ms = Decode sleep: { $ms }ms (default: 13)
 settings-video-decode-queue-depth = Decode queue: { $slots } slots (default: 6)
+settings-remb-auto-shock = Auto REMB shock (drop rate trigger)
+settings-remb-shock-drop-gap = Shock drop gap: { $drops } (default: 10)
+settings-remb-shock-cooldown = Shock cooldown: { $secs }s (default: 15)
+settings-remb-shock-duration = Shock duration: { $ms }ms (default: 100)
 action-back = Back
 
 mode-select-cloud-subtitle = Stream Xbox Cloud Gaming titles

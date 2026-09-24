@@ -80,7 +80,7 @@ fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32, video_h2
                 clock_rate: 90_000,
                 channels: 0,
                 sdp_fmtp_line: format!(
-                    "level-asymmetry-allowed=0;packetization-mode=1;profile-level-id={}",
+                    "level-asymmetry-allowed=0;packetization-mode=1;profile-level-id={};max-dpb-size=1;max-bframes=0",
                     h264_profile_level_id(video_fps, video_h264_profile)
                 ),
                 rtcp_feedback: vec![

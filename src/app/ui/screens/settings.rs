@@ -23,6 +23,10 @@ pub enum Command {
     SetPeriodicKeyframe(bool),
     SetVideoDecodeSleepMs(u32),
     SetVideoDecodeQueueDepth(u32),
+    SetRembAutoShock(bool),
+    SetRembShockDropGap(u32),
+    SetRembShockCooldownSecs(u32),
+    SetRembShockDurationMs(u32),
 }
 
 #[derive(Clone)]
@@ -39,6 +43,10 @@ enum SettingsRow {
     PeriodicKeyframe(bool),
     VideoDecodeSleepMs(u32),
     VideoDecodeQueueDepth(u32),
+    RembAutoShock(bool),
+    RembShockDropGap(u32),
+    RembShockCooldownSecs(u32),
+    RembShockDurationMs(u32),
     Back,
 }
 
@@ -88,6 +96,10 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
     rows.push(SettingsRow::VideoDecodeSleepMs(app.settings.video_decode_sleep_ms));
     rows.push(SettingsRow::VideoDecodeQueueDepth(app.settings.video_decode_queue_depth));
+    rows.push(SettingsRow::RembAutoShock(app.settings.remb_auto_shock_enabled));
+    rows.push(SettingsRow::RembShockDropGap(app.settings.remb_shock_drop_gap));
+    rows.push(SettingsRow::RembShockCooldownSecs(app.settings.remb_shock_cooldown_secs));
+    rows.push(SettingsRow::RembShockDurationMs(app.settings.remb_shock_duration_ms));
     rows.push(SettingsRow::Back);
     rows
 }
@@ -333,6 +345,54 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                ui.heading(egui::RichText::new("Auto REMB shock").color(theme.text_bright));
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.remb_auto_shock_enabled,
+                    i18n.text("settings-remb-auto-shock"),
+                ) {
+                    commands.push(Command::SetRembAutoShock(!app.settings.remb_auto_shock_enabled).into());
+                }
+                row_index += 1;
+
+                if app.settings.remb_auto_shock_enabled {
+                    {
+                        let mut args = FluentArgs::new();
+                        args.set("drops", arg_string(app.settings.remb_shock_drop_gap.to_string()));
+                        let label = i18n.text_with("settings-remb-shock-drop-gap", args);
+                        if focus_row(ui, selected_index == row_index, label) {
+                            let next = next_preset(app.settings.remb_shock_drop_gap, SHOCK_DROP_GAP_PRESETS);
+                            commands.push(Command::SetRembShockDropGap(next).into());
+                        }
+                    }
+                    row_index += 1;
+
+                    {
+                        let mut args = FluentArgs::new();
+                        args.set("secs", arg_string(app.settings.remb_shock_cooldown_secs.to_string()));
+                        let label = i18n.text_with("settings-remb-shock-cooldown", args);
+                        if focus_row(ui, selected_index == row_index, label) {
+                            let next = next_preset(app.settings.remb_shock_cooldown_secs, SHOCK_COOLDOWN_PRESETS);
+                            commands.push(Command::SetRembShockCooldownSecs(next).into());
+                        }
+                    }
+                    row_index += 1;
+
+                    {
+                        let mut args = FluentArgs::new();
+                        args.set("ms", arg_string(app.settings.remb_shock_duration_ms.to_string()));
+                        let label = i18n.text_with("settings-remb-shock-duration", args);
+                        if focus_row(ui, selected_index == row_index, label) {
+                            let next = next_preset(app.settings.remb_shock_duration_ms, SHOCK_DURATION_PRESETS);
+                            commands.push(Command::SetRembShockDurationMs(next).into());
+                        }
+                    }
+                    row_index += 1;
+                }
+
+                ui.add_space(14.0);
+                ui.separator();
                 if focus_row(ui, selected_index == row_index, i18n.text("action-back")) {
                     commands.push(InputCommand::Back.into());
                 }
@@ -437,6 +497,9 @@ fn host_text(i18n: &I18n, id: &'static str, host: &str) -> String {
 const BITRATE_PRESETS_KBPS: &[u32] = &[1_000, 1_500, 2_000, 2_500, 5_000, 10_000, 15_000, 20_000, 30_000, 50_000];
 const DECODE_SLEEP_PRESETS_MS: &[u32] = &[1, 2, 4, 6, 8, 10, 13, 16, 20];
 const DECODE_QUEUE_DEPTH_PRESETS: &[u32] = &[1, 2, 3, 4, 6, 8, 12];
+const SHOCK_DROP_GAP_PRESETS: &[u32] = &[3, 5, 10, 15, 20, 30, 50];
+const SHOCK_COOLDOWN_PRESETS: &[u32] = &[5, 10, 15, 30, 60, 120];
+const SHOCK_DURATION_PRESETS: &[u32] = &[50, 100, 150, 200, 300];
 
 fn next_bitrate_preset(current: u32) -> u32 {
     BITRATE_PRESETS_KBPS
@@ -460,6 +523,14 @@ fn next_decode_queue_depth_preset(current: u32) -> u32 {
         .copied()
         .find(|&p| p > current)
         .unwrap_or(DECODE_QUEUE_DEPTH_PRESETS[0])
+}
+
+fn next_preset(current: u32, presets: &[u32]) -> u32 {
+    presets
+        .iter()
+        .copied()
+        .find(|&p| p > current)
+        .unwrap_or(presets[0])
 }
 
 impl App {
@@ -548,6 +619,24 @@ impl App {
             SettingsRow::VideoDecodeQueueDepth(current) => {
                 return self.handle_settings_command(Command::SetVideoDecodeQueueDepth(
                     next_decode_queue_depth_preset(*current),
+                ));
+            }
+            SettingsRow::RembAutoShock(enabled) => {
+                return self.handle_settings_command(Command::SetRembAutoShock(!enabled));
+            }
+            SettingsRow::RembShockDropGap(current) => {
+                return self.handle_settings_command(Command::SetRembShockDropGap(
+                    next_preset(*current, SHOCK_DROP_GAP_PRESETS),
+                ));
+            }
+            SettingsRow::RembShockCooldownSecs(current) => {
+                return self.handle_settings_command(Command::SetRembShockCooldownSecs(
+                    next_preset(*current, SHOCK_COOLDOWN_PRESETS),
+                ));
+            }
+            SettingsRow::RembShockDurationMs(current) => {
+                return self.handle_settings_command(Command::SetRembShockDurationMs(
+                    next_preset(*current, SHOCK_DURATION_PRESETS),
                 ));
             }
             SettingsRow::Back => {}
@@ -647,6 +736,22 @@ impl App {
             }
             Command::SetVideoDecodeQueueDepth(depth) => {
                 self.settings.video_decode_queue_depth = depth.max(1).min(20);
+                self.settings.save();
+            }
+            Command::SetRembAutoShock(enabled) => {
+                self.settings.remb_auto_shock_enabled = enabled;
+                self.settings.save();
+            }
+            Command::SetRembShockDropGap(gap) => {
+                self.settings.remb_shock_drop_gap = gap.max(1).min(100);
+                self.settings.save();
+            }
+            Command::SetRembShockCooldownSecs(secs) => {
+                self.settings.remb_shock_cooldown_secs = secs.max(1).min(300);
+                self.settings.save();
+            }
+            Command::SetRembShockDurationMs(ms) => {
+                self.settings.remb_shock_duration_ms = ms.max(10).min(1000);
                 self.settings.save();
             }
         }

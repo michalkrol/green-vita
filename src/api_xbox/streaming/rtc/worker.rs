@@ -22,6 +22,10 @@ struct XboxRtcWorkerProvider {
     periodic_keyframe: bool,
     decode_sleep_ms: u32,
     decode_queue_depth: usize,
+    remb_auto_shock_enabled: bool,
+    remb_shock_drop_gap: u32,
+    remb_shock_cooldown_secs: u32,
+    remb_shock_duration_ms: u32,
 }
 
 impl RtcWorkerProvider for XboxRtcWorkerProvider {
@@ -47,14 +51,22 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
                 decode_queue_depth: self.decode_queue_depth,
             },
             periodic_keyframe_enabled: self.periodic_keyframe,
+            remb_auto_shock_enabled: self.remb_auto_shock_enabled,
+            remb_shock_drop_gap: self.remb_shock_drop_gap,
+            remb_shock_cooldown_secs: self.remb_shock_cooldown_secs,
+            remb_shock_duration_ms: self.remb_shock_duration_ms,
         }
     }
 
     async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<String> {
         let sdp = sdp::cap_video_bitrate(&offer.sdp, self.video_bitrate_kbps);
-        let sdp = sdp::request_video_fps(&sdp, 30);
+        let sdp = sdp::enable_transport_cc(&sdp);
+        let sdp = sdp::request_video_fps(&sdp, self.video_fps);
         let answer = self.stream.send_sdp_offer(&sdp).await?;
-        let twcc_id = sdp::extract_extmap_id(&answer, super::peer::TWCC_URI).unwrap_or(0);
+        // Try both URIs; the console may echo draft-holmer-rmcat or transport-wide-cc-02.
+        let twcc_id = sdp::extract_extmap_id(&answer, super::peer::TWCC_URI)
+            .or_else(|| sdp::extract_extmap_id(&answer, "http://www.webrtc.org/experiments/rtp-hdrext/transport-wide-cc-02"))
+            .unwrap_or(0);
         eprintln!("negotiated twcc ext id: {twcc_id}");
         crate::api::streaming::rtc::rtp::set_negotiated_twcc_ext_id(twcc_id);
         Ok(answer)
@@ -69,6 +81,10 @@ pub(crate) fn spawn(
     periodic_keyframe: bool,
     decode_sleep_ms: u32,
     decode_queue_depth: u32,
+    remb_auto_shock_enabled: bool,
+    remb_shock_drop_gap: u32,
+    remb_shock_cooldown_secs: u32,
+    remb_shock_duration_ms: u32,
 ) -> Result<RtcWorker> {
     let video_fps = if unlock_video_fps {
         UNLOCKED_VIDEO_FPS
@@ -83,5 +99,9 @@ pub(crate) fn spawn(
         periodic_keyframe,
         decode_sleep_ms,
         decode_queue_depth: decode_queue_depth as usize,
+        remb_auto_shock_enabled,
+        remb_shock_drop_gap,
+        remb_shock_cooldown_secs,
+        remb_shock_duration_ms,
     })
 }
