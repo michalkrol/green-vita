@@ -308,11 +308,13 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     let label = format!("H264 profile: {}", match app.settings.video_h264_profile {
                         H264Profile::Baseline => "Baseline",
                         H264Profile::Main => "Main",
+                        H264Profile::High => "High",
                     });
                     if focus_row(ui, selected_index == row_index, &label) {
                         let next = match app.settings.video_h264_profile {
                             H264Profile::Baseline => H264Profile::Main,
-                            H264Profile::Main => H264Profile::Baseline,
+                            H264Profile::Main => H264Profile::High,
+                            H264Profile::High => H264Profile::Baseline,
                         };
                         commands.push(Command::SetVideoH264Profile(next).into());
                     }
@@ -622,7 +624,8 @@ impl App {
             SettingsRow::VideoH264Profile(profile) => {
                 let next = match profile {
                     H264Profile::Baseline => H264Profile::Main,
-                    H264Profile::Main => H264Profile::Baseline,
+                    H264Profile::Main => H264Profile::High,
+                    H264Profile::High => H264Profile::Baseline,
                 };
                 return self.handle_settings_command(Command::SetVideoH264Profile(next));
             }

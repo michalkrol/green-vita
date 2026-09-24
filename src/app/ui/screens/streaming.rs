@@ -151,9 +151,11 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(
     let st = f("st:");
     let pick = f("pick:");
 
-    use crate::settings::H264Profile;
+use crate::settings::H264Profile;
     let profile_label = match settings.video_h264_profile {
-        H264Profile::Baseline => "Base", H264Profile::Main => "Main",
+        H264Profile::Baseline => "Base",
+        H264Profile::Main => "Main",
+        H264Profile::High => "High",
     };
 
     vec![

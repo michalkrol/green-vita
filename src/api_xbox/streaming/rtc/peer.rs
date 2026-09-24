@@ -103,6 +103,8 @@ fn h264_profile_level_id(video_fps: u32, video_h264_profile: H264Profile) -> &'s
         (H264Profile::Baseline, true) => "42e020",
         (H264Profile::Main, false) => "4de01f",
         (H264Profile::Main, true) => "4de020",
+        (H264Profile::High, false) => "64001f",
+        (H264Profile::High, true) => "640020",
     }
 }
 

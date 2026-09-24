@@ -100,6 +100,7 @@ pub enum H264Profile {
     #[default]
     Baseline,
     Main,
+    High,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
