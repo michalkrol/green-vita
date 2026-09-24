@@ -82,7 +82,7 @@ egui::Area::new(egui::Id::new("fps_overlay"))
                             egui::pos2(0.0, 0.0),
                             egui::vec2(panel_w.min(ui.available_width()), panel_h),
                         );
-                        painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(140));
+                        painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(200));
 
                         for (i, (left, right)) in rows.iter().enumerate() {
                             let y = 8.0 + i as f32 * row_h;
