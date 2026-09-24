@@ -9,7 +9,7 @@ use rtc::rtp::codec::h264::H264Packet;
 use rtc::rtp::codec::opus::OpusPacket;
 use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 
 const MAX_PENDING_AUDIO_PACKETS: usize = 32;
@@ -18,6 +18,10 @@ const VIDEO_RTP_CLOCK_RATE: u32 = 90_000;
 const AUDIO_MAX_LATE_PACKETS: u16 = 32;
 const LOW_FPS_DAMAGE_LIMIT: u8 = 8;
 const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
+const TWCC_MAX_ANNOTATIONS: usize = 200;
+
+/// Negotiated transport-cc extmap ID from the answer SDP (0 = not negotiated).
+pub(crate) static TWCC_EXT_ID: AtomicU8 = AtomicU8::new(0);
 
 #[derive(Default)]
 pub(crate) struct VideoSampleStats {
@@ -67,6 +71,7 @@ pub(crate) struct VideoRtp {
     waiting_for_keyframe: bool,
     stream_clock_anchor: Option<(Instant, u32)>,
     total_bytes: u64,
+    twcc_annotations: Vec<(u16, Instant)>,
 }
 
 struct PendingVideoFrame {
@@ -167,6 +172,7 @@ impl VideoRtp {
             waiting_for_keyframe: false,
             stream_clock_anchor: None,
             total_bytes: 0,
+            twcc_annotations: Vec::with_capacity(TWCC_MAX_ANNOTATIONS),
         }
     }
 
@@ -186,6 +192,27 @@ impl VideoRtp {
     ) -> VideoSampleStats {
         let mut stats = VideoSampleStats::default();
         let mut frame_was_damaged = false;
+
+        // Parse TWCC transport sequence number from header extension.
+        let twcc_ext_id = TWCC_EXT_ID.load(Ordering::Relaxed);
+        if twcc_ext_id > 0 {
+            for ext in &packet.header.extensions {
+                crate::streaming::video::metrics::METRICS
+                    .rtp_ext_any
+                    .fetch_add(1, Ordering::Relaxed);
+                if ext.id == twcc_ext_id && ext.payload.len() >= 2 {
+                    let transport_seq =
+                        u16::from_be_bytes([ext.payload[0], ext.payload[1]]);
+                    if self.twcc_annotations.len() < TWCC_MAX_ANNOTATIONS {
+                        self.twcc_annotations.push((transport_seq, Instant::now()));
+                    }
+                    crate::streaming::video::metrics::METRICS
+                        .twcc_samples
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
         if packet.payload.is_empty() {
             if self.next_sequence == Some(packet.header.sequence_number) {
                 self.next_sequence = Some(packet.header.sequence_number.wrapping_add(1));
@@ -356,8 +383,56 @@ impl VideoRtp {
     pub(crate) fn flush_expired(&mut self, _worker: &VideoDecodeWorker, _kr: &mut bool, _stats: &mut crate::api::streaming::rtc::rtp::VideoSampleStats) {}
     pub(crate) fn reset_lag_anchor(&mut self) { self.stream_clock_anchor = None; }
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
-    pub(crate) fn twcc_median_stride(&self) -> u16 { 0 }
-    pub(crate) fn take_twcc_report(&mut self, _media_ssrc: u32) -> Option<TwccReport> { None }
+    pub(crate) fn twcc_median_stride(&self) -> u16 {
+        let mut gaps: Vec<u16> = self
+            .twcc_annotations
+            .windows(2)
+            .map(|w| w[1].0.wrapping_sub(w[0].0))
+            .collect();
+        if gaps.is_empty() {
+            return 0;
+        }
+        gaps.sort_unstable();
+        gaps[gaps.len() / 2]
+    }
+    pub(crate) fn take_twcc_report(&mut self, media_ssrc: u32) -> Option<TwccReport> {
+        if self.twcc_annotations.is_empty() {
+            return None;
+        }
+        let annotations = std::mem::take(&mut self.twcc_annotations);
+        let base_seq = annotations[0].0;
+        let count = annotations.len() as u16;
+
+        // Build a single RunLengthChunk covering all packets as ReceivedSmallDelta.
+        // This tells the console we received every annotated packet. The recv_deltas
+        // are set to a small constant (1 × 250us = 0.25ms) to satisfy the RTCP format
+        // without precise per-packet timing.
+use rtcp::transport_feedbacks::transport_layer_cc::PacketStatusChunk;
+use rtcp::transport_feedbacks::transport_layer_cc::RecvDelta;
+use rtcp::transport_feedbacks::transport_layer_cc::RunLengthChunk;
+use rtcp::transport_feedbacks::transport_layer_cc::StatusChunkTypeTcc;
+use rtcp::transport_feedbacks::transport_layer_cc::SymbolTypeTcc;
+        let chunks = vec![PacketStatusChunk::RunLengthChunk(RunLengthChunk {
+            type_tcc: StatusChunkTypeTcc::RunLengthChunk,
+            packet_status_symbol: unsafe { std::mem::transmute::<u16, SymbolTypeTcc>(1) },
+            run_length: count,
+        })];
+        let recv_deltas: Vec<_> = (0..count)
+            .map(|_| RecvDelta {
+                type_tcc_packet: unsafe { std::mem::transmute::<u16, SymbolTypeTcc>(1) },
+                delta: 1,
+            })
+            .collect();
+
+        Some(TwccReport {
+            media_ssrc,
+            base_sequence_number: base_seq,
+            packet_status_count: count,
+            reference_time: 0,
+            chunks,
+            recv_deltas,
+        })
+    }
 }
 
 pub(crate) struct TwccReport {
@@ -369,7 +444,9 @@ pub(crate) struct TwccReport {
     pub recv_deltas: Vec<rtcp::transport_feedbacks::transport_layer_cc::RecvDelta>,
 }
 
-pub(crate) fn set_negotiated_twcc_ext_id(_id: u8) {}
+pub(crate) fn set_negotiated_twcc_ext_id(id: u8) {
+    TWCC_EXT_ID.store(id, Ordering::Relaxed);
+}
 
 fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
     let distance = candidate.wrapping_sub(reference);
