@@ -110,6 +110,8 @@ pub struct Settings {
     pub unlock_video_fps: bool,
     /// Shows internal stream/session state on the `Streaming` screen. Off by default.
     pub show_stream_debug_info: bool,
+    /// Shows a minimal FPS + bandwidth overlay at the top-right corner.
+    pub show_fps_overlay: bool,
     /// Home-console LAN IPv4 override (e.g. "192.168.0.123"). When set, home-stream ICE
     /// candidates target this address directly instead of the Teredo-decoded WAN endpoint,
     /// bypassing router NAT hairpin (which can be slow/lossy and cause growing video lag).
@@ -170,6 +172,7 @@ impl Default for Settings {
             locale: Locale::default(),
             unlock_video_fps: false,
             show_stream_debug_info: false,
+            show_fps_overlay: false,
             home_console_ip: None,
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),

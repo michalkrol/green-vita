@@ -18,6 +18,7 @@ pub enum Command {
     SetFrontTouchAuxiliaryButtons { title_id: String, enabled: bool },
     SetUnlockVideoFps(bool),
     SetShowStreamDebugInfo(bool),
+    SetShowFpsOverlay(bool),
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
     SetPeriodicKeyframe(bool),
@@ -38,6 +39,7 @@ enum SettingsRow {
     GameFrontTouchAuxiliary { title_id: String, enabled: bool },
     UnlockVideoFps(bool),
     StreamDebug(bool),
+    StreamFpsOverlay(bool),
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
     PeriodicKeyframe(bool),
@@ -91,6 +93,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::StreamDebug(
         app.settings.show_stream_debug_info,
     ));
+    rows.push(SettingsRow::StreamFpsOverlay(app.settings.show_fps_overlay));
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
     rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
@@ -270,6 +273,18 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     commands.push(
                         Command::SetShowStreamDebugInfo(!app.settings.show_stream_debug_info)
                             .into(),
+                    );
+                }
+                row_index += 1;
+
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.show_fps_overlay,
+                    i18n.text("settings-stream-fps-overlay"),
+                ) {
+                    commands.push(
+                        Command::SetShowFpsOverlay(!app.settings.show_fps_overlay).into(),
                     );
                 }
                 row_index += 1;
@@ -495,7 +510,7 @@ fn host_text(i18n: &I18n, id: &'static str, host: &str) -> String {
 }
 
 const BITRATE_PRESETS_KBPS: &[u32] = &[1_000, 1_500, 2_000, 2_500, 5_000, 10_000, 15_000, 20_000, 30_000, 50_000];
-const DECODE_SLEEP_PRESETS_MS: &[u32] = &[1, 2, 4, 6, 8, 10, 13, 16, 20];
+const DECODE_SLEEP_PRESETS_MS: &[u32] = &[0, 1, 2, 4, 6, 8, 10, 13, 16, 20];
 const DECODE_QUEUE_DEPTH_PRESETS: &[u32] = &[1, 2, 3, 4, 6, 8, 12];
 const SHOCK_DROP_GAP_PRESETS: &[u32] = &[3, 5, 10, 15, 20, 30, 50];
 const SHOCK_COOLDOWN_PRESETS: &[u32] = &[5, 10, 15, 30, 60, 120];
@@ -595,6 +610,9 @@ impl App {
             }
             SettingsRow::StreamDebug(enabled) => {
                 return self.handle_settings_command(Command::SetShowStreamDebugInfo(!enabled));
+            }
+            SettingsRow::StreamFpsOverlay(enabled) => {
+                return self.handle_settings_command(Command::SetShowFpsOverlay(!enabled));
             }
             SettingsRow::VideoBitrateCap(current) => {
                 return self.handle_settings_command(Command::SetVideoBitrateCap(
@@ -718,6 +736,10 @@ impl App {
                 self.settings.show_stream_debug_info = enabled;
                 self.settings.save();
             }
+            Command::SetShowFpsOverlay(enabled) => {
+                self.settings.show_fps_overlay = enabled;
+                self.settings.save();
+            }
             Command::SetVideoBitrateCap(kbps) => {
                 self.settings.video_bitrate_kbps = kbps.min(50_000).max(1_000);
                 self.settings.save();
@@ -731,7 +753,7 @@ impl App {
                 self.settings.save();
             }
             Command::SetVideoDecodeSleepMs(ms) => {
-                self.settings.video_decode_sleep_ms = ms.max(1).min(50);
+                self.settings.video_decode_sleep_ms = ms.max(0).min(50);
                 self.settings.save();
             }
             Command::SetVideoDecodeQueueDepth(depth) => {
