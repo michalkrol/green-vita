@@ -62,42 +62,44 @@ egui::Area::new(egui::Id::new("fps_overlay"))
             }
         }
 
-        // Full debug overlay (left side, one field per line, semi-transparent bg)
+        // Full debug overlay (left side, 2 columns, semi-transparent bg, non-zero hidden)
         if app.settings.show_stream_debug_info && !streaming.status.is_empty() {
-            let mut lines = split_status_lines(&streaming.status);
-            use crate::settings::H264Profile;
-            let profile_label = match app.settings.video_h264_profile {
-                H264Profile::Baseline => "Base",
-                H264Profile::Main => "Main",
-            };
-            lines.push(format!("profile:{}", profile_label));
-            if !lines.is_empty() {
-                let line_height = 13.0;
-                let panel_height = line_height * lines.len() as f32 + 16.0;
-                let panel_width = lines.iter().map(|l| l.len()).max().unwrap_or(0) as f32 * 5.5 + 16.0;
+            let rows = build_debug_rows(&streaming.status, &app.settings);
+
+            if !rows.is_empty() {
+                let row_h = 13.0_f32;
+                let col_w = 185.0_f32;
+                let n = rows.len();
+                let panel_h = row_h * n as f32 + 16.0_f32;
+                let panel_w = col_w * 2.0_f32 + 24.0_f32;
 
                 egui::Area::new(egui::Id::new("debug_overlay"))
                     .order(egui::Order::Foreground)
                     .anchor(egui::Align2::LEFT_TOP, egui::vec2(8.0, 8.0))
                     .show(ctx, |ui| {
-                        // Semi-transparent background
                         let painter = ui.painter();
                         let rect = egui::Rect::from_min_size(
                             egui::pos2(0.0, 0.0),
-                            egui::vec2(panel_width.min(ui.available_width()), panel_height),
+                            egui::vec2(panel_w.min(ui.available_width()), panel_h),
                         );
                         painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(140));
 
-                        let mut y = 8.0;
-                        for line in &lines {
+                        for (i, (left, right)) in rows.iter().enumerate() {
+                            let y = 8.0 + i as f32 * row_h;
                             painter.text(
-                                egui::pos2(8.0, y),
-                                egui::Align2::LEFT_TOP,
-                                line,
-                                egui::FontId::monospace(11.0),
+                                egui::pos2(8.0, y), egui::Align2::LEFT_TOP,
+                                left,
+                                egui::FontId::monospace(10.0),
                                 theme.text.gamma_multiply(0.85),
                             );
-                            y += line_height;
+                            if let Some(r) = right {
+                                painter.text(
+                                    egui::pos2(8.0 + col_w, y), egui::Align2::LEFT_TOP,
+                                    r,
+                                    egui::FontId::monospace(10.0),
+                                    theme.text.gamma_multiply(0.85),
+                                );
+                            }
                         }
                     });
             }
@@ -132,17 +134,35 @@ fn extract_field(status: &str, key: &str) -> String {
     }
 }
 
-/// Split the multi-line status string into individual key:value lines for the debug panel.
-fn split_status_lines(status: &str) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    for segment in status.split_whitespace() {
-        if segment.contains(':') || segment.contains('/') {
-            lines.push(segment.to_owned());
-        } else if let Some(last) = lines.last_mut() {
-            // Attach orphan tokens (like "tw:392/300/1" is one token, fine)
-            last.push(' ');
-            last.push_str(segment);
-        }
-    }
-    lines
+/// Build curated debug rows (2 columns, fixed positions, permanently exclude always-zero fields).
+fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(String, Option<String>)> {
+    let f = |key: &str| extract_field(status, key);
+    let dp = f("d/p:");
+    let da = f("d/a:");
+    let repl = f("repl:");
+    let skip = f("skip:");
+    let hwb = f("hwb:");
+    let lag = f("lag:");
+    let bw = f("bw:");
+    let lagmax = f("lagMax:");
+    let fl = f("fl:");
+    let rs = f("rs:");
+    let tw_s = f("tw:");
+    let st = f("st:");
+    let pick = f("pick:");
+
+    use crate::settings::H264Profile;
+    let profile_label = match settings.video_h264_profile {
+        H264Profile::Baseline => "Base", H264Profile::Main => "Main",
+    };
+
+    vec![
+        (format!("Dec/Pres:{}", dp),   Some(format!("Dec/Pip:{}ms", da))),
+        (format!("Repl:{}", repl),      Some(format!("Skip:{}", skip))),
+        (format!("HWbuf:{}", hwb),      Some(format!("Lag:{}ms", lag))),
+        (format!("BW:{}kbps", bw),      Some(format!("LagMx:{}ms", lagmax))),
+        (format!("Resync:{}", rs),      Some(format!("Flush:{}", fl))),
+        (format!("TWCC:{}", tw_s),      Some(format!("Strd:{}", st))),
+        (format!("Pick:{}us", pick),    Some(format!("Prof:{}", profile_label))),
+    ]
 }
