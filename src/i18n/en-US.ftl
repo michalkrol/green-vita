@@ -26,6 +26,8 @@ settings-unlock-video-fps = Unlock video to 60 FPS
 settings-video-bitrate-cap = Bitrate cap: { $kbps } kbps
 settings-video-h264-profile = H264 profile: { $profile }
 settings-periodic-keyframe = Periodic keyframe (clear artifacts)
+settings-video-decode-sleep-ms = Decode sleep: { $ms }ms (default: 13)
+settings-video-decode-queue-depth = Decode queue: { $slots } slots (default: 6)
 action-back = Back
 
 mode-select-cloud-subtitle = Stream Xbox Cloud Gaming titles

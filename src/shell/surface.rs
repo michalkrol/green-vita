@@ -1,103 +1,75 @@
-use crate::shell::framebuffer::{debug_log, DirectFramebuffers, FB_HEIGHT, FB_STRIDE, FB_WIDTH, NUM_FB};
-use crate::shell::gxm_renderer::GxmRenderer;
-use crate::streaming::video::memory::CdramBlock;
-use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget, NUM_TEXTURES};
 use crate::app::StreamingSession;
+use crate::shell::egui_painter::SdlEguiPainter;
+use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget, NUM_TEXTURES};
 use anyhow::{Context, Result};
+use sdl2::pixels::PixelFormatEnum;
+use sdl2::render::{Canvas, Texture};
+use sdl2::video::Window;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 pub const WIDTH: u32 = 960;
 pub const HEIGHT: u32 = 544;
-const DECODE_PITCH: usize = WIDTH as usize * 2;   // BGR565 = 2 bpp
-const DECODE_SIZE: u32 = DECODE_PITCH as u32 * HEIGHT;
 
 pub struct VitaSurface {
-    canvas: sdl2::render::Canvas<sdl2::video::Window>,
-    fbs: DirectFramebuffers,
-    decode_blocks: [CdramBlock; NUM_TEXTURES],
-    decode_targets: [VideoTextureTarget; NUM_TEXTURES],
-    displayed_fb: Option<usize>,
+    pub(crate) canvas: Canvas<Window>,
+    video_textures: Option<[Texture; NUM_TEXTURES]>,
+    displayed_video_texture: Option<usize>,
     direct_video_output: Option<Arc<DirectVideoOutput>>,
+    video_width: u32,
+    video_height: u32,
     last_frame_id: u64,
-    gxm: GxmRenderer,
+    egui_painter: SdlEguiPainter,
 }
 
 impl VitaSurface {
-pub fn new(video: &sdl2::VideoSubsystem) -> Result<Self> {
+    pub fn new(video: &sdl2::VideoSubsystem) -> Result<Self> {
         let window = video
             .window("GreenVita", WIDTH, HEIGHT)
             .position_centered()
-            .build()?;
+            .build()
+            .context("failed to create SDL Vita window")?;
         let mut canvas = window
             .into_canvas()
             .accelerated()
             .build()
             .map_err(anyhow::Error::msg)
-            .context("failed to create Vita renderer")?;
+            .context("failed to create SDL Vita renderer")?;
         canvas
             .set_logical_size(WIDTH, HEIGHT)
             .map_err(anyhow::Error::msg)
-            .context("failed to set logical render size")?;
-        let fbs = DirectFramebuffers::allocate()?;
-        debug_log("SURFACE: DirectFramebuffers allocated ok");
-        let mut decode_blocks: Vec<CdramBlock> = Vec::with_capacity(NUM_TEXTURES);
-        for i in 0..NUM_TEXTURES {
-            decode_blocks.push(CdramBlock::allocate(&format!("xhome_dec_{i}"), DECODE_SIZE)?);
-            debug_log(&format!("SURFACE: decode_block[{i}] allocated ok"));
-        }
-        let decode_blocks: [CdramBlock; NUM_TEXTURES] = decode_blocks.try_into()
-            .map_err(|_| anyhow::anyhow!("decode_blocks NUM_TEXTURES mismatch"))?;
-        let mut decode_targets = [VideoTextureTarget { ptr: 0, pitch: 0, capacity: 0 }; NUM_TEXTURES];
-        for (i, block) in decode_blocks.iter().enumerate() {
-            decode_targets[i] = VideoTextureTarget {
-                ptr: block.ptr as usize,
-                pitch: DECODE_PITCH as u32,
-                capacity: DECODE_SIZE,
-            };
-        }
+            .context("failed to set Vita logical render size")?;
 
-        debug_log("SURFACE: VitaSurface constructed ok");
-        let gxm = GxmRenderer::new().context("failed to create Gxm renderer")?;
-        debug_log("SURFACE: Gxm renderer ready");
         Ok(Self {
             canvas,
-            fbs,
-            decode_blocks,
-            decode_targets,
-            displayed_fb: None,
+            video_textures: None,
+            displayed_video_texture: None,
             direct_video_output: None,
+            video_width: 0,
+            video_height: 0,
             last_frame_id: 0,
-            gxm,
+            egui_painter: SdlEguiPainter::default(),
         })
     }
 
+    /// Where the video quad lands on screen - accounts for letterboxing, see `fit_rect`.
     pub fn video_rect(&self) -> sdl2::rect::Rect {
-        sdl2::rect::Rect::new(0, 0, WIDTH, HEIGHT)
-    }
-
-    pub fn window(&self) -> &sdl2::video::Window {
-        &self.canvas.window()
+        Self::fit_rect(self.video_width, self.video_height, WIDTH, HEIGHT)
     }
 
     pub fn sync_video_frame(&mut self, streaming: Option<&StreamingSession>) -> Result<()> {
-        debug_log("SYNC: called");
         let Some(streaming) = streaming else {
-            debug_log("SYNC: no streaming, detaching");
             self.detach_direct_video_output();
             return Ok(());
         };
         self.ensure_direct_video_output(streaming)?;
 
         let Some((frame_id, frame)) = streaming.video_frame() else {
-            debug_log("SYNC: no new frame");
             return Ok(());
         };
         if frame_id == self.last_frame_id {
-            debug_log(&format!("SYNC: same frame {frame_id}, skipping"));
             return Ok(());
         }
-        debug_log(&format!("SYNC: new frame {frame_id}, index={}", frame.texture_index));
         let index = frame.texture_index;
         if index >= NUM_TEXTURES {
             anyhow::bail!("decoder returned invalid direct texture index {index}");
@@ -114,8 +86,7 @@ pub fn new(video: &sdl2::VideoSubsystem) -> Result<Self> {
         if let Some(output) = &self.direct_video_output {
             output.mark_displayed(index, frame.generation);
         }
-        self.displayed_fb = Some(index);
-        debug_log(&format!("SYNC: set displayed_fb={index}"));
+        self.displayed_video_texture = Some(index);
         crate::streaming::video::metrics::METRICS
             .presented
             .fetch_add(1, Ordering::Relaxed);
@@ -135,14 +106,58 @@ pub fn new(video: &sdl2::VideoSubsystem) -> Result<Self> {
         if !output.decoder_ready.load(Ordering::Acquire) {
             return Ok(());
         }
-        if output_is_current {
+        if output_is_current && self.video_textures.is_some() {
             return Ok(());
         }
+
         self.detach_direct_video_output();
-        debug_log("ENSURE: calling output.set_targets");
-        output.set_targets(self.decode_targets);
-        debug_log("ENSURE: targets set, storing output");
+        let (width, height) = (output.width, output.height);
+        let create_texture = || {
+            self.canvas
+                .create_texture_streaming(PixelFormatEnum::BGR565, width, height)
+                .map_err(anyhow::Error::msg)
+                .context("failed to create direct SDL BGR565 video texture")
+        };
+        let mut textures: [_; NUM_TEXTURES] = [
+            create_texture()?,
+            create_texture()?,
+            create_texture()?,
+        ];
+        let mut targets: [_; NUM_TEXTURES] = [
+            VideoTextureTarget {
+                ptr: 0,
+                pitch: 0,
+                capacity: 0,
+            },
+            VideoTextureTarget {
+                ptr: 0,
+                pitch: 0,
+                capacity: 0,
+            },
+            VideoTextureTarget {
+                ptr: 0,
+                pitch: 0,
+                capacity: 0,
+            },
+        ];
+        for (index, texture) in textures.iter_mut().enumerate() {
+            texture
+                .with_lock(None, |pixels, pitch| {
+                    targets[index] = VideoTextureTarget {
+                        ptr: pixels.as_mut_ptr() as usize,
+                        pitch: pitch as u32,
+                        capacity: pixels.len().min(u32::MAX as usize) as u32,
+                    };
+                })
+                .map_err(anyhow::Error::msg)
+                .context("failed to lock direct SDL video texture")?;
+        }
+        output.set_targets(targets);
+        self.video_textures = Some(textures);
+        self.displayed_video_texture = None;
         self.direct_video_output = Some(output);
+        self.video_width = width;
+        self.video_height = height;
         self.last_frame_id = 0;
         Ok(())
     }
@@ -151,11 +166,31 @@ pub fn new(video: &sdl2::VideoSubsystem) -> Result<Self> {
         if let Some(output) = self.direct_video_output.take() {
             output.clear_targets();
         }
-        self.displayed_fb = None;
+        self.video_textures = None;
+        self.displayed_video_texture = None;
+        self.video_width = 0;
+        self.video_height = 0;
         self.last_frame_id = 0;
     }
 
     pub fn draw_scene(&mut self, show_video: bool) -> Result<()> {
+        self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);
+        self.canvas.clear();
+
+        if show_video
+            && let Some(index) = self.displayed_video_texture
+            && let Some(texture) = self
+                .video_textures
+                .as_ref()
+                .map(|textures| &textures[index])
+        {
+            let destination = self.video_rect();
+            self.canvas
+                .copy(texture, None, destination)
+                .map_err(anyhow::Error::msg)
+                .context("failed to draw SDL YUV video frame")?;
+        }
+
         Ok(())
     }
 
@@ -165,73 +200,31 @@ pub fn new(video: &sdl2::VideoSubsystem) -> Result<Self> {
         primitives: &[egui::ClippedPrimitive],
         textures_delta: &egui::TexturesDelta,
     ) -> Result<()> {
-        let fb = &mut self.fbs;
-        if let Some(dec_index) = self.displayed_fb {
-            debug_log(&format!("PAINT: stream active, fb={dec_index}"));
-            let dec_block = &self.decode_blocks[dec_index];
-            let dec_src: &[u8] =
-                unsafe { std::slice::from_raw_parts(dec_block.ptr, DECODE_SIZE as usize) };
-            let fb_buf: &mut [u8] = unsafe {
-                std::slice::from_raw_parts_mut(
-                    fb.blocks[dec_index].ptr,
-                    FB_STRIDE * FB_HEIGHT as usize,
-                )
-            };
-            // CPU: convert BGR565 → RGBA8888 (no overlay compositing)
-            convert_bgr565_to_rgba8888(dec_src, fb_buf);
-            // GPU: render overlay with alpha blending on top
-            unsafe {
-                self.gxm.render_overlay(
-                    fb.blocks[dec_index].ptr as *mut u8,
-                    pixels_per_point,
-                    primitives,
-                    textures_delta,
-                );
-            }
-            fb.flip(dec_index);
-        } else {
-            debug_log("PAINT: no stream, dark blue bg + egui overlay via Gxm");
-            // Use framebuffer block 0 as scratch
-            let fb_buf: &mut [u8] = unsafe {
-                std::slice::from_raw_parts_mut(
-                    fb.blocks[0].ptr,
-                    FB_STRIDE * FB_HEIGHT as usize,
-                )
-            };
-            // Fill with opaque dark blue
-            for pixel in fb_buf.chunks_exact_mut(4) {
-                pixel[0] = 0;    // R
-                pixel[1] = 24;   // G
-                pixel[2] = 48;   // B
-                pixel[3] = 255;  // A
-            }
-            unsafe {
-                self.gxm.render_overlay(
-                    fb.blocks[0].ptr as *mut u8,
-                    pixels_per_point,
-                    primitives,
-                    textures_delta,
-                );
-            }
-            fb.flip(0);
-        }
+        self.egui_painter.paint(
+            &mut self.canvas,
+            [WIDTH, HEIGHT],
+            pixels_per_point,
+            primitives,
+            textures_delta,
+        )?;
+        self.canvas.present();
         Ok(())
     }
-}
 
-/// Convert BGR565 → RGBA8888 (no overlay compositing — Gxm handles that).
-fn convert_bgr565_to_rgba8888(dec_buf: &[u8], fb_buf: &mut [u8]) {
-    let pixels = FB_WIDTH as usize * FB_HEIGHT as usize;
-    for i in 0..pixels {
-        let s = i * 2;
-        let d = i * 4;
-        let pixel = dec_buf[s] as u32 | ((dec_buf[s + 1] as u32) << 8);
-        let r5 = pixel & 0x1f;
-        let g6 = (pixel >> 5) & 0x3f;
-        let b5 = (pixel >> 11) & 0x1f;
-        fb_buf[d] = ((r5 * 255 + 15) / 31) as u8;     // R
-        fb_buf[d + 1] = ((g6 * 255 + 31) / 63) as u8;  // G
-        fb_buf[d + 2] = ((b5 * 255 + 15) / 31) as u8;  // B
-        fb_buf[d + 3] = 255;                            // A
+    fn fit_rect(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> sdl2::rect::Rect {
+        if src_w == 0 || src_h == 0 {
+            return sdl2::rect::Rect::new(0, 0, dst_w, dst_h);
+        }
+        let src_aspect = src_w as f32 / src_h as f32;
+        let dst_aspect = dst_w as f32 / dst_h as f32;
+        if src_aspect > dst_aspect {
+            let height = (dst_w as f32 / src_aspect).round() as u32;
+            let y = ((dst_h - height) / 2) as i32;
+            sdl2::rect::Rect::new(0, y, dst_w, height)
+        } else {
+            let width = (dst_h as f32 * src_aspect).round() as u32;
+            let x = ((dst_w - width) / 2) as i32;
+            sdl2::rect::Rect::new(x, 0, width, dst_h)
+        }
     }
 }

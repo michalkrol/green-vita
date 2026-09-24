@@ -21,6 +21,8 @@ pub enum Command {
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
     SetPeriodicKeyframe(bool),
+    SetVideoDecodeSleepMs(u32),
+    SetVideoDecodeQueueDepth(u32),
 }
 
 #[derive(Clone)]
@@ -35,6 +37,8 @@ enum SettingsRow {
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
     PeriodicKeyframe(bool),
+    VideoDecodeSleepMs(u32),
+    VideoDecodeQueueDepth(u32),
     Back,
 }
 
@@ -82,6 +86,8 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
     rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
+    rows.push(SettingsRow::VideoDecodeSleepMs(app.settings.video_decode_sleep_ms));
+    rows.push(SettingsRow::VideoDecodeQueueDepth(app.settings.video_decode_queue_depth));
     rows.push(SettingsRow::Back);
     rows
 }
@@ -301,6 +307,32 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                {
+                    let mut args = FluentArgs::new();
+                    args.set("ms", arg_string(app.settings.video_decode_sleep_ms.to_string()));
+                    let label = i18n.text_with("settings-video-decode-sleep-ms", args);
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = next_decode_sleep_preset(app.settings.video_decode_sleep_ms);
+                        commands.push(Command::SetVideoDecodeSleepMs(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                {
+                    let mut args = FluentArgs::new();
+                    args.set("slots", arg_string(app.settings.video_decode_queue_depth.to_string()));
+                    let label = i18n.text_with("settings-video-decode-queue-depth", args);
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = next_decode_queue_depth_preset(app.settings.video_decode_queue_depth);
+                        commands.push(Command::SetVideoDecodeQueueDepth(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
                 if focus_row(ui, selected_index == row_index, i18n.text("action-back")) {
                     commands.push(InputCommand::Back.into());
                 }
@@ -403,6 +435,8 @@ fn host_text(i18n: &I18n, id: &'static str, host: &str) -> String {
 }
 
 const BITRATE_PRESETS_KBPS: &[u32] = &[1_000, 1_500, 2_000, 2_500, 5_000, 10_000, 15_000, 20_000, 30_000, 50_000];
+const DECODE_SLEEP_PRESETS_MS: &[u32] = &[1, 2, 4, 6, 8, 10, 13, 16, 20];
+const DECODE_QUEUE_DEPTH_PRESETS: &[u32] = &[1, 2, 3, 4, 6, 8, 12];
 
 fn next_bitrate_preset(current: u32) -> u32 {
     BITRATE_PRESETS_KBPS
@@ -410,6 +444,22 @@ fn next_bitrate_preset(current: u32) -> u32 {
         .copied()
         .find(|&p| p > current)
         .unwrap_or(BITRATE_PRESETS_KBPS[0])
+}
+
+fn next_decode_sleep_preset(current: u32) -> u32 {
+    DECODE_SLEEP_PRESETS_MS
+        .iter()
+        .copied()
+        .find(|&p| p > current)
+        .unwrap_or(DECODE_SLEEP_PRESETS_MS[0])
+}
+
+fn next_decode_queue_depth_preset(current: u32) -> u32 {
+    DECODE_QUEUE_DEPTH_PRESETS
+        .iter()
+        .copied()
+        .find(|&p| p > current)
+        .unwrap_or(DECODE_QUEUE_DEPTH_PRESETS[0])
 }
 
 impl App {
@@ -489,6 +539,16 @@ impl App {
             }
             SettingsRow::PeriodicKeyframe(enabled) => {
                 return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
+            }
+            SettingsRow::VideoDecodeSleepMs(current) => {
+                return self.handle_settings_command(Command::SetVideoDecodeSleepMs(
+                    next_decode_sleep_preset(*current),
+                ));
+            }
+            SettingsRow::VideoDecodeQueueDepth(current) => {
+                return self.handle_settings_command(Command::SetVideoDecodeQueueDepth(
+                    next_decode_queue_depth_preset(*current),
+                ));
             }
             SettingsRow::Back => {}
         }
@@ -579,6 +639,14 @@ impl App {
             }
             Command::SetPeriodicKeyframe(enabled) => {
                 self.settings.periodic_keyframe = enabled;
+                self.settings.save();
+            }
+            Command::SetVideoDecodeSleepMs(ms) => {
+                self.settings.video_decode_sleep_ms = ms.max(1).min(50);
+                self.settings.save();
+            }
+            Command::SetVideoDecodeQueueDepth(depth) => {
+                self.settings.video_decode_queue_depth = depth.max(1).min(20);
                 self.settings.save();
             }
         }

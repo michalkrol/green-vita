@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 // Keep only one compressed frame queued at the default 30 FPS to minimize glass-to-glass
 // latency. Faster streams may still use a larger burst buffer.
 const MIN_PENDING_ACCESS_UNITS: usize = 1;
-const MAX_PENDING_ACCESS_UNITS: usize = 6;
 /// Target decoder pace range: 14-20ms (50-71 fps). Wider than the console's
 /// typical 58-62 fps so brief excursions don't clip.
 const MIN_DECODE_INTERVAL_US: u64 = 14_000;
@@ -39,6 +38,7 @@ pub struct VideoDecodeWorker {
     pub(crate) result_ready: Arc<tokio::sync::Notify>,
     /// Updated from RTP timestamps to pace the decoder to the console's encoder rate.
     pub(crate) last_source_duration_us: Arc<AtomicU64>,
+    decode_queue_depth: usize,
 }
 
 impl VideoDecodeWorker {
@@ -70,7 +70,8 @@ impl VideoDecodeWorker {
         }
         let decoder = decoder.expect("decoder created after retry loop");
         direct_output.decoder_ready.store(true, Ordering::Release);
-        let (access_units, worker_access_units) = bounded(MAX_PENDING_ACCESS_UNITS);
+        let queue_depth = config.decode_queue_depth;
+        let (access_units, worker_access_units) = bounded(queue_depth);
         let (commands, worker_commands) = unbounded();
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&generation);
@@ -108,6 +109,7 @@ impl VideoDecodeWorker {
             latest_result,
             result_ready,
             last_source_duration_us: source_duration,
+            decode_queue_depth: queue_depth,
         })
     }
 
@@ -124,7 +126,7 @@ impl VideoDecodeWorker {
         let extra_capacity = source_fps
             .saturating_sub(30)
             .min(25)
-            .saturating_mul((MAX_PENDING_ACCESS_UNITS - MIN_PENDING_ACCESS_UNITS) as u64)
+            .saturating_mul((self.decode_queue_depth - MIN_PENDING_ACCESS_UNITS) as u64)
             .saturating_add(12)
             / 25;
         let pending_limit = MIN_PENDING_ACCESS_UNITS + extra_capacity as usize;
@@ -192,10 +194,9 @@ fn run_decode_loop(
     _source_duration: Arc<AtomicU64>,
 ) {
     use std::thread::sleep;
-    // Pace the decoder at roughly 62 fps (13 ms sleep + ~3 ms decode per frame)
-    // to keep up with the console's 60 fps encoder rate.  This prevents the
-    // access-unit queue from filling (which delays frames and causes drift).
-    const DECODE_PACE_SLEEP: Duration = Duration::from_micros(13_000);
+    // Pace the decoder to keep up with the console's encoder rate.
+    // This prevents the access-unit queue from filling.
+    let pace_sleep = Duration::from_millis(config.decode_sleep_ms as u64);
 
     let mut decoder = Some(initial_decoder);
 
@@ -219,7 +220,7 @@ fn run_decode_loop(
                     access_unit,
                     &direct_output,
                 );
-                sleep(DECODE_PACE_SLEEP);
+                sleep(pace_sleep);
             }
         }
     }

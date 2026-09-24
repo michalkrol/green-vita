@@ -183,4 +183,8 @@ pub struct DecoderConfig {
     pub decode_height: u32,
     pub output_width: u32,
     pub output_height: u32,
+    /// Sleep between decode cycles in ms (default 13). Lower = less latency, more CPU.
+    pub decode_sleep_ms: u32,
+    /// Max pending access units in the decode queue (default 6). Lower = less buffering.
+    pub decode_queue_depth: usize,
 }

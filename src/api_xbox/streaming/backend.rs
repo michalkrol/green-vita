@@ -35,6 +35,8 @@ impl XboxStreamingBackend {
         video_bitrate_kbps: u32,
         video_h264_profile: H264Profile,
         periodic_keyframe: bool,
+        decode_sleep_ms: u32,
+        decode_queue_depth: u32,
     ) -> Result<Self> {
         let worker = worker::spawn(
             stream.clone(),
@@ -42,6 +44,8 @@ impl XboxStreamingBackend {
             video_bitrate_kbps,
             video_h264_profile,
             periodic_keyframe,
+            decode_sleep_ms,
+            decode_queue_depth,
         )?;
         Ok(Self {
             stream,

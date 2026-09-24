@@ -1,10 +1,8 @@
 #[link(name = "SDL2", kind = "static")]
 #[link(name = "SceAudio_stub", kind = "static")]
-#[link(name = "SceDisplay_stub", kind = "static")]
 unsafe extern "C" {}
 
-mod framebuffer;
-mod gxm_renderer;
+mod egui_painter;
 pub(crate) mod power;
 mod surface;
 
@@ -139,7 +137,7 @@ pub async fn run(mut app: App) -> Result<()> {
         if vita_ime_active
             && !video
                 .text_input()
-                .is_screen_keyboard_shown(surface.window())
+                .is_screen_keyboard_shown(surface.canvas.window())
         {
             video.text_input().stop();
             vita_ime_pending = None;

@@ -126,6 +126,10 @@ pub struct Settings {
     /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
     /// cost of slightly larger periodic frames and a small bandwidth overhead.
     pub periodic_keyframe: bool,
+    /// Decode loop sleep in ms (default 13). Lower values reduce latency but increase CPU.
+    pub video_decode_sleep_ms: u32,
+    /// Decode queue depth (default 6). Lower values reduce buffering but risk dropped frames.
+    pub video_decode_queue_depth: u32,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -160,6 +164,8 @@ impl Default for Settings {
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
             periodic_keyframe: true,
+            video_decode_sleep_ms: 13,
+            video_decode_queue_depth: 6,
             game_profiles: HashMap::new(),
         }
     }
