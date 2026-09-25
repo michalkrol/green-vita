@@ -145,6 +145,9 @@ pub struct Settings {
     pub remb_shock_cooldown_secs: u32,
     /// Duration of the REMB low-bitrate pulse in ms (default 100).
     pub remb_shock_duration_ms: u32,
+    /// Globally swaps L1↔L2 and R1↔R2 shoulder/trigger mappings for all streams
+    /// (local xHome and cloud). Per-game profiles override this when set.
+    pub swap_shoulders_and_triggers: bool,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -186,6 +189,7 @@ impl Default for Settings {
             remb_shock_drop_gap: 10,
             remb_shock_cooldown_secs: 15,
             remb_shock_duration_ms: 100,
+            swap_shoulders_and_triggers: false,
             game_profiles: HashMap::new(),
         }
     }

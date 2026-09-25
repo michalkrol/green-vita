@@ -28,6 +28,7 @@ pub enum Command {
     SetRembShockDropGap(u32),
     SetRembShockCooldownSecs(u32),
     SetRembShockDurationMs(u32),
+    SetSwapShouldersTriggers(bool),
 }
 
 #[derive(Clone)]
@@ -49,6 +50,7 @@ enum SettingsRow {
     RembShockDropGap(u32),
     RembShockCooldownSecs(u32),
     RembShockDurationMs(u32),
+    SwapShouldersTriggers(bool),
     Back,
 }
 
@@ -89,6 +91,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
             .is_some_and(|profile| profile.front_touch_auxiliary_buttons);
         rows.push(SettingsRow::GameFrontTouchAuxiliary { title_id, enabled });
     }
+    rows.push(SettingsRow::SwapShouldersTriggers(app.settings.swap_shoulders_and_triggers));
     rows.push(SettingsRow::UnlockVideoFps(app.settings.unlock_video_fps));
     rows.push(SettingsRow::StreamDebug(
         app.settings.show_stream_debug_info,
@@ -253,6 +256,19 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.swap_shoulders_and_triggers,
+                    i18n.text("settings-swap-shoulders-triggers"),
+                ) {
+                    commands.push(
+                        Command::SetSwapShouldersTriggers(!app.settings.swap_shoulders_and_triggers)
+                            .into(),
+                    );
+                }
+                row_index += 1;
+
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
@@ -511,7 +527,7 @@ fn host_text(i18n: &I18n, id: &'static str, host: &str) -> String {
     i18n.text_with(id, args)
 }
 
-const BITRATE_PRESETS_KBPS: &[u32] = &[1_000, 1_500, 2_000, 2_500, 5_000, 10_000, 15_000, 20_000, 30_000, 50_000];
+const BITRATE_PRESETS_KBPS: &[u32] = &[0, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500, 4_000, 4_500, 5_000, 7_500, 10_000, 15_000];
 const DECODE_SLEEP_PRESETS_MS: &[u32] = &[0, 1, 2, 4, 6, 8, 10, 13, 16, 20];
 const DECODE_QUEUE_DEPTH_PRESETS: &[u32] = &[1, 2, 3, 4, 6, 8, 12];
 const SHOCK_DROP_GAP_PRESETS: &[u32] = &[3, 5, 10, 15, 20, 30, 50];
@@ -615,6 +631,9 @@ impl App {
             }
             SettingsRow::StreamFpsOverlay(enabled) => {
                 return self.handle_settings_command(Command::SetShowFpsOverlay(!enabled));
+            }
+            SettingsRow::SwapShouldersTriggers(enabled) => {
+                return self.handle_settings_command(Command::SetSwapShouldersTriggers(!enabled));
             }
             SettingsRow::VideoBitrateCap(current) => {
                 return self.handle_settings_command(Command::SetVideoBitrateCap(
@@ -744,7 +763,7 @@ impl App {
                 self.settings.save();
             }
             Command::SetVideoBitrateCap(kbps) => {
-                self.settings.video_bitrate_kbps = kbps.min(50_000).max(1_000);
+                self.settings.video_bitrate_kbps = kbps.min(15_000);
                 self.settings.save();
             }
             Command::SetVideoH264Profile(profile) => {
@@ -777,6 +796,10 @@ impl App {
             }
             Command::SetRembShockDurationMs(ms) => {
                 self.settings.remb_shock_duration_ms = ms.max(10).min(1000);
+                self.settings.save();
+            }
+            Command::SetSwapShouldersTriggers(enabled) => {
+                self.settings.swap_shoulders_and_triggers = enabled;
                 self.settings.save();
             }
         }

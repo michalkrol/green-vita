@@ -86,7 +86,11 @@ pub(super) fn request_video_fps(sdp: &str, video_fps: u32) -> String {
 pub(super) const VIDEO_BITRATE_CAP_KBPS: u32 = 15_000;
 
 /// Injects `b=AS`/`b=TIAS` bandwidth lines into the H.264 video media section.
+/// Pass 0 to leave the SDP uncapped (no bandwidth lines injected).
 pub(super) fn cap_video_bitrate(sdp: &str, max_kbps: u32) -> String {
+    if max_kbps == 0 {
+        return sdp.to_owned();
+    }
     let newline = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
     let trailing_newline = sdp.ends_with('\n');
     let lines = sdp

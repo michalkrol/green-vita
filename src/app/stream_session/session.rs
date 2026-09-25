@@ -113,7 +113,10 @@ impl StreamingSession {
             .title_id
             .as_deref()
             .and_then(|title_id| settings.game_profile(title_id))
-            .is_some_and(|profile| profile.swap_shoulders_and_triggers);
+            .is_some_and(|profile| profile.swap_shoulders_and_triggers)
+            // When no title_id (local/xHome stream) or no per-game profile,
+            // fall back to the global setting.
+            || settings.swap_shoulders_and_triggers;
         if swap_shoulders_and_triggers {
             std::mem::swap(&mut frame.left_shoulder, &mut frame.left_trigger);
             std::mem::swap(&mut frame.right_shoulder, &mut frame.right_trigger);
