@@ -67,7 +67,7 @@ fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32, video_h2
                 clock_rate: 90_000,
                 channels: 0,
                 sdp_fmtp_line: format!(
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={};max-dpb-size=1;max-bframes=0",
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={}",
                     h264_profile_level_id(video_fps, video_h264_profile)
                 ),
                 rtcp_feedback: vec![
@@ -90,7 +90,7 @@ fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32, video_h2
                     mime_type: MIME_TYPE_H264.to_owned(),
                     clock_rate: 90_000,
                     channels: 0,
-                    sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f;max-dpb-size=1;max-bframes=0".to_owned(),
+                    sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
                     rtcp_feedback: vec![
                         RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
                         RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
