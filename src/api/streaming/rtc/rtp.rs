@@ -395,6 +395,11 @@ impl VideoRtp {
         gaps.sort_unstable();
         gaps[gaps.len() / 2]
     }
+
+    pub(crate) fn twcc_annotation_count(&self) -> usize {
+        self.twcc_annotations.len()
+    }
+
     pub(crate) fn take_twcc_report(&mut self, media_ssrc: u32) -> Option<TwccReport> {
         if self.twcc_annotations.is_empty() {
             return None;

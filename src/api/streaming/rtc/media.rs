@@ -12,7 +12,10 @@ use std::time::{Duration, Instant};
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
 const REMB_INTERVAL: Duration = Duration::from_millis(500);
-const TWCC_INTERVAL: Duration = Duration::from_millis(100);
+const TWCC_INTERVAL: Duration = Duration::from_millis(15);
+/// Send TWCC immediately when this many packets have accumulated since last send,
+/// preventing large I-frame bursts from looking like bufferbloat to the rate controller.
+const TWCC_PACKET_THRESHOLD: usize = 8;
 /// Shared REMB bitrate knob accessible from main thread for shock triggers.
 pub(crate) static REMB_BPS: AtomicU32 = AtomicU32::new(15_000_000);
 pub(crate) const REMB_SHOCK_BPS: u32 = 100_000;
@@ -227,10 +230,14 @@ impl VideoReceiver {
         let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else {
             return;
         };
-        if self
+        // Hybrid trigger: send every 15ms minimum OR immediately when N packets
+        // accumulate (catches I-frame bursts before the console's rate controller
+        // interprets delayed feedback as bufferbloat).
+        let enough_packets = self.rtp.twcc_annotation_count() >= TWCC_PACKET_THRESHOLD;
+        let time_elapsed = self
             .last_twcc_at
-            .is_some_and(|sent_at| now.duration_since(sent_at) < TWCC_INTERVAL)
-        {
+            .is_some_and(|sent_at| now.duration_since(sent_at) < TWCC_INTERVAL);
+        if !enough_packets && time_elapsed {
             return;
         }
         let Some(report) = self.rtp.take_twcc_report(ssrc) else {
