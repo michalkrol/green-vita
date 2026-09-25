@@ -54,11 +54,56 @@ pub(super) fn create(video_fps: u32, video_h264_profile: H264Profile) -> Result<
 }
 
 fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32, video_h264_profile: H264Profile) -> Result<()> {
-    // Bare-minimum offer: H264 video + Opus audio, only the feedback types the
-    // console actually echoes (goog-remb, ccm fir, nack pli). No header extensions,
-    // no RTX, no FEC, no extra profiles — these all proved inert for drift and
-    // some (#21 annotation gating, #35 browser-shape SDP) actively regressive.
+    // Offer the selected profile at PT 102, PLUS a fallback Constrained Baseline
+    // at PT 103. The xHome console requires at least one profile it supports
+    // in the m=video line — offering only one (especially High) gets rejected
+    // with m=video 0 and a BUNDLE/ice-ufrag mismatch downstream.
 
+    // Primary: user-selected profile at PT 102
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: MIME_TYPE_H264.to_owned(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: format!(
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={};max-dpb-size=1;max-bframes=0",
+                    h264_profile_level_id(video_fps, video_h264_profile)
+                ),
+                rtcp_feedback: vec![
+                    RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
+                    RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
+                    RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
+                ],
+            },
+            payload_type: 102,
+        },
+        RtpCodecKind::Video,
+    )?;
+
+    // Fallback: Constrained Baseline at PT 103 (always offered, ensures console
+    // has at least one acceptable codec to pick)
+    if video_h264_profile != H264Profile::Baseline {
+        media_engine.register_codec(
+            RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_H264.to_owned(),
+                    clock_rate: 90_000,
+                    channels: 0,
+                    sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f;max-dpb-size=1;max-bframes=0".to_owned(),
+                    rtcp_feedback: vec![
+                        RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
+                        RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
+                        RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
+                    ],
+                },
+                payload_type: 103,
+            },
+            RtpCodecKind::Video,
+        )?;
+    }
+
+    // Audio codec
     media_engine.register_codec(
         RTCRtpCodecParameters {
             rtp_codec: RTCRtpCodec {
@@ -71,27 +116,6 @@ fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32, video_h2
             payload_type: AUDIO_PAYLOAD_TYPE,
         },
         RtpCodecKind::Audio,
-    )?;
-
-    media_engine.register_codec(
-        RTCRtpCodecParameters {
-            rtp_codec: RTCRtpCodec {
-                mime_type: MIME_TYPE_H264.to_owned(),
-                clock_rate: 90_000,
-                channels: 0,
-                sdp_fmtp_line: format!(
-                    "level-asymmetry-allowed=0;packetization-mode=1;profile-level-id={};max-dpb-size=1;max-bframes=0",
-                    h264_profile_level_id(video_fps, video_h264_profile)
-                ),
-                rtcp_feedback: vec![
-                    RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
-                    RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
-                    RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
-                ],
-            },
-            payload_type: 102,
-        },
-        RtpCodecKind::Video,
     )?;
 
     Ok(())
@@ -119,5 +143,7 @@ mod tests {
         assert_eq!(h264_profile_level_id(60, H264Profile::Baseline), "42e020");
         assert_eq!(h264_profile_level_id(30, H264Profile::Main), "4de01f");
         assert_eq!(h264_profile_level_id(60, H264Profile::Main), "4de020");
+        assert_eq!(h264_profile_level_id(30, H264Profile::High), "64001f");
+        assert_eq!(h264_profile_level_id(60, H264Profile::High), "640020");
     }
 }

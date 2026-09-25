@@ -100,6 +100,8 @@ pub enum H264Profile {
     #[default]
     Baseline,
     Main,
+    /// Known limitation: Xbox One VCE may not encode High profile; selecting it
+    /// may cause a WebRTC ICE-ufrag error. If that happens, switch back to Main.
     High,
 }
 
