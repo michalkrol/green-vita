@@ -205,6 +205,24 @@ pub async fn run(mut app: App) -> Result<()> {
             audio_renderer.submit_packets(streaming.take_audio_packets());
         }
 
+        if app.settings.pure_stream_mode
+            && matches!(&app.state, AppState::Streaming(s) if !s.paused)
+        {
+            // === PURE STREAM PATH (No HUD, Lowest Latency) ===
+            let frame_ready = app
+                .state
+                .streaming()
+                .map(|s| s.frame_ready.clone());
+            if let Some(fr) = frame_ready {
+                // Wait for next frame with 16ms timeout so the loop never
+                // deadlocks even if no frame arrives (e.g. decoder stall).
+                tokio::time::timeout(Duration::from_millis(16), fr.notified()).await.ok();
+                surface.fast_present_video(app.state.streaming())?;
+                continue;
+            }
+        }
+
+        // === COMPOSITE PATH (Debug HUD / Menu Active) ===
         let raw_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,

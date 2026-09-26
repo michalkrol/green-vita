@@ -19,13 +19,8 @@ struct XboxRtcWorkerProvider {
     video_fps: u32,
     video_bitrate_kbps: u32,
     video_h264_profile: H264Profile,
-    periodic_keyframe: bool,
     decode_sleep_ms: u32,
     decode_queue_depth: usize,
-    remb_auto_shock_enabled: bool,
-    remb_shock_drop_gap: u32,
-    remb_shock_cooldown_secs: u32,
-    remb_shock_duration_ms: u32,
 }
 
 impl RtcWorkerProvider for XboxRtcWorkerProvider {
@@ -50,11 +45,6 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
                 decode_sleep_ms: self.decode_sleep_ms,
                 decode_queue_depth: self.decode_queue_depth,
             },
-            periodic_keyframe_enabled: self.periodic_keyframe,
-            remb_auto_shock_enabled: self.remb_auto_shock_enabled,
-            remb_shock_drop_gap: self.remb_shock_drop_gap,
-            remb_shock_cooldown_secs: self.remb_shock_cooldown_secs,
-            remb_shock_duration_ms: self.remb_shock_duration_ms,
         }
     }
 
@@ -78,13 +68,8 @@ pub(crate) fn spawn(
     unlock_video_fps: bool,
     video_bitrate_kbps: u32,
     video_h264_profile: H264Profile,
-    periodic_keyframe: bool,
     decode_sleep_ms: u32,
     decode_queue_depth: u32,
-    remb_auto_shock_enabled: bool,
-    remb_shock_drop_gap: u32,
-    remb_shock_cooldown_secs: u32,
-    remb_shock_duration_ms: u32,
 ) -> Result<RtcWorker> {
     let video_fps = if unlock_video_fps {
         UNLOCKED_VIDEO_FPS
@@ -96,12 +81,7 @@ pub(crate) fn spawn(
         video_fps,
         video_bitrate_kbps,
         video_h264_profile,
-        periodic_keyframe,
         decode_sleep_ms,
         decode_queue_depth: decode_queue_depth as usize,
-        remb_auto_shock_enabled,
-        remb_shock_drop_gap,
-        remb_shock_cooldown_secs,
-        remb_shock_duration_ms,
     })
 }

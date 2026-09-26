@@ -16,7 +16,6 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(300);
-const PERIODIC_KEYFRAME_INTERVAL: Duration = Duration::from_millis(200);
 /// Sustained keyframe demand means recovery is failing; spamming PLI/IDR requests
 /// every 300 ms overloads the console encoder and deepens its backlog.
 const KEYFRAME_STORM_WINDOW: Duration = Duration::from_secs(4);
@@ -44,12 +43,6 @@ pub(crate) struct RtcSessionConfig {
     pub audio_payload_type: u8,
     pub video_fps: u32,
     pub decoder: DecoderConfig,
-    pub periodic_keyframe_enabled: bool,
-    pub remb_auto_shock_enabled: bool,
-    /// New drops since last shock required to trigger another shock.
-    pub remb_shock_drop_gap: u32,
-    pub remb_shock_cooldown_secs: u32,
-    pub remb_shock_duration_ms: u32,
 }
 
 /// Provider-specific hooks invoked by the reusable RTC session.
@@ -91,19 +84,7 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     drops_at_last_flush: u64,
     initial_video_watchdog_started_at: Option<Instant>,
     last_initial_video_keyframe_request: Option<Instant>,
-    last_periodic_keyframe: Option<Instant>,
-    periodic_keyframe_enabled: bool,
     pub status: String,
-    // Auto-REMB-shock config + state
-    remb_auto_shock_enabled: bool,
-    /// Fire a shock every time cumulative drops surpass this many new drops since last shock.
-    remb_shock_drop_gap: u64,
-    /// Minimum seconds between shocks.
-    remb_shock_cooldown: Duration,
-    /// Duration of the REMB low-bitrate pulse.
-    remb_shock_duration: Duration,
-    last_shock_at: Option<Instant>,
-    drops_at_last_shock: u64,
 }
 
 impl<B: RtcSessionBackend> RtcSession<B> {
@@ -131,15 +112,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             drops_at_last_flush: 0,
             initial_video_watchdog_started_at: None,
             last_initial_video_keyframe_request: None,
-            last_periodic_keyframe: None,
-            periodic_keyframe_enabled: config.periodic_keyframe_enabled,
             status: "Negotiating WebRTC connection".to_owned(),
-            remb_auto_shock_enabled: config.remb_auto_shock_enabled,
-            remb_shock_drop_gap: config.remb_shock_drop_gap as u64,
-            remb_shock_cooldown: Duration::from_secs(config.remb_shock_cooldown_secs as u64),
-            remb_shock_duration: Duration::from_millis(config.remb_shock_duration_ms as u64),
-            last_shock_at: None,
-            drops_at_last_shock: 0,
         })
     }
 
@@ -192,15 +165,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             keyframe_requested = true;
         }
         self.request_keyframe(keyframe_requested, now);
-        if self.periodic_keyframe_enabled {
-            self.periodic_keyframe(now);
-        }
-        // REMB-only feedback experiment: RTCP stays otherwise silent (no RR/SR),
-        // but browsers continuously refresh the console's bandwidth estimate and
-        // stay smooth; every prior REMB test was confounded by NACK/loss loops.
+        // REMB+TWCC feedback: keeps the console's bandwidth estimate fresh.
         self.video.send_remb(&mut self.peer, now);
         self.video.send_twcc(&mut self.peer, now);
-        self.auto_remb_shock(now);
         self.maybe_flush_backlog(now);
         if let Some(status) = self.video.status(now) {
             let debug_state = self.backend.debug_state();
@@ -337,17 +304,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         self.video.request_keyframe(&mut self.peer);
     }
 
-    fn periodic_keyframe(&mut self, now: Instant) {
-        if SUPPRESS_KEYFRAME_REQUESTS {
-            return;
-        }
-        if self.last_periodic_keyframe.is_some_and(|last| now.duration_since(last) < PERIODIC_KEYFRAME_INTERVAL) {
-            return;
-        }
-        self.last_periodic_keyframe = Some(now);
-        self.video.request_keyframe(&mut self.peer);
-    }
-
     /// Sustained high measured lag means the console queue is backlogged (client
     /// pipeline is otherwise clean). Force an encoder reconfigure to flush it and
     /// re-anchor the HUD so post-flush drift stays measurable.
@@ -384,34 +340,4 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         self.video.reset_lag_anchor();
     }
 
-    /// Auto-trigger REMB shock when cumulative drops exceed the gap since last shock.
-    /// Rising drops mean the console is shedding backlog — the encoder queue is
-    /// draining, so shocking it via REMB is well-timed to flush the pre-stamp buffer.
-    fn auto_remb_shock(&mut self, now: Instant) {
-        if !self.remb_auto_shock_enabled {
-            return;
-        }
-
-        // Cooldown check
-        if self
-            .last_shock_at
-            .is_some_and(|at| now.duration_since(at) < self.remb_shock_cooldown)
-        {
-            return;
-        }
-
-        let total_drops = self.video.total_drops();
-        let new_drops_since_last_shock = total_drops.saturating_sub(self.drops_at_last_shock);
-        if new_drops_since_last_shock < self.remb_shock_drop_gap {
-            return;
-        }
-
-        eprintln!(
-            "REMB shock: new_drops={new_drops_since_last_shock} gap={} total={total_drops}",
-            self.remb_shock_drop_gap,
-        );
-        self.last_shock_at = Some(now);
-        self.drops_at_last_shock = total_drops;
-        self.video.trigger_remb_shock(self.remb_shock_duration);
     }
-}

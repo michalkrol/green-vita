@@ -5,6 +5,7 @@ use bytes::BytesMut;
 use rtc::sansio::Protocol;
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};
 use std::net::{SocketAddr, UdpSocket as StdUdpSocket};
+use std::os::unix::io::AsRawFd;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -37,6 +38,18 @@ impl RtcTransport {
         std_socket
             .set_nonblocking(true)
             .context("failed to set UDP socket non-blocking")?;
+        // Bump receive buffer to 512 KB to absorb video burst packets without
+        // kernel drops (default Vita socket buffer is ~32 KB).
+        let rcvbuf: i32 = 512 * 1024;
+        unsafe {
+            libc::setsockopt(
+                std_socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_RCVBUF,
+                &rcvbuf as *const i32 as *const libc::c_void,
+                std::mem::size_of::<i32>() as libc::socklen_t,
+            );
+        }
         let socket_addr = std_socket
             .local_addr()
             .context("failed to read local UDP socket address")?;

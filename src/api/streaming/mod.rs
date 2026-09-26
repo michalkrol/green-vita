@@ -29,26 +29,16 @@ impl PlaybackBackend {
         unlock_video_fps: bool,
         video_bitrate_kbps: u32,
         video_h264_profile: H264Profile,
-        periodic_keyframe: bool,
         decode_sleep_ms: u32,
         decode_queue_depth: u32,
-        remb_auto_shock_enabled: bool,
-        remb_shock_drop_gap: u32,
-        remb_shock_cooldown_secs: u32,
-        remb_shock_duration_ms: u32,
     ) -> Result<Self> {
         Ok(Self::Xbox(XboxStreamingBackend::start(
             stream,
             unlock_video_fps,
             video_bitrate_kbps,
             video_h264_profile,
-            periodic_keyframe,
             decode_sleep_ms,
             decode_queue_depth,
-            remb_auto_shock_enabled,
-            remb_shock_drop_gap,
-            remb_shock_cooldown_secs,
-            remb_shock_duration_ms,
         )?))
     }
 

@@ -29,6 +29,7 @@ pub enum Command {
     SetRembShockCooldownSecs(u32),
     SetRembShockDurationMs(u32),
     SetSwapShouldersTriggers(bool),
+    SetPureStreamMode(bool),
 }
 
 #[derive(Clone)]
@@ -51,6 +52,7 @@ enum SettingsRow {
     RembShockCooldownSecs(u32),
     RembShockDurationMs(u32),
     SwapShouldersTriggers(bool),
+    PureStreamMode(bool),
     Back,
 }
 
@@ -91,7 +93,11 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
             .is_some_and(|profile| profile.front_touch_auxiliary_buttons);
         rows.push(SettingsRow::GameFrontTouchAuxiliary { title_id, enabled });
     }
-    rows.push(SettingsRow::SwapShouldersTriggers(app.settings.swap_shoulders_and_triggers));
+    // Global swap-shoulders toggle (for xHome, no title_id). xCloud uses the
+    // per-game GameSwap above instead.
+    if title_id.is_none() {
+        rows.push(SettingsRow::SwapShouldersTriggers(app.settings.swap_shoulders_and_triggers));
+    }
     rows.push(SettingsRow::UnlockVideoFps(app.settings.unlock_video_fps));
     rows.push(SettingsRow::StreamDebug(
         app.settings.show_stream_debug_info,
@@ -99,13 +105,9 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::StreamFpsOverlay(app.settings.show_fps_overlay));
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
-    rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
     rows.push(SettingsRow::VideoDecodeSleepMs(app.settings.video_decode_sleep_ms));
     rows.push(SettingsRow::VideoDecodeQueueDepth(app.settings.video_decode_queue_depth));
-    rows.push(SettingsRow::RembAutoShock(app.settings.remb_auto_shock_enabled));
-    rows.push(SettingsRow::RembShockDropGap(app.settings.remb_shock_drop_gap));
-    rows.push(SettingsRow::RembShockCooldownSecs(app.settings.remb_shock_cooldown_secs));
-    rows.push(SettingsRow::RembShockDurationMs(app.settings.remb_shock_duration_ms));
+    rows.push(SettingsRow::PureStreamMode(app.settings.pure_stream_mode));
     rows.push(SettingsRow::Back);
     rows
 }
@@ -256,18 +258,22 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
-                if checkbox_row(
-                    ui,
-                    selected_index == row_index,
-                    app.settings.swap_shoulders_and_triggers,
-                    i18n.text("settings-swap-shoulders-triggers"),
-                ) {
-                    commands.push(
-                        Command::SetSwapShouldersTriggers(!app.settings.swap_shoulders_and_triggers)
-                            .into(),
-                    );
+                // Global swap shoulders toggle: only for xHome (no title_id).
+                // xCloud uses the per-game GameSwap inside the title_id block above.
+                if title_id.is_none() {
+                    if checkbox_row(
+                        ui,
+                        selected_index == row_index,
+                        app.settings.swap_shoulders_and_triggers,
+                        i18n.text("settings-swap-shoulders-triggers"),
+                    ) {
+                        commands.push(
+                            Command::SetSwapShouldersTriggers(!app.settings.swap_shoulders_and_triggers)
+                                .into(),
+                        );
+                    }
+                    row_index += 1;
                 }
-                row_index += 1;
 
                 if checkbox_row(
                     ui,
@@ -318,8 +324,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 }
                 row_index += 1;
 
-                ui.add_space(14.0);
-                ui.separator();
                 {
                     let label = format!("H264 profile: {}", match app.settings.video_h264_profile {
                         H264Profile::Baseline => "Baseline",
@@ -337,21 +341,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 }
                 row_index += 1;
 
-                ui.add_space(14.0);
-                ui.separator();
-                if checkbox_row(
-                    ui,
-                    selected_index == row_index,
-                    app.settings.periodic_keyframe,
-                    i18n.text("settings-periodic-keyframe"),
-                ) {
-                    commands
-                        .push(Command::SetPeriodicKeyframe(!app.settings.periodic_keyframe).into());
-                }
-                row_index += 1;
-
-                ui.add_space(14.0);
-                ui.separator();
                 {
                     let mut args = FluentArgs::new();
                     args.set("ms", arg_string(app.settings.video_decode_sleep_ms.to_string()));
@@ -363,8 +352,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 }
                 row_index += 1;
 
-                ui.add_space(14.0);
-                ui.separator();
                 {
                     let mut args = FluentArgs::new();
                     args.set("slots", arg_string(app.settings.video_decode_queue_depth.to_string()));
@@ -374,58 +361,23 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                         commands.push(Command::SetVideoDecodeQueueDepth(next).into());
                     }
                 }
-                row_index += 1;
+row_index += 1;
 
                 ui.add_space(14.0);
                 ui.separator();
-                ui.heading(egui::RichText::new("Auto REMB shock").color(theme.text_bright));
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
-                    app.settings.remb_auto_shock_enabled,
-                    i18n.text("settings-remb-auto-shock"),
+                    app.settings.pure_stream_mode,
+                    "Disable UI Overlay during stream".to_owned(),
                 ) {
-                    commands.push(Command::SetRembAutoShock(!app.settings.remb_auto_shock_enabled).into());
+                    commands.push(
+                        Command::SetPureStreamMode(!app.settings.pure_stream_mode)
+                            .into(),
+                    );
                 }
                 row_index += 1;
 
-                if app.settings.remb_auto_shock_enabled {
-                    {
-                        let mut args = FluentArgs::new();
-                        args.set("drops", arg_string(app.settings.remb_shock_drop_gap.to_string()));
-                        let label = i18n.text_with("settings-remb-shock-drop-gap", args);
-                        if focus_row(ui, selected_index == row_index, label) {
-                            let next = next_preset(app.settings.remb_shock_drop_gap, SHOCK_DROP_GAP_PRESETS);
-                            commands.push(Command::SetRembShockDropGap(next).into());
-                        }
-                    }
-                    row_index += 1;
-
-                    {
-                        let mut args = FluentArgs::new();
-                        args.set("secs", arg_string(app.settings.remb_shock_cooldown_secs.to_string()));
-                        let label = i18n.text_with("settings-remb-shock-cooldown", args);
-                        if focus_row(ui, selected_index == row_index, label) {
-                            let next = next_preset(app.settings.remb_shock_cooldown_secs, SHOCK_COOLDOWN_PRESETS);
-                            commands.push(Command::SetRembShockCooldownSecs(next).into());
-                        }
-                    }
-                    row_index += 1;
-
-                    {
-                        let mut args = FluentArgs::new();
-                        args.set("ms", arg_string(app.settings.remb_shock_duration_ms.to_string()));
-                        let label = i18n.text_with("settings-remb-shock-duration", args);
-                        if focus_row(ui, selected_index == row_index, label) {
-                            let next = next_preset(app.settings.remb_shock_duration_ms, SHOCK_DURATION_PRESETS);
-                            commands.push(Command::SetRembShockDurationMs(next).into());
-                        }
-                    }
-                    row_index += 1;
-                }
-
-                ui.add_space(14.0);
-                ui.separator();
                 if focus_row(ui, selected_index == row_index, i18n.text("action-back")) {
                     commands.push(InputCommand::Back.into());
                 }
@@ -632,54 +584,14 @@ impl App {
             SettingsRow::StreamFpsOverlay(enabled) => {
                 return self.handle_settings_command(Command::SetShowFpsOverlay(!enabled));
             }
-            SettingsRow::SwapShouldersTriggers(enabled) => {
+SettingsRow::SwapShouldersTriggers(enabled) => {
                 return self.handle_settings_command(Command::SetSwapShouldersTriggers(!enabled));
             }
-            SettingsRow::VideoBitrateCap(current) => {
-                return self.handle_settings_command(Command::SetVideoBitrateCap(
-                    next_bitrate_preset(*current),
-                ));
-            }
-            SettingsRow::VideoH264Profile(profile) => {
-                let next = match profile {
-                    H264Profile::Baseline => H264Profile::Main,
-                    H264Profile::Main => H264Profile::High,
-                    H264Profile::High => H264Profile::Baseline,
-                };
-                return self.handle_settings_command(Command::SetVideoH264Profile(next));
-            }
-            SettingsRow::PeriodicKeyframe(enabled) => {
-                return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
-            }
-            SettingsRow::VideoDecodeSleepMs(current) => {
-                return self.handle_settings_command(Command::SetVideoDecodeSleepMs(
-                    next_decode_sleep_preset(*current),
-                ));
-            }
-            SettingsRow::VideoDecodeQueueDepth(current) => {
-                return self.handle_settings_command(Command::SetVideoDecodeQueueDepth(
-                    next_decode_queue_depth_preset(*current),
-                ));
-            }
-            SettingsRow::RembAutoShock(enabled) => {
-                return self.handle_settings_command(Command::SetRembAutoShock(!enabled));
-            }
-            SettingsRow::RembShockDropGap(current) => {
-                return self.handle_settings_command(Command::SetRembShockDropGap(
-                    next_preset(*current, SHOCK_DROP_GAP_PRESETS),
-                ));
-            }
-            SettingsRow::RembShockCooldownSecs(current) => {
-                return self.handle_settings_command(Command::SetRembShockCooldownSecs(
-                    next_preset(*current, SHOCK_COOLDOWN_PRESETS),
-                ));
-            }
-            SettingsRow::RembShockDurationMs(current) => {
-                return self.handle_settings_command(Command::SetRembShockDurationMs(
-                    next_preset(*current, SHOCK_DURATION_PRESETS),
-                ));
+            SettingsRow::PureStreamMode(enabled) => {
+                return self.handle_settings_command(Command::SetPureStreamMode(!enabled));
             }
             SettingsRow::Back => {}
+            _ => {}
         }
 
         self.leave_settings();
@@ -770,10 +682,11 @@ impl App {
                 self.settings.video_h264_profile = profile;
                 self.settings.save();
             }
-            Command::SetPeriodicKeyframe(enabled) => {
-                self.settings.periodic_keyframe = enabled;
-                self.settings.save();
-            }
+            Command::SetPeriodicKeyframe(_enabled) => {}
+            Command::SetRembAutoShock(_enabled) => {}
+            Command::SetRembShockDropGap(_gap) => {}
+            Command::SetRembShockCooldownSecs(_secs) => {}
+Command::SetRembShockDurationMs(_ms) => {}
             Command::SetVideoDecodeSleepMs(ms) => {
                 self.settings.video_decode_sleep_ms = ms.max(0).min(50);
                 self.settings.save();
@@ -782,24 +695,16 @@ impl App {
                 self.settings.video_decode_queue_depth = depth.max(1).min(20);
                 self.settings.save();
             }
-            Command::SetRembAutoShock(enabled) => {
-                self.settings.remb_auto_shock_enabled = enabled;
-                self.settings.save();
-            }
-            Command::SetRembShockDropGap(gap) => {
-                self.settings.remb_shock_drop_gap = gap.max(1).min(100);
-                self.settings.save();
-            }
-            Command::SetRembShockCooldownSecs(secs) => {
-                self.settings.remb_shock_cooldown_secs = secs.max(1).min(300);
-                self.settings.save();
-            }
-            Command::SetRembShockDurationMs(ms) => {
-                self.settings.remb_shock_duration_ms = ms.max(10).min(1000);
-                self.settings.save();
-            }
+            Command::SetRembAutoShock(_enabled) => {}
+            Command::SetRembShockDropGap(_gap) => {}
+            Command::SetRembShockCooldownSecs(_secs) => {}
+            Command::SetRembShockDurationMs(_ms) => {}
             Command::SetSwapShouldersTriggers(enabled) => {
                 self.settings.swap_shoulders_and_triggers = enabled;
+                self.settings.save();
+            }
+            Command::SetPureStreamMode(enabled) => {
+                self.settings.pure_stream_mode = enabled;
                 self.settings.save();
             }
         }

@@ -127,27 +127,17 @@ pub struct Settings {
     /// by the Vita's HW decoder. Main and High may produce artifacts or fail entirely
     /// depending on tile/bitstream compatibility.
     pub video_h264_profile: H264Profile,
-    /// When true, a keyframe (IDR) is requested from the console every 200 ms via
-    /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
-    /// cost of slightly larger periodic frames and a small bandwidth overhead.
-    pub periodic_keyframe: bool,
     /// Decode loop sleep in ms (default 13). Lower values reduce latency but increase CPU.
     pub video_decode_sleep_ms: u32,
     /// Decode queue depth (default 6). Lower values reduce buffering but risk dropped frames.
     pub video_decode_queue_depth: u32,
-    /// When enabled, auto-triggers a REMB shock (drops bitrate to 100 kbps briefly)
-    /// when the frame drop rate exceeds the threshold. The goal is to force the
-    /// console's encoder to flush its internal pre-stamp queue.
-    pub remb_auto_shock_enabled: bool,
-    /// New drops since last shock required to trigger another shock (default 10).
-    pub remb_shock_drop_gap: u32,
-    /// Minimum seconds between shocks (default 15).
-    pub remb_shock_cooldown_secs: u32,
-    /// Duration of the REMB low-bitrate pulse in ms (default 100).
-    pub remb_shock_duration_ms: u32,
     /// Globally swaps L1↔L2 and R1↔R2 shoulder/trigger mappings for all streams
     /// (local xHome and cloud). Per-game profiles override this when set.
     pub swap_shoulders_and_triggers: bool,
+    /// When true, bypasses egui rendering entirely and uses event-driven frame
+    /// presentation (no HUD, no VSYNC pacing).  Lowers glass-to-glass latency
+    /// by ~3-5ms and reduces CPU load.  Toggle off to restore debug overlay.
+    pub pure_stream_mode: bool,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -182,14 +172,10 @@ impl Default for Settings {
             home_console_ip: None,
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
-            periodic_keyframe: true,
             video_decode_sleep_ms: 2,
             video_decode_queue_depth: 1,
-            remb_auto_shock_enabled: false,
-            remb_shock_drop_gap: 10,
-            remb_shock_cooldown_secs: 15,
-            remb_shock_duration_ms: 100,
             swap_shoulders_and_triggers: false,
+            pure_stream_mode: false,
             game_profiles: HashMap::new(),
         }
     }
