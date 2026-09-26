@@ -91,7 +91,7 @@ impl VitaSurface {
             .presented
             .fetch_add(1, Ordering::Relaxed);
         self.last_frame_id = frame_id;
-        Ok(())
+Ok(())
     }
 
     fn ensure_direct_video_output(&mut self, streaming: &StreamingSession) -> Result<()> {
@@ -171,6 +171,25 @@ impl VitaSurface {
         self.video_width = 0;
         self.video_height = 0;
         self.last_frame_id = 0;
+    }
+
+    /// Fast path: re-pickup the latest decoded frame and present it immediately,
+    /// skipping the full render pass (no clear, no egui overlay). The previous
+    /// frame's egui content survives outside the video rect, keeping HUD elements
+    /// in the letterbox area stable without flicker.
+    pub fn fast_present_video(&mut self, streaming: Option<&StreamingSession>) -> Result<()> {
+        self.sync_video_frame(streaming)?;
+        if let Some(index) = self.displayed_video_texture
+            && let Some(texture) = self.video_textures.as_ref().map(|t| &t[index])
+        {
+            let destination = self.video_rect();
+            self.canvas
+                .copy(texture, None, destination)
+                .map_err(anyhow::Error::msg)
+                .context("failed to copy video frame")?;
+        }
+        self.canvas.present();
+        Ok(())
     }
 
     pub fn draw_scene(&mut self, show_video: bool) -> Result<()> {

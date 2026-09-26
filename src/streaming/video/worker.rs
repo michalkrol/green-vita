@@ -194,8 +194,6 @@ fn run_decode_loop(
     _source_duration: Arc<AtomicU64>,
 ) {
     use std::thread::sleep;
-    // Pace the decoder to keep up with the console's encoder rate.
-    // This prevents the access-unit queue from filling.
     let pace_sleep = Duration::from_millis(config.decode_sleep_ms as u64);
 
     let mut decoder = Some(initial_decoder);
@@ -220,7 +218,11 @@ fn run_decode_loop(
                     access_unit,
                     &direct_output,
                 );
-                sleep(pace_sleep);
+                // Default 2ms micro-break keeps the HW decoder healthy.
+                // Skip it when backlogged so bursts drain without delay.
+                if access_units.len() < 3 {
+                    sleep(pace_sleep);
+                }
             }
         }
     }

@@ -8,6 +8,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Notify;
 
 #[derive(Clone, Copy)]
 pub(super) enum StreamReturnTarget {
@@ -28,6 +29,9 @@ pub(crate) struct StreamingSession {
     stream_video_size: Option<(u32, u32)>,
     pending_audio_packets: Vec<Bytes>,
     ignore_confirm_until_release: bool,
+    /// Signalled every time `drain_backend_events` picks up a new decoded frame.
+    /// The shell loop awaits this to wake immediately instead of polling at 4ms.
+    pub(crate) frame_ready: Arc<Notify>,
 }
 
 impl StreamingSession {
@@ -77,6 +81,7 @@ impl StreamingSession {
             stream_video_size: None,
             pending_audio_packets: Vec::new(),
             ignore_confirm_until_release: false,
+            frame_ready: Arc::new(Notify::new()),
         })
     }
 
@@ -162,6 +167,9 @@ impl StreamingSession {
         if let Some((frame_id, frame)) = self.backend.take_latest_frame() {
             self.latest_video_frame = Some(frame_id);
             self.current_video_frame = Some(frame);
+            // Wake the shell loop so it presents the new frame immediately
+            // instead of waiting up to 16.7ms for the next poll cycle.
+            self.frame_ready.notify_one();
         }
 
         let mut closed = false;

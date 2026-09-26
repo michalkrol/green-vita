@@ -183,7 +183,7 @@ impl Default for Settings {
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
             periodic_keyframe: true,
-            video_decode_sleep_ms: 0,
+            video_decode_sleep_ms: 2,
             video_decode_queue_depth: 1,
             remb_auto_shock_enabled: false,
             remb_shock_drop_gap: 10,
