@@ -72,6 +72,10 @@ pub(crate) struct VideoRtp {
     stream_clock_anchor: Option<(Instant, u32)>,
     total_bytes: u64,
     twcc_annotations: Vec<(u16, Instant)>,
+    /// Sliding-window bitrate tracker: (bytes_snapshot, timestamp) pairs sampled
+    /// every time current_bitrate_bps() is called.  Used for TWCC delay modulation.
+    bitrate_sample_bytes: u64,
+    bitrate_sample_at: Instant,
 }
 
 struct PendingVideoFrame {
@@ -173,6 +177,8 @@ impl VideoRtp {
             stream_clock_anchor: None,
             total_bytes: 0,
             twcc_annotations: Vec::with_capacity(TWCC_MAX_ANNOTATIONS),
+            bitrate_sample_bytes: 0,
+            bitrate_sample_at: Instant::now(),
         }
     }
 
@@ -400,7 +406,21 @@ impl VideoRtp {
         self.twcc_annotations.len()
     }
 
-    pub(crate) fn take_twcc_report(&mut self, media_ssrc: u32) -> Option<TwccReport> {
+    /// Rolling-window ingess bitrate in bps, sampled on call.
+    /// Returns 0 until enough data accumulates (~250ms of data).
+    pub(crate) fn current_bitrate_bps(&mut self) -> u32 {
+        let now = Instant::now();
+        let elapsed_us = now.duration_since(self.bitrate_sample_at).as_micros() as u64;
+        if elapsed_us < 200_000 {
+            return 0;
+        }
+        let bytes = self.total_bytes.saturating_sub(self.bitrate_sample_bytes);
+        self.bitrate_sample_bytes = self.total_bytes;
+        self.bitrate_sample_at = now;
+        (bytes as u64 * 8_000_000 / elapsed_us.max(1)) as u32
+    }
+
+    pub(crate) fn take_twcc_report(&mut self, media_ssrc: u32, current_bitrate_bps: u32, ceiling_bps: u32) -> Option<TwccReport> {
         if self.twcc_annotations.is_empty() {
             return None;
         }
@@ -408,10 +428,11 @@ impl VideoRtp {
         let base_seq = annotations[0].0;
         let count = annotations.len() as u16;
 
-        // Build a single RunLengthChunk covering all packets as ReceivedSmallDelta.
-        // This tells the console we received every annotated packet. The recv_deltas
-        // are set to a small constant (1 × 250us = 0.25ms) to satisfy the RTCP format
-        // without precise per-packet timing.
+        // When ingess bitrate exceeds the ceiling (3.8 Mbps), inject artificial
+        // inter-arrival delay in the recv_deltas to trigger the Xbox GCC overuse
+        // detector.  A linear ramp from 1 (0.25ms) to 20 (5ms) makes the delay
+        // gradient positive, signaling "path congesting, step bitrate down."
+        // Below ceiling, use minimal deltas (normal, no delay gradient).
 use rtcp::transport_feedbacks::transport_layer_cc::PacketStatusChunk;
 use rtcp::transport_feedbacks::transport_layer_cc::RecvDelta;
 use rtcp::transport_feedbacks::transport_layer_cc::RunLengthChunk;
@@ -422,10 +443,11 @@ use rtcp::transport_feedbacks::transport_layer_cc::SymbolTypeTcc;
             packet_status_symbol: unsafe { std::mem::transmute::<u16, SymbolTypeTcc>(1) },
             run_length: count,
         })];
+        let ramp = current_bitrate_bps > ceiling_bps;
         let recv_deltas: Vec<_> = (0..count)
-            .map(|_| RecvDelta {
+            .map(|i| RecvDelta {
                 type_tcc_packet: unsafe { std::mem::transmute::<u16, SymbolTypeTcc>(1) },
-                delta: 1,
+                delta: if ramp { 1 + (i * 19 / count.max(1)) as i64 } else { 1 },
             })
             .collect();
 

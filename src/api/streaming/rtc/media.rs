@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
-const REMB_INTERVAL: Duration = Duration::from_millis(500);
+const REMB_INTERVAL: Duration = Duration::from_millis(100);
 const TWCC_INTERVAL: Duration = Duration::from_millis(15);
 /// Send TWCC immediately when this many packets have accumulated since last send,
 /// preventing large I-frame bursts from looking like bufferbloat to the rate controller.
@@ -240,7 +240,11 @@ impl VideoReceiver {
         if !enough_packets && time_elapsed {
             return;
         }
-        let Some(report) = self.rtp.take_twcc_report(ssrc) else {
+        let current_bps = self.rtp.current_bitrate_bps();
+        // +10% hysteresis: delay injection only triggers when measured bitrate
+        // exceeds the REMB target by 10%, preventing GCC oscillation from noise.
+        let ceiling_bps = REMB_BPS.load(Ordering::Relaxed).saturating_mul(11) / 10;
+        let Some(report) = self.rtp.take_twcc_report(ssrc, current_bps, ceiling_bps) else {
             return;
         };
         self.last_twcc_at = Some(now);

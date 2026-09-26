@@ -2,10 +2,11 @@ use super::decoder::HwVideoDecoder;
 use super::metrics;
 use super::{DecodedFrame, DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
-use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased, unbounded};
+use crossbeam_channel::{Receiver, Sender};
+use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 // Keep only one compressed frame queued at the default 30 FPS to minimize glass-to-glass
@@ -31,8 +32,11 @@ enum DecoderCommand {
 pub(crate) type DecodeResult = Result<DecodedFrame, String>;
 
 pub struct VideoDecodeWorker {
-    access_units: Sender<QueuedAccessUnit>,
-    commands: Sender<DecoderCommand>,
+    /// Shared decode queue protected by a mutex.  The sender (RTP thread) pushes
+    /// frames; the decode thread pops them.  When full, the oldest is dropped to
+    /// keep latency low (latency-over-throughput policy).
+    access_units: Arc<(Mutex<VecDeque<QueuedAccessUnit>>, Condvar)>,
+    commands: crossbeam_channel::Sender<DecoderCommand>,
     generation: Arc<AtomicU64>,
     pub(crate) latest_result: Arc<Mutex<Option<DecodeResult>>>,
     pub(crate) result_ready: Arc<tokio::sync::Notify>,
@@ -71,8 +75,9 @@ impl VideoDecodeWorker {
         let decoder = decoder.expect("decoder created after retry loop");
         direct_output.decoder_ready.store(true, Ordering::Release);
         let queue_depth = config.decode_queue_depth;
-        let (access_units, worker_access_units) = bounded(queue_depth);
-        let (commands, worker_commands) = unbounded();
+        let access_units = Arc::new((Mutex::new(VecDeque::with_capacity(queue_depth)), Condvar::new()));
+        let worker_access_units = Arc::clone(&access_units);
+        let (commands, worker_commands) = crossbeam_channel::unbounded();
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&generation);
         let latest_result = Arc::new(Mutex::new(None));
@@ -130,24 +135,25 @@ impl VideoDecodeWorker {
             .saturating_add(12)
             / 25;
         let pending_limit = MIN_PENDING_ACCESS_UNITS + extra_capacity as usize;
-        if self.access_units.len() >= pending_limit {
-            metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
-            return false;
-        }
 
         let access_unit = QueuedAccessUnit {
             data,
             queued_at: Instant::now(),
             generation: self.generation.load(Ordering::Acquire),
         };
-        match self.access_units.try_send(access_unit) {
-            Ok(()) => true,
-            Err(TrySendError::Full(_)) => {
-                metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
-                false
-            }
-            Err(TrySendError::Disconnected(_)) => false,
+
+        let (queue, cvar) = &*self.access_units;
+        let mut guard = queue.lock().unwrap();
+        if guard.len() >= pending_limit {
+            // Drop the oldest frame to keep the decoder fed with the freshest
+            // frame.  Prevents backpressure from accumulating a 1-frame ~17ms
+            // queue delay at higher bitrates.
+            metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
+            guard.pop_front();
         }
+        guard.push_back(access_unit);
+        cvar.notify_one();
+        true
     }
 
     pub fn reset_decoder(&self) {
@@ -183,8 +189,8 @@ fn pin_decoder_thread() {
 }
 
 fn run_decode_loop(
-    access_units: Receiver<QueuedAccessUnit>,
-    commands: Receiver<DecoderCommand>,
+    access_units: Arc<(Mutex<VecDeque<QueuedAccessUnit>>, Condvar)>,
+    commands: crossbeam_channel::Receiver<DecoderCommand>,
     generation: Arc<AtomicU64>,
     latest_result: Arc<Mutex<Option<DecodeResult>>>,
     result_ready: Arc<tokio::sync::Notify>,
@@ -199,31 +205,54 @@ fn run_decode_loop(
     let mut decoder = Some(initial_decoder);
 
     loop {
-        select_biased! {
-            recv(commands) -> command => match command {
-                Ok(DecoderCommand::Reset) => {
+        // Check control commands first (non-blocking)
+        if let Ok(cmd) = commands.try_recv() {
+            match cmd {
+                DecoderCommand::Reset => {
                     decoder = None;
                     continue;
                 }
-                Ok(DecoderCommand::Stop) | Err(_) => break,
-            },
-            recv(access_units) -> access_unit => {
-                let Ok(access_unit) = access_unit else { break };
-                decode_queued_access_unit(
-                    &mut decoder,
-                    config,
-                    &generation,
-                    &latest_result,
-                    &result_ready,
-                    access_unit,
-                    &direct_output,
-                );
-                // Default 2ms micro-break keeps the HW decoder healthy.
-                // Skip it when backlogged so bursts drain without delay.
-                if access_units.len() < 3 {
-                    sleep(pace_sleep);
+                DecoderCommand::Stop => break,
+            }
+        }
+
+        // Wait for a frame to decode, or a control message
+        let access_unit = {
+            let (queue, cvar) = &*access_units;
+            let mut guard = queue.lock().unwrap();
+            loop {
+                if let Some(au) = guard.pop_front() {
+                    break au;
+                }
+                // Drop the lock while waiting (Condvar reacquires it)
+                guard = cvar.wait(guard).unwrap();
+                // Re-check control commands after waking
+                if let Ok(cmd) = commands.try_recv() {
+                    match cmd {
+                        DecoderCommand::Reset => {
+                            decoder = None;
+                            // Need to return something — restart the outer loop
+                            continue;
+                        }
+                        DecoderCommand::Stop => return,
+                    }
                 }
             }
+        };
+
+        decode_queued_access_unit(
+            &mut decoder,
+            config,
+            &generation,
+            &latest_result,
+            &result_ready,
+            access_unit,
+            &direct_output,
+        );
+        // Dynamic throttle: skip sleep when backlogged so bursts drain immediately.
+        let (queue, _) = &*access_units;
+        if queue.lock().unwrap().len() < 3 {
+            sleep(pace_sleep);
         }
     }
 }

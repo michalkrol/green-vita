@@ -10,6 +10,9 @@ use crate::streaming::video::{
 };
 use anyhow::Result;
 use rtc::peer_connection::sdp::RTCSessionDescription;
+use std::sync::atomic::Ordering;
+
+use crate::api::streaming::rtc::media::REMB_BPS;
 
 use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use crate::settings::H264Profile;
@@ -76,6 +79,14 @@ pub(crate) fn spawn(
     } else {
         DEFAULT_VIDEO_FPS
     };
+    // Wire REMB target to the user's bandwidth cap setting.
+    // 0 = no cap → 15 Mbps default (console manages its own rate).
+    let remb_bps = if video_bitrate_kbps > 0 {
+        video_bitrate_kbps * 1000
+    } else {
+        15_000_000
+    };
+    REMB_BPS.store(remb_bps, Ordering::Release);
     RtcWorker::spawn(XboxRtcWorkerProvider {
         stream,
         video_fps,
