@@ -251,9 +251,11 @@ fn run_decode_loop(
             access_unit,
             &direct_output,
         );
-        // Dynamic throttle: skip sleep when backlogged so bursts drain immediately.
+        // Dynamic throttle: sleep only when no frames are queued (decoder is
+        // idle anyway).  When a frame is waiting, skip the sleep so the decoder
+        // starts immediately — this is the real "burst drain" path.
         let (queue, _) = &*access_units;
-        if queue.lock().unwrap().len() < 3 {
+        if queue.lock().unwrap().is_empty() {
             sleep(pace_sleep);
         }
     }
