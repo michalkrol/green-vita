@@ -107,9 +107,6 @@ impl VideoReceiver {
             crate::streaming::video::metrics::METRICS
                 .rtp_gaps
                 .fetch_add(sample_stats.nack_requests.len() as u64, Ordering::Relaxed);
-            // Gaps are typically the console skipping AUs under load, not network loss.
-            // NACKing creates a feedback loop (throttled egress → deeper queue → more skips).
-            // Count for diagnostics; do not send NACKs.
         }
         self.stats.dropped = self
             .stats

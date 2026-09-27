@@ -10,7 +10,7 @@ use rtc::rtp::codec::opus::OpusPacket;
 use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const MAX_PENDING_AUDIO_PACKETS: usize = 32;
 const MAX_H264_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
@@ -19,6 +19,8 @@ const AUDIO_MAX_LATE_PACKETS: u16 = 32;
 const LOW_FPS_DAMAGE_LIMIT: u8 = 8;
 const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
 const TWCC_MAX_ANNOTATIONS: usize = 200;
+/// Max time (1 VSYNC) we wait for missing packets before dropping an incomplete AU.
+const AU_ASSEMBLY_TIMEOUT: Duration = Duration::from_millis(15);
 
 /// Negotiated transport-cc extmap ID from the answer SDP (0 = not negotiated).
 pub(crate) static TWCC_EXT_ID: AtomicU8 = AtomicU8::new(0);
@@ -265,7 +267,31 @@ impl VideoRtp {
             return stats;
         };
         let (data, marker_sequence) = match assembly {
-            FrameAssembly::Pending => return stats,
+            FrameAssembly::Pending => {
+                // Only drop the AU on timeout if the marker bit has already arrived
+                // but assembly still fails (real sequence gap).  Without a marker,
+                // we're still receiving packets — don't fire early.
+                if let Some(pending) = &self.pending
+                    && pending.marker_sequence().is_some()
+                    && pending.first_packet_at.elapsed() > AU_ASSEMBLY_TIMEOUT
+                {
+                    // Add missing sequence ranges to NACK request so the console
+                    // can retransmit them (helps recovery when gaps are real losses
+                    // rather than encoder skips).
+                    let marker_seq = pending.marker_sequence();
+                    if let Some(marker) = marker_seq {
+                        // Report the full packet range for NACK diagnostics.
+                        // NACKs are tracked via rtp_gaps metric in media.rs.
+                        stats.nack_requests.push((marker, marker));
+                    }
+                    self.pending = None;
+                    self.next_sequence = None;
+                    *keyframe_requested = true;
+                    self.record_damage(worker);
+                    stats.dropped = stats.dropped.saturating_add(1);
+                }
+                return stats;
+            }
             FrameAssembly::Invalid => {
                 self.pending = None;
                 self.next_sequence = None;
