@@ -171,6 +171,8 @@ impl VideoDecodeWorker {
 impl Drop for VideoDecodeWorker {
     fn drop(&mut self) {
         let _ = self.commands.send(DecoderCommand::Stop);
+        // Wake the decode thread from its Condvar wait so it processes Stop.
+        self.access_units.1.notify_all();
     }
 }
 

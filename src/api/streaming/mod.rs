@@ -31,6 +31,7 @@ impl PlaybackBackend {
         video_h264_profile: H264Profile,
         decode_sleep_ms: u32,
         decode_queue_depth: u32,
+        hard_bandwidth_cap: bool,
     ) -> Result<Self> {
         Ok(Self::Xbox(XboxStreamingBackend::start(
             stream,
@@ -39,6 +40,7 @@ impl PlaybackBackend {
             video_h264_profile,
             decode_sleep_ms,
             decode_queue_depth,
+            hard_bandwidth_cap,
         )?))
     }
 

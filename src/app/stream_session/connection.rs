@@ -238,6 +238,7 @@ impl App {
                     self.settings.video_h264_profile,
                     self.settings.video_decode_sleep_ms,
                     self.settings.video_decode_queue_depth,
+                    self.settings.hard_bandwidth_cap,
                 ) {
                     Ok(streaming) => Ok(AppState::Streaming(streaming)),
                     Err(error) => {

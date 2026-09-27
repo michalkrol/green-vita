@@ -45,6 +45,7 @@ impl StreamingSession {
         video_h264_profile: H264Profile,
         decode_sleep_ms: u32,
         decode_queue_depth: u32,
+        hard_bandwidth_cap: bool,
     ) -> Result<Self> {
         let backend = PlaybackBackend::start_xbox(
             stream,
@@ -53,6 +54,7 @@ impl StreamingSession {
             video_h264_profile,
             decode_sleep_ms,
             decode_queue_depth,
+            hard_bandwidth_cap,
         )?;
         let return_target = match kind {
             StreamKind::Cloud => StreamReturnTarget::Titles(return_selected),

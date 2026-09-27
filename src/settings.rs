@@ -138,6 +138,10 @@ pub struct Settings {
     /// presentation (no HUD, no VSYNC pacing).  Lowers glass-to-glass latency
     /// by ~3-5ms and reduces CPU load.  Toggle off to restore debug overlay.
     pub pure_stream_mode: bool,
+    /// When enabled, sends RTCP REMB at 100ms at the user's configured bitrate
+    /// cap to force the Xbox encoder to stay within the bandwidth ceiling.
+    /// When disabled, REMB stays at 15 Mbps (no client-side cap).
+    pub hard_bandwidth_cap: bool,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -176,6 +180,7 @@ impl Default for Settings {
             video_decode_queue_depth: 1,
             swap_shoulders_and_triggers: false,
             pure_stream_mode: false,
+            hard_bandwidth_cap: false,
             game_profiles: HashMap::new(),
         }
     }

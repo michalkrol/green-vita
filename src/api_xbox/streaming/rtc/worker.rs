@@ -73,6 +73,7 @@ pub(crate) fn spawn(
     video_h264_profile: H264Profile,
     decode_sleep_ms: u32,
     decode_queue_depth: u32,
+    hard_bandwidth_cap: bool,
 ) -> Result<RtcWorker> {
     let video_fps = if unlock_video_fps {
         UNLOCKED_VIDEO_FPS
@@ -81,7 +82,7 @@ pub(crate) fn spawn(
     };
     // Wire REMB target to the user's bandwidth cap setting.
     // 0 = no cap → 15 Mbps default (console manages its own rate).
-    let remb_bps = if video_bitrate_kbps > 0 {
+    let remb_bps = if video_bitrate_kbps > 0 && hard_bandwidth_cap {
         video_bitrate_kbps * 1000
     } else {
         15_000_000

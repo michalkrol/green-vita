@@ -30,6 +30,7 @@ pub enum Command {
     SetRembShockDurationMs(u32),
     SetSwapShouldersTriggers(bool),
     SetPureStreamMode(bool),
+    SetHardBandwidthCap(bool),
 }
 
 #[derive(Clone)]
@@ -53,6 +54,7 @@ enum SettingsRow {
     RembShockDurationMs(u32),
     SwapShouldersTriggers(bool),
     PureStreamMode(bool),
+    HardBandwidthCap(bool),
     Back,
 }
 
@@ -108,6 +110,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::VideoDecodeSleepMs(app.settings.video_decode_sleep_ms));
     rows.push(SettingsRow::VideoDecodeQueueDepth(app.settings.video_decode_queue_depth));
     rows.push(SettingsRow::PureStreamMode(app.settings.pure_stream_mode));
+    rows.push(SettingsRow::HardBandwidthCap(app.settings.hard_bandwidth_cap));
     rows.push(SettingsRow::Back);
     rows
 }
@@ -378,6 +381,19 @@ row_index += 1;
                 }
                 row_index += 1;
 
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.hard_bandwidth_cap,
+                    "Hard bandwidth cap (REMB at cap)".to_owned(),
+                ) {
+                    commands.push(
+                        Command::SetHardBandwidthCap(!app.settings.hard_bandwidth_cap)
+                            .into(),
+                    );
+                }
+                row_index += 1;
+
                 if focus_row(ui, selected_index == row_index, i18n.text("action-back")) {
                     commands.push(InputCommand::Back.into());
                 }
@@ -587,10 +603,12 @@ impl App {
 SettingsRow::SwapShouldersTriggers(enabled) => {
                 return self.handle_settings_command(Command::SetSwapShouldersTriggers(!enabled));
             }
-            SettingsRow::PureStreamMode(enabled) => {
+SettingsRow::PureStreamMode(enabled) => {
                 return self.handle_settings_command(Command::SetPureStreamMode(!enabled));
             }
-            SettingsRow::Back => {}
+            SettingsRow::HardBandwidthCap(enabled) => {
+                return self.handle_settings_command(Command::SetHardBandwidthCap(!enabled));
+            }
             _ => {}
         }
 
@@ -705,6 +723,10 @@ Command::SetRembShockDurationMs(_ms) => {}
             }
             Command::SetPureStreamMode(enabled) => {
                 self.settings.pure_stream_mode = enabled;
+                self.settings.save();
+            }
+            Command::SetHardBandwidthCap(enabled) => {
+                self.settings.hard_bandwidth_cap = enabled;
                 self.settings.save();
             }
         }

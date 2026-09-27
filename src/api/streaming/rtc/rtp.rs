@@ -420,7 +420,7 @@ impl VideoRtp {
         (bytes as u64 * 8_000_000 / elapsed_us.max(1)) as u32
     }
 
-    pub(crate) fn take_twcc_report(&mut self, media_ssrc: u32, current_bitrate_bps: u32, ceiling_bps: u32) -> Option<TwccReport> {
+    pub(crate) fn take_twcc_report(&mut self, media_ssrc: u32, _current_bitrate_bps: u32, _ceiling_bps: u32) -> Option<TwccReport> {
         if self.twcc_annotations.is_empty() {
             return None;
         }
@@ -443,7 +443,12 @@ use rtcp::transport_feedbacks::transport_layer_cc::SymbolTypeTcc;
             packet_status_symbol: unsafe { std::mem::transmute::<u16, SymbolTypeTcc>(1) },
             run_length: count,
         })];
-        let ramp = current_bitrate_bps > ceiling_bps;
+        // TWCC delay modulation — DISABLED.  When re-enabled, setting ramp to
+        // `current_bitrate_bps > ceiling_bps` creates a positive delay gradient
+        // that triggers the Xbox GCC overuse detector, forcing a bitrate step-down.
+        // In practice the 100ms REMB signal alone keeps the cap stable without the
+        // oscillation risk that comes from tight-threshold delay injection.
+        let ramp = false;
         let recv_deltas: Vec<_> = (0..count)
             .map(|i| RecvDelta {
                 type_tcc_packet: unsafe { std::mem::transmute::<u16, SymbolTypeTcc>(1) },

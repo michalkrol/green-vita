@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
-const REMB_INTERVAL: Duration = Duration::from_millis(100);
+const REMB_INTERVAL: Duration = Duration::from_millis(500);
 const TWCC_INTERVAL: Duration = Duration::from_millis(15);
 /// Send TWCC immediately when this many packets have accumulated since last send,
 /// preventing large I-frame bursts from looking like bufferbloat to the rate controller.
@@ -169,12 +169,15 @@ impl VideoReceiver {
         self.rtp.reset_lag_anchor();
     }
 
-    pub(crate) fn request_keyframe(&self, peer: &mut RTCPeerConnection) {        // A PLI needs both identifiers recorded when the remote video track was opened.
+    pub(crate) fn request_keyframe(&self, peer: &mut RTCPeerConnection) {
         if let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc)
             && let Some(mut receiver) = peer.rtp_receiver(receiver_id)
         {
+            // PLI (PT=206, FMT=1) — requests a fresh keyframe from the Xbox encoder.
+            // Use LOCAL_RTCP_SENDER_SSRC to match the SSRC used by other RTCP
+            // feedback (REMB, TWCC) so the console recognizes the feedback source.
             let pli = rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
-                sender_ssrc: 0,
+                sender_ssrc: LOCAL_RTCP_SENDER_SSRC,
                 media_ssrc: ssrc,
             };
             let _ = receiver.write_rtcp(vec![Box::new(pli)]);

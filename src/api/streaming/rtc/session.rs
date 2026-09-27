@@ -15,12 +15,12 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(300);
+const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(150);
 /// Sustained keyframe demand means recovery is failing; spamming PLI/IDR requests
 /// every 300 ms overloads the console encoder and deepens its backlog.
 const KEYFRAME_STORM_WINDOW: Duration = Duration::from_secs(4);
-const KEYFRAME_STORM_THRESHOLD: usize = 3;
-const KEYFRAME_STORM_COOLDOWN: Duration = Duration::from_millis(2000);
+const KEYFRAME_STORM_THRESHOLD: usize = 8;
+const KEYFRAME_STORM_COOLDOWN: Duration = Duration::from_millis(500);
 /// When measured glass lag stays above this for LAG_FLUSH_SUSTAIN, assume the
 /// console-side queue is backlogged and force an encoder reconfigure to flush it.
 const LAG_FLUSH_THRESHOLD_US: u64 = 150_000;
