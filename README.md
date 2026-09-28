@@ -16,10 +16,59 @@
   <img alt="Xbox Cloud Gaming" src="https://img.shields.io/badge/Xbox-Cloud%20Gaming-107c10?style=for-the-badge&logo=xbox&logoColor=white">
 </p>
 
+## Settings guide
 
-> [!NOTE]
-> Local console streaming has not been tested because I do not have a modern
-> Xbox console available for validation.
+### Wi-Fi constraints
+
+The PS Vita's Marvell 88W8787 chip uses 2.4 GHz 802.11n — ~30 Mbps theoretical,
+but ~8 Mbps usable in practice. Higher bitrates exceed the radio's airtime
+capacity, leading to packet drops, macroblock artifacts, and multi-second
+smearing that cannot recover until a full keyframe arrives.
+
+Overclocking the Vita CPU/GPU does not improve streaming performance — the
+bottleneck is WiFi airtime, not decode speed.
+
+Recommendations:
+- Use 20 MHz channel width on your router (not 40 MHz — causes retransmits)
+- Pick an unused channel (1, 6, or 11)
+- Turn Bluetooth OFF in Vita system settings (shares the same 2.4 GHz antenna)
+
+### Stream profiles
+
+The Stream profile setting batch-tunes all advanced parameters for known
+scenarios. Changing profiles requires a video reconnection.
+
+| Profile | Bandwidth | H264 | Sleep | Queue | HUD | When to use |
+|---------|-----------|------|-------|-------|-----|-------------|
+| **Game** | 2000 kbps | Baseline | 0 ms | 1 | Hidden | Fast-paced games (racing, FPS) |
+| **Media** | 7500 kbps | High | 2 ms | 4 | Visible | Slow-paced/story games |
+| **Custom** | User-set | User-set | User-set | User-set | Configurable | Fine-tune every knob |
+
+### Advanced stream config — Custom profile
+
+#### Bandwidth cap
+0 = unlimited, 500-8000 kbps. Lower = faster response, fewer artifacts.
+
+#### H264 profile
+Baseline (fast decode): no B-frames, any queue depth
+Main (balanced): B-frames, requires queue depth 3+
+High (image quality): B-frames + CABAC, requires queue depth 3+
+
+#### Decode sleep
+0 ms = fastest decode, may cause artifacts
+1 ms = safe default
+2 ms = safer on noisy WiFi
+
+#### Decode queue depth
+Main/High profiles require 3+. 1 = ~60ms latency, 8-10 = smoothest.
+
+#### Hard bandwidth cap
+REMB feedback at 500ms to enforce the bandwidth ceiling.
+
+#### Disable UI overlay
+Bypasses egui entirely, saving ~8.3ms display latency (half a frame at 60 FPS).
+
+---
 
 ## Install
 
