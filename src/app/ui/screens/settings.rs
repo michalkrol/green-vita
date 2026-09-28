@@ -612,7 +612,6 @@ SettingsRow::PureStreamMode(enabled) => {
             _ => {}
         }
 
-        self.leave_settings();
         Ok(())
     }
 

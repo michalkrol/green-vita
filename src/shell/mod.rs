@@ -51,6 +51,7 @@ pub async fn run(mut app: App) -> Result<()> {
     let start_time = Instant::now();
     let mut pointer_pos = egui::Pos2::ZERO;
     let mut back_hold_since: Option<Instant> = None;
+    let mut relay_view_until: Option<Instant> = None;
     let mut rear_touch_buttons = RearTouchButtons::default();
     let mut held_direction: Option<InputCommand> = None;
     let mut held_direction_since = Instant::now();
@@ -167,10 +168,19 @@ pub async fn run(mut app: App) -> Result<()> {
 
         // Drives the top-left hold-progress ring in `build_ui`.
         let mut hold_progress: Option<f32> = None;
-        // Back doubles as game input (View) and as the hold-to-pause gesture: withheld while
-        // held, replayed as a single View tap only if released before the pause fired.
+// Back doubles as game input (View) and as the hold-to-pause gesture: withheld
+        // while held.  On short release, we replay the hold for exactly its duration
+        // so the game sees a proper press→release sequence.
         let mut relay_back_as_view = false;
         if matches!(&app.state, AppState::Streaming(streaming) if !streaming.paused) {
+            // Check if we're still replaying a previous short press
+            if let Some(until) = relay_view_until {
+                if Instant::now() < until {
+                    relay_back_as_view = true;
+                } else {
+                    relay_view_until = None;
+                }
+            }
             if back_button_held(controller.as_ref()) {
                 let held_since = *back_hold_since.get_or_insert_with(Instant::now);
                 let elapsed = held_since.elapsed();
@@ -180,9 +190,15 @@ pub async fn run(mut app: App) -> Result<()> {
                 if elapsed >= PAUSE_HOLD_DURATION {
                     direct_commands.push(NavigationCommand::OpenPauseOverlay.into());
                     back_hold_since = None;
+                    relay_view_until = None; // long press → no relay to game
                 }
             } else if let Some(held_since) = back_hold_since.take() {
-                relay_back_as_view = held_since.elapsed() < PAUSE_HOLD_DURATION;
+                // Short press: replay the hold for exactly its duration
+                let elapsed = held_since.elapsed();
+                if elapsed < PAUSE_HOLD_DURATION {
+                    relay_view_until = Some(Instant::now() + elapsed);
+                    relay_back_as_view = true;
+                }
             }
         } else {
             back_hold_since = None;
