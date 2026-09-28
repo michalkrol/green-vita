@@ -105,6 +105,19 @@ pub enum H264Profile {
     High,
 }
 
+/// Pre-configured stream profiles that batch-tune the four advanced parameters
+/// for known latency/quality trade-offs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StreamProfile {
+    /// Low bitrate, Baseline profile, shallow queue — fastest decode, lowest latency.
+    #[default]
+    Game,
+    /// High bitrate, High profile, deep queue — best image quality, higher latency.
+    Media,
+    /// Manual control over bandwidth, profile, sleep, and queue depth.
+    Custom,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -138,6 +151,18 @@ pub struct Settings {
     /// presentation (no HUD, no VSYNC pacing).  Lowers glass-to-glass latency
     /// by ~3-5ms and reduces CPU load.  Toggle off to restore debug overlay.
     pub pure_stream_mode: bool,
+    /// Pre-configured stream profile. Game/Media override the four advanced
+    /// params below and hide them from the UI. Custom exposes them.
+    pub stream_profile: StreamProfile,
+    /// Saved custom preset values — restored when switching back to Custom.
+    pub custom_bitrate_kbps: u32,
+    pub custom_h264_profile: H264Profile,
+    pub custom_decode_sleep_ms: u32,
+    pub custom_decode_queue_depth: u32,
+    pub custom_pure_stream_mode: bool,
+    pub custom_stream_debug_info: bool,
+    pub custom_fps_overlay: bool,
+    pub custom_hard_bandwidth_cap: bool,
     /// When enabled, sends RTCP REMB at 100ms at the user's configured bitrate
     /// cap to force the Xbox encoder to stay within the bandwidth ceiling.
     /// When disabled, REMB stays at 15 Mbps (no client-side cap).
@@ -180,6 +205,15 @@ impl Default for Settings {
             video_decode_queue_depth: 1,
             swap_shoulders_and_triggers: false,
             pure_stream_mode: false,
+            stream_profile: StreamProfile::default(),
+            custom_bitrate_kbps: 2_000,
+            custom_h264_profile: H264Profile::default(),
+            custom_decode_sleep_ms: 1,
+            custom_decode_queue_depth: 1,
+            custom_pure_stream_mode: false,
+            custom_stream_debug_info: false,
+            custom_fps_overlay: false,
+            custom_hard_bandwidth_cap: false,
             hard_bandwidth_cap: false,
             game_profiles: HashMap::new(),
         }
