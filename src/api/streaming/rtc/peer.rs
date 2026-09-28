@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rtc::data_channel::{RTCDataChannelId, RTCDataChannelInit};
+use rtc::interceptor::{Interceptor, Registry};
 use rtc::peer_connection::configuration::RTCConfigurationBuilder;
 use rtc::peer_connection::configuration::media_engine::MediaEngine;
 use rtc::peer_connection::configuration::setting_engine::SettingEngine;
@@ -7,6 +8,21 @@ use rtc::peer_connection::transport::RTCIceServer;
 use rtc::peer_connection::{RTCPeerConnection, RTCPeerConnectionBuilder};
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use std::time::Duration;
+
+/// The interceptor chain fulfilling the minimal RTCP contract (periodic sender/receiver
+/// reports only). The concrete chain type is crate-private upstream, so downstream
+/// code refers to this alias everywhere instead of bare `RTCPeerConnection`.
+pub(crate) type FeedbackChain = impl Interceptor;
+pub(crate) type FeedbackPeer = RTCPeerConnection<FeedbackChain>;
+
+#[define_opaque(FeedbackChain)]
+pub(crate) fn feedback_registry() -> Result<Registry<FeedbackChain>> {
+    // Fully silent registry: transport-cc feedback is generated MANUALLY in
+    // media.rs/rtp.rs (the crate's TwccReceiverInterceptor never fired — tw:0
+    // despite negotiated extmap). RR/SR, REMB and NACK variants all proved
+    // inert or harmful for drift; only manual TWCC + REMB flow.
+    Ok(Registry::new())
+}
 
 pub(crate) struct RtcDataChannelConfig {
     pub label: &'static str,
@@ -22,7 +38,14 @@ pub(crate) fn create(
     media_engine: MediaEngine,
     ice_servers: Vec<RTCIceServer>,
     channels: &[RtcDataChannelConfig],
-) -> Result<(RTCPeerConnection, Vec<RTCDataChannelId>)> {
+) -> Result<(FeedbackPeer, Vec<RTCDataChannelId>)> {
+    // No automatic RTCP (see feedback_registry): pacing guidance comes from the
+    // b=AS/TIAS lines injected into the SDP offer. The full default set
+    // (NACK/TWCC/PLI responses) made lag grow ~10x faster, and even honest
+    // RR/SR reports are now suspected of feeding the console's estimator
+    // misleading jitter figures.
+    let registry = feedback_registry()?;
+
     let configuration = RTCConfigurationBuilder::new()
         .with_ice_servers(ice_servers)
         .build();
@@ -33,6 +56,7 @@ pub(crate) fn create(
         .with_configuration(configuration)
         .with_setting_engine(setting_engine)
         .with_media_engine(media_engine)
+        .with_interceptor_registry(registry)
         .build()
         .context("failed to create rtc peer connection")?;
 

@@ -3,6 +3,7 @@
 unsafe extern "C" {}
 
 mod egui_painter;
+pub(crate) mod power;
 mod surface;
 
 use crate::app::ui::build_ui;
@@ -28,7 +29,7 @@ const DIRECTION_REPEAT_INITIAL_DELAY: Duration = Duration::from_millis(350);
 const DIRECTION_REPEAT_INTERVAL: Duration = Duration::from_millis(90);
 const STREAM_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(4);
 
-pub(crate) const TARGET_FRAME_TIME: Duration = Duration::from_millis(16);
+pub(crate) const TARGET_FRAME_TIME: Duration = Duration::from_micros(16_700);
 
 pub async fn run(mut app: App) -> Result<()> {
     crate::streaming::video::reserve_decoder_cdram();
@@ -50,6 +51,7 @@ pub async fn run(mut app: App) -> Result<()> {
     let start_time = Instant::now();
     let mut pointer_pos = egui::Pos2::ZERO;
     let mut back_hold_since: Option<Instant> = None;
+    let mut relay_view_until: Option<Instant> = None;
     let mut rear_touch_buttons = RearTouchButtons::default();
     let mut held_direction: Option<InputCommand> = None;
     let mut held_direction_since = Instant::now();
@@ -166,10 +168,19 @@ pub async fn run(mut app: App) -> Result<()> {
 
         // Drives the top-left hold-progress ring in `build_ui`.
         let mut hold_progress: Option<f32> = None;
-        // Back doubles as game input (View) and as the hold-to-pause gesture: withheld while
-        // held, replayed as a single View tap only if released before the pause fired.
+// Back doubles as game input (View) and as the hold-to-pause gesture: withheld
+        // while held.  On short release, we replay the hold for exactly its duration
+        // so the game sees a proper press→release sequence.
         let mut relay_back_as_view = false;
         if matches!(&app.state, AppState::Streaming(streaming) if !streaming.paused) {
+            // Check if we're still replaying a previous short press
+            if let Some(until) = relay_view_until {
+                if Instant::now() < until {
+                    relay_back_as_view = true;
+                } else {
+                    relay_view_until = None;
+                }
+            }
             if back_button_held(controller.as_ref()) {
                 let held_since = *back_hold_since.get_or_insert_with(Instant::now);
                 let elapsed = held_since.elapsed();
@@ -179,9 +190,15 @@ pub async fn run(mut app: App) -> Result<()> {
                 if elapsed >= PAUSE_HOLD_DURATION {
                     direct_commands.push(NavigationCommand::OpenPauseOverlay.into());
                     back_hold_since = None;
+                    relay_view_until = None; // long press → no relay to game
                 }
             } else if let Some(held_since) = back_hold_since.take() {
-                relay_back_as_view = held_since.elapsed() < PAUSE_HOLD_DURATION;
+                // Short press: replay the hold for exactly its duration
+                let elapsed = held_since.elapsed();
+                if elapsed < PAUSE_HOLD_DURATION {
+                    relay_view_until = Some(Instant::now() + elapsed);
+                    relay_back_as_view = true;
+                }
             }
         } else {
             back_hold_since = None;
@@ -203,8 +220,25 @@ pub async fn run(mut app: App) -> Result<()> {
         if let Some(streaming) = app.state.streaming_mut() {
             audio_renderer.submit_packets(streaming.take_audio_packets());
         }
-        surface.sync_video_frame(app.state.streaming())?;
 
+        if app.settings.pure_stream_mode
+            && matches!(&app.state, AppState::Streaming(s) if !s.paused)
+        {
+            // === PURE STREAM PATH (No HUD, Lowest Latency) ===
+            let frame_ready = app
+                .state
+                .streaming()
+                .map(|s| s.frame_ready.clone());
+            if let Some(fr) = frame_ready {
+                // Wait for next frame with 16ms timeout so the loop never
+                // deadlocks even if no frame arrives (e.g. decoder stall).
+                tokio::time::timeout(Duration::from_millis(16), fr.notified()).await.ok();
+                surface.fast_present_video(app.state.streaming())?;
+                continue;
+            }
+        }
+
+        // === COMPOSITE PATH (Debug HUD / Menu Active) ===
         let raw_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -234,6 +268,7 @@ pub async fn run(mut app: App) -> Result<()> {
             app.handle_command(command).await?;
         }
 
+        surface.sync_video_frame(app.state.streaming())?;
         surface.draw_scene(matches!(&app.state, AppState::Streaming(_)))?;
         let clipped_primitives =
             egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);

@@ -1,6 +1,6 @@
 use crate::app::StreamingSession;
 use crate::shell::egui_painter::SdlEguiPainter;
-use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget};
+use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget, NUM_TEXTURES};
 use anyhow::{Context, Result};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{Canvas, Texture};
@@ -13,7 +13,7 @@ pub const HEIGHT: u32 = 544;
 
 pub struct VitaSurface {
     pub(crate) canvas: Canvas<Window>,
-    video_textures: Option<[Texture; 2]>,
+    video_textures: Option<[Texture; NUM_TEXTURES]>,
     displayed_video_texture: Option<usize>,
     direct_video_output: Option<Arc<DirectVideoOutput>>,
     video_width: u32,
@@ -71,9 +71,18 @@ impl VitaSurface {
             return Ok(());
         }
         let index = frame.texture_index;
-        if index >= 2 {
+        if index >= NUM_TEXTURES {
             anyhow::bail!("decoder returned invalid direct texture index {index}");
         }
+        crate::streaming::video::metrics::METRICS
+            .display_pickup_us
+            .store(frame.published_at.elapsed().as_micros() as u64, Ordering::Relaxed);
+        crate::streaming::video::metrics::METRICS
+            .display_pickup_max_us
+            .fetch_max(
+                frame.published_at.elapsed().as_micros() as u64,
+                Ordering::Relaxed,
+            );
         if let Some(output) = &self.direct_video_output {
             output.mark_displayed(index, frame.generation);
         }
@@ -82,7 +91,7 @@ impl VitaSurface {
             .presented
             .fetch_add(1, Ordering::Relaxed);
         self.last_frame_id = frame_id;
-        Ok(())
+Ok(())
     }
 
     fn ensure_direct_video_output(&mut self, streaming: &StreamingSession) -> Result<()> {
@@ -109,8 +118,17 @@ impl VitaSurface {
                 .map_err(anyhow::Error::msg)
                 .context("failed to create direct SDL BGR565 video texture")
         };
-        let mut textures = [create_texture()?, create_texture()?];
-        let mut targets = [
+        let mut textures: [_; NUM_TEXTURES] = [
+            create_texture()?,
+            create_texture()?,
+            create_texture()?,
+        ];
+        let mut targets: [_; NUM_TEXTURES] = [
+            VideoTextureTarget {
+                ptr: 0,
+                pitch: 0,
+                capacity: 0,
+            },
             VideoTextureTarget {
                 ptr: 0,
                 pitch: 0,
@@ -153,6 +171,25 @@ impl VitaSurface {
         self.video_width = 0;
         self.video_height = 0;
         self.last_frame_id = 0;
+    }
+
+    /// Fast path: re-pickup the latest decoded frame and present it immediately,
+    /// skipping the full render pass (no clear, no egui overlay). The previous
+    /// frame's egui content survives outside the video rect, keeping HUD elements
+    /// in the letterbox area stable without flicker.
+    pub fn fast_present_video(&mut self, streaming: Option<&StreamingSession>) -> Result<()> {
+        self.sync_video_frame(streaming)?;
+        if let Some(index) = self.displayed_video_texture
+            && let Some(texture) = self.video_textures.as_ref().map(|t| &t[index])
+        {
+            let destination = self.video_rect();
+            self.canvas
+                .copy(texture, None, destination)
+                .map_err(anyhow::Error::msg)
+                .context("failed to copy video frame")?;
+        }
+        self.canvas.present();
+        Ok(())
     }
 
     pub fn draw_scene(&mut self, show_video: bool) -> Result<()> {

@@ -35,14 +35,24 @@ impl Command {
             Self::Resume => "paused-resume",
             Self::Settings => "menu-settings",
             Self::PressGuideButton => "paused-xbox-button",
-            Self::ExitGame => "paused-exit-game",
+            Self::ExitGame => "paused-exit-game", // xCloud uses "Exit Game"; xHome override below
         }
+    }
+
+    /// Override label for xHome (no title_id) — "Disconnect" instead of "Exit Game".
+    fn label(self, i18n: &I18n, is_xhome: bool) -> String {
+        if self == Self::ExitGame && is_xhome {
+            return i18n.text("paused-disconnect-stream");
+        }
+        i18n.text(self.label_key())
     }
 }
 
 pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand>) {
     let theme = Theme::dark();
     let i18n = I18n::new(app.settings.locale);
+    // xHome has no title_id (no cloud game running) — show "Disconnect" instead of "Exit Game"
+    let is_xhome = matches!(&app.state, AppState::Streaming(s) if s.kind == crate::StreamKind::Home);
     let mut frame = egui::Frame::central_panel(&ctx.style());
     frame.fill = egui::Color32::from_rgba_unmultiplied(0x2a, 0x2a, 0x2e, 190);
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
@@ -69,7 +79,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     ui,
                     theme,
                     item.icon(),
-                    &i18n.text(item.label_key()),
+                    &item.label(&i18n, is_xhome),
                     matches!(&app.state, AppState::Streaming(streaming) if streaming.pause_selected == index),
                 ) {
                     commands.push(item.into());

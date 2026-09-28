@@ -22,14 +22,26 @@ settings-rear-touch-enabled = Enable rear touch controls
 settings-cloud-host = Cloud host: { $host }
 settings-home-host = Home host: { $host }
 settings-stream-debug-info = Show streaming debug info
+settings-stream-fps-overlay = Show FPS / bandwidth overlay
+settings-unlock-video-fps = Unlock video to 60 FPS
+settings-video-bitrate-cap = Bitrate cap: { $kbps } kbps
+settings-video-h264-profile = H264 profile: { $profile }
+settings-periodic-keyframe = Periodic keyframe (clear artifacts)
+settings-video-decode-sleep-ms = Decode sleep: { $ms }ms (default: 0)
+settings-video-decode-queue-depth = Decode queue: { $slots } slots (default: 1)
+settings-remb-auto-shock = Auto REMB shock (drop rate trigger)
+settings-remb-shock-drop-gap = Shock drop gap: { $drops } (default: 10)
+settings-remb-shock-cooldown = Shock cooldown: { $secs }s (default: 15)
+settings-remb-shock-duration = Shock duration: { $ms }ms (default: 100)
 action-back = Back
 
 mode-select-cloud-subtitle = Stream Xbox Cloud Gaming titles
-mode-select-home-subtitle = Not implemented yet — use xVita for now
+mode-select-home-subtitle = Stream your local Xbox console — Remote Play
 
 paused-resume = Return to game
 paused-xbox-button = Xbox button
 paused-exit-game = Exit game
+paused-disconnect-stream = Disconnect
 
 streaming-hold-back = Hold Back to open the quick menu
 connecting-cancel = Press Circle to cancel

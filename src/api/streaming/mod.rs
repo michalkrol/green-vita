@@ -4,6 +4,7 @@ pub(crate) mod rtc;
 
 use crate::Stream;
 use crate::api_xbox::streaming::backend::XboxStreamingBackend;
+use crate::settings::H264Profile;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use anyhow::Result;
@@ -23,8 +24,24 @@ pub(crate) enum PlaybackBackend {
 }
 
 impl PlaybackBackend {
-    pub(crate) fn start_xbox(stream: Stream) -> Result<Self> {
-        Ok(Self::Xbox(XboxStreamingBackend::start(stream)?))
+    pub(crate) fn start_xbox(
+        stream: Stream,
+        unlock_video_fps: bool,
+        video_bitrate_kbps: u32,
+        video_h264_profile: H264Profile,
+        decode_sleep_ms: u32,
+        decode_queue_depth: u32,
+        hard_bandwidth_cap: bool,
+    ) -> Result<Self> {
+        Ok(Self::Xbox(XboxStreamingBackend::start(
+            stream,
+            unlock_video_fps,
+            video_bitrate_kbps,
+            video_h264_profile,
+            decode_sleep_ms,
+            decode_queue_depth,
+            hard_bandwidth_cap,
+        )?))
     }
 
     pub(crate) fn try_recv_event(&mut self) -> Option<PlaybackBackendEvent> {

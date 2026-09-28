@@ -95,12 +95,78 @@ impl Locale {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum H264Profile {
+    #[default]
+    Baseline,
+    Main,
+    /// Known limitation: Xbox One VCE may not encode High profile; selecting it
+    /// may cause a WebRTC ICE-ufrag error. If that happens, switch back to Main.
+    High,
+}
+
+/// Pre-configured stream profiles that batch-tune the four advanced parameters
+/// for known latency/quality trade-offs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StreamProfile {
+    /// Low bitrate, Baseline profile, shallow queue — fastest decode, lowest latency.
+    #[default]
+    Game,
+    /// High bitrate, High profile, deep queue — best image quality, higher latency.
+    Media,
+    /// Manual control over bandwidth, profile, sleep, and queue depth.
+    Custom,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub locale: Locale,
+    /// Requests and presents up to 60 FPS. Off by default to protect Vita performance.
+    pub unlock_video_fps: bool,
     /// Shows internal stream/session state on the `Streaming` screen. Off by default.
     pub show_stream_debug_info: bool,
+    /// Shows a minimal FPS + bandwidth overlay at the top-right corner.
+    pub show_fps_overlay: bool,
+    /// Home-console LAN IPv4 override (e.g. "192.168.0.123"). When set, home-stream ICE
+    /// candidates target this address directly instead of the Teredo-decoded WAN endpoint,
+    /// bypassing router NAT hairpin (which can be slow/lossy and cause growing video lag).
+    pub home_console_ip: Option<String>,
+    /// Video bitrate cap in kbps sent to the console via SDP (b=AS / b=TIAS).
+    /// Range 2 000–50 000 kbps, default 15 000 (15 Mbps). Higher values can improve
+    /// visual quality at the cost of network bandwidth and potentially more drift.
+    pub video_bitrate_kbps: u32,
+    /// H264 profile offered to the console in the SDP. Baseline is universally supported
+    /// by the Vita's HW decoder. Main and High may produce artifacts or fail entirely
+    /// depending on tile/bitstream compatibility.
+    pub video_h264_profile: H264Profile,
+    /// Decode loop sleep in ms (default 13). Lower values reduce latency but increase CPU.
+    pub video_decode_sleep_ms: u32,
+    /// Decode queue depth (default 6). Lower values reduce buffering but risk dropped frames.
+    pub video_decode_queue_depth: u32,
+    /// Globally swaps L1↔L2 and R1↔R2 shoulder/trigger mappings for all streams
+    /// (local xHome and cloud). Per-game profiles override this when set.
+    pub swap_shoulders_and_triggers: bool,
+    /// When true, bypasses egui rendering entirely and uses event-driven frame
+    /// presentation (no HUD, no VSYNC pacing).  Lowers glass-to-glass latency
+    /// by ~3-5ms and reduces CPU load.  Toggle off to restore debug overlay.
+    pub pure_stream_mode: bool,
+    /// Pre-configured stream profile. Game/Media override the four advanced
+    /// params below and hide them from the UI. Custom exposes them.
+    pub stream_profile: StreamProfile,
+    /// Saved custom preset values — restored when switching back to Custom.
+    pub custom_bitrate_kbps: u32,
+    pub custom_h264_profile: H264Profile,
+    pub custom_decode_sleep_ms: u32,
+    pub custom_decode_queue_depth: u32,
+    pub custom_pure_stream_mode: bool,
+    pub custom_stream_debug_info: bool,
+    pub custom_fps_overlay: bool,
+    pub custom_hard_bandwidth_cap: bool,
+    /// When enabled, sends RTCP REMB at 100ms at the user's configured bitrate
+    /// cap to force the Xbox encoder to stay within the bandwidth ceiling.
+    /// When disabled, REMB stays at 15 Mbps (no client-side cap).
+    pub hard_bandwidth_cap: bool,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -129,7 +195,26 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             locale: Locale::default(),
+            unlock_video_fps: false,
             show_stream_debug_info: false,
+            show_fps_overlay: false,
+            home_console_ip: None,
+            video_bitrate_kbps: 2_000,
+            video_h264_profile: H264Profile::default(),
+            video_decode_sleep_ms: 1,
+            video_decode_queue_depth: 1,
+            swap_shoulders_and_triggers: false,
+            pure_stream_mode: false,
+            stream_profile: StreamProfile::default(),
+            custom_bitrate_kbps: 2_000,
+            custom_h264_profile: H264Profile::default(),
+            custom_decode_sleep_ms: 1,
+            custom_decode_queue_depth: 1,
+            custom_pure_stream_mode: false,
+            custom_stream_debug_info: false,
+            custom_fps_overlay: false,
+            custom_hard_bandwidth_cap: false,
+            hard_bandwidth_cap: false,
             game_profiles: HashMap::new(),
         }
     }

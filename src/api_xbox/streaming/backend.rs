@@ -3,6 +3,7 @@ use crate::api::streaming::PlaybackBackendEvent;
 use crate::api::streaming::rtc::worker::{RtcWorker, RtcWorkerEvent};
 use crate::api_xbox::streaming::rtc::worker;
 use crate::jobs::{PollJob, poll_job};
+use crate::settings::H264Profile;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use anyhow::Result;
@@ -28,8 +29,24 @@ pub(crate) struct XboxStreamingBackend {
 }
 
 impl XboxStreamingBackend {
-    pub(crate) fn start(stream: Stream) -> Result<Self> {
-        let worker = worker::spawn(stream.clone())?;
+    pub(crate) fn start(
+        stream: Stream,
+        unlock_video_fps: bool,
+        video_bitrate_kbps: u32,
+        video_h264_profile: H264Profile,
+        decode_sleep_ms: u32,
+        decode_queue_depth: u32,
+        hard_bandwidth_cap: bool,
+    ) -> Result<Self> {
+        let worker = worker::spawn(
+            stream.clone(),
+            unlock_video_fps,
+            video_bitrate_kbps,
+            video_h264_profile,
+            decode_sleep_ms,
+            decode_queue_depth,
+            hard_bandwidth_cap,
+        )?;
         Ok(Self {
             stream,
             worker,
@@ -149,6 +166,7 @@ impl XboxStreamingBackend {
                             candidate.sdp_mline_index.unwrap_or(0)
                         );
                         if self.remote_ice_candidates.insert(key) {
+                            eprintln!("Remote ICE candidate: {}", candidate.candidate);
                             self.worker.add_remote_candidate(candidate);
                         }
                     }

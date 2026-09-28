@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "green-vita"
-version = "0.1.8"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -839,10 +839,12 @@ dependencies = [
  "fluent-bundle",
  "h264-reader",
  "image",
+ "libc",
  "qrcode",
  "reqwest",
  "ring",
  "rtc",
+ "rtc-interceptor",
  "rtc-media",
  "rtc-rtcp",
  "sdl2",

@@ -4,6 +4,7 @@ use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::smooth_scroll_area;
 use crate::i18n::{I18n, arg_string};
+use crate::settings::{H264Profile, StreamProfile};
 use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
@@ -15,7 +16,22 @@ pub enum Command {
     SetSwapShouldersAndTriggers { title_id: String, enabled: bool },
     SetRearTouchEnabled { title_id: String, enabled: bool },
     SetFrontTouchAuxiliaryButtons { title_id: String, enabled: bool },
+    SetUnlockVideoFps(bool),
     SetShowStreamDebugInfo(bool),
+    SetShowFpsOverlay(bool),
+    SetVideoBitrateCap(u32),
+    SetVideoH264Profile(H264Profile),
+    SetPeriodicKeyframe(bool),
+    SetVideoDecodeSleepMs(u32),
+    SetVideoDecodeQueueDepth(u32),
+    SetRembAutoShock(bool),
+    SetRembShockDropGap(u32),
+    SetRembShockCooldownSecs(u32),
+    SetRembShockDurationMs(u32),
+    SetSwapShouldersTriggers(bool),
+    SetPureStreamMode(bool),
+    SetHardBandwidthCap(bool),
+    SetStreamProfile(StreamProfile),
 }
 
 #[derive(Clone)]
@@ -25,7 +41,22 @@ enum SettingsRow {
     GameSwap { title_id: String, enabled: bool },
     GameRearTouch { title_id: String, enabled: bool },
     GameFrontTouchAuxiliary { title_id: String, enabled: bool },
+    UnlockVideoFps(bool),
     StreamDebug(bool),
+    StreamFpsOverlay(bool),
+    VideoBitrateCap(u32),
+    VideoH264Profile(H264Profile),
+    PeriodicKeyframe(bool),
+    VideoDecodeSleepMs(u32),
+    VideoDecodeQueueDepth(u32),
+    RembAutoShock(bool),
+    RembShockDropGap(u32),
+    RembShockCooldownSecs(u32),
+    RembShockDurationMs(u32),
+    SwapShouldersTriggers(bool),
+    PureStreamMode(bool),
+    HardBandwidthCap(bool),
+    StreamProfile(StreamProfile),
     Back,
 }
 
@@ -66,9 +97,28 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
             .is_some_and(|profile| profile.front_touch_auxiliary_buttons);
         rows.push(SettingsRow::GameFrontTouchAuxiliary { title_id, enabled });
     }
-    rows.push(SettingsRow::StreamDebug(
-        app.settings.show_stream_debug_info,
-    ));
+    // Global swap-shoulders toggle (for xHome, no title_id). xCloud uses the
+    // per-game GameSwap above instead.
+    if title_id.is_none() {
+        rows.push(SettingsRow::SwapShouldersTriggers(app.settings.swap_shoulders_and_triggers));
+    }
+rows.push(SettingsRow::UnlockVideoFps(app.settings.unlock_video_fps));
+    // Stream profile: master switch for latency/quality trade-off
+    rows.push(SettingsRow::StreamProfile(app.settings.stream_profile));
+    // Advanced params only in Custom mode. Game/Media use fixed presets.
+    if app.settings.stream_profile == StreamProfile::Custom {
+        rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
+        rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
+        rows.push(SettingsRow::VideoDecodeSleepMs(app.settings.video_decode_sleep_ms));
+        rows.push(SettingsRow::VideoDecodeQueueDepth(app.settings.video_decode_queue_depth));
+        rows.push(SettingsRow::PureStreamMode(app.settings.pure_stream_mode));
+        // Debug/FPS overlay only show when HUD is active
+        if !app.settings.pure_stream_mode {
+            rows.push(SettingsRow::StreamDebug(app.settings.show_stream_debug_info));
+            rows.push(SettingsRow::StreamFpsOverlay(app.settings.show_fps_overlay));
+        }
+        rows.push(SettingsRow::HardBandwidthCap(app.settings.hard_bandwidth_cap));
+    }
     rows.push(SettingsRow::Back);
     rows
 }
@@ -219,21 +269,160 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                // Global swap shoulders toggle: only for xHome (no title_id).
+                // xCloud uses the per-game GameSwap inside the title_id block above.
+                if title_id.is_none() {
+                    if checkbox_row(
+                        ui,
+                        selected_index == row_index,
+                        app.settings.swap_shoulders_and_triggers,
+                        i18n.text("settings-swap-shoulders-triggers"),
+                    ) {
+                        commands.push(
+                            Command::SetSwapShouldersTriggers(!app.settings.swap_shoulders_and_triggers)
+                                .into(),
+                        );
+                    }
+                    row_index += 1;
+                }
+
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
-                    app.settings.show_stream_debug_info,
-                    i18n.text("settings-stream-debug-info"),
+                    app.settings.unlock_video_fps,
+                    i18n.text("settings-unlock-video-fps"),
+                ) {
+                    commands
+                        .push(Command::SetUnlockVideoFps(!app.settings.unlock_video_fps).into());
+                }
+                row_index += 1;
+
+                {
+                    let label = format!("Stream profile: {}", match app.settings.stream_profile {
+                        StreamProfile::Game => "Game (low latency)",
+                        StreamProfile::Media => "Media (image quality)",
+                        StreamProfile::Custom => "Custom",
+                    });
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.stream_profile {
+                            StreamProfile::Game => StreamProfile::Media,
+                            StreamProfile::Media => StreamProfile::Custom,
+                            StreamProfile::Custom => StreamProfile::Game,
+                        };
+                        commands.push(Command::SetStreamProfile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                if app.settings.stream_profile == StreamProfile::Custom {
+                    ui.add_space(14.0);
+                    ui.separator();
+                    {
+                        let mut args = FluentArgs::new();
+                        args.set("kbps", arg_string(app.settings.video_bitrate_kbps.to_string()));
+                        let label = i18n.text_with("settings-video-bitrate-cap", args);
+                        if focus_row(ui, selected_index == row_index, label) {
+                            let next = next_bitrate_preset(app.settings.video_bitrate_kbps);
+                            commands.push(Command::SetVideoBitrateCap(next).into());
+                        }
+}
+                row_index += 1;
+
+                {
+                    let label = format!("H264 profile: {}", match app.settings.video_h264_profile {
+                        H264Profile::Baseline => "Baseline (fast decode)",
+                        H264Profile::Main => "Main (balanced)",
+                        H264Profile::High => "High (image quality)",
+                    });
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.video_h264_profile {
+                            H264Profile::Baseline => H264Profile::Main,
+                            H264Profile::Main => H264Profile::High,
+                            H264Profile::High => H264Profile::Baseline,
+                        };
+                        commands.push(Command::SetVideoH264Profile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                {
+                    let mut args = FluentArgs::new();
+                    args.set("ms", arg_string(app.settings.video_decode_sleep_ms.to_string()));
+                    let label = i18n.text_with("settings-video-decode-sleep-ms", args);
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = next_decode_sleep_preset(app.settings.video_decode_sleep_ms);
+                        commands.push(Command::SetVideoDecodeSleepMs(next).into());
+                    }
+                }
+                row_index += 1;
+
+                {
+                    let mut args = FluentArgs::new();
+                    args.set("slots", arg_string(app.settings.video_decode_queue_depth.to_string()));
+                    let label = i18n.text_with("settings-video-decode-queue-depth", args);
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = next_decode_queue_depth_preset(app.settings.video_decode_queue_depth);
+                        commands.push(Command::SetVideoDecodeQueueDepth(next).into());
+                    }
+                }
+row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.pure_stream_mode,
+                    "Disable UI Overlay during stream".to_owned(),
                 ) {
                     commands.push(
-                        Command::SetShowStreamDebugInfo(!app.settings.show_stream_debug_info)
+                        Command::SetPureStreamMode(!app.settings.pure_stream_mode)
                             .into(),
                     );
                 }
                 row_index += 1;
 
-                ui.add_space(14.0);
-                ui.separator();
+                if !app.settings.pure_stream_mode {
+                    if checkbox_row(
+                        ui,
+                        selected_index == row_index,
+                        app.settings.show_stream_debug_info,
+                        i18n.text("settings-stream-debug-info"),
+                    ) {
+                        commands.push(
+                            Command::SetShowStreamDebugInfo(!app.settings.show_stream_debug_info)
+                                .into(),
+                        );
+                    }
+                    row_index += 1;
+
+                    if checkbox_row(
+                        ui,
+                        selected_index == row_index,
+                        app.settings.show_fps_overlay,
+                        i18n.text("settings-stream-fps-overlay"),
+                    ) {
+                        commands.push(
+                            Command::SetShowFpsOverlay(!app.settings.show_fps_overlay).into(),
+                        );
+                    }
+                    row_index += 1;
+                }
+
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.hard_bandwidth_cap,
+                    "Hard bandwidth cap (REMB at cap)".to_owned(),
+                ) {
+                    commands.push(
+                        Command::SetHardBandwidthCap(!app.settings.hard_bandwidth_cap)
+                            .into(),
+                    );
+                }
+                row_index += 1;
+                } // end Custom-only params
+
                 if focus_row(ui, selected_index == row_index, i18n.text("action-back")) {
                     commands.push(InputCommand::Back.into());
                 }
@@ -335,6 +524,45 @@ fn host_text(i18n: &I18n, id: &'static str, host: &str) -> String {
     i18n.text_with(id, args)
 }
 
+const BITRATE_PRESETS_KBPS: &[u32] = &[0, 500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500, 4_000, 4_500, 5_000, 5_500, 6_000, 6_500, 7_000, 7_500, 8_000];
+const DECODE_SLEEP_PRESETS_MS: &[u32] = &[0, 1, 2, 4, 6, 8, 10, 13, 16, 20];
+const DECODE_QUEUE_DEPTH_PRESETS: &[u32] = &[1, 2, 3, 4, 6, 8, 12];
+const SHOCK_DROP_GAP_PRESETS: &[u32] = &[3, 5, 10, 15, 20, 30, 50];
+const SHOCK_COOLDOWN_PRESETS: &[u32] = &[5, 10, 15, 30, 60, 120];
+const SHOCK_DURATION_PRESETS: &[u32] = &[50, 100, 150, 200, 300];
+
+fn next_bitrate_preset(current: u32) -> u32 {
+    BITRATE_PRESETS_KBPS
+        .iter()
+        .copied()
+        .find(|&p| p > current)
+        .unwrap_or(BITRATE_PRESETS_KBPS[0])
+}
+
+fn next_decode_sleep_preset(current: u32) -> u32 {
+    DECODE_SLEEP_PRESETS_MS
+        .iter()
+        .copied()
+        .find(|&p| p > current)
+        .unwrap_or(DECODE_SLEEP_PRESETS_MS[0])
+}
+
+fn next_decode_queue_depth_preset(current: u32) -> u32 {
+    DECODE_QUEUE_DEPTH_PRESETS
+        .iter()
+        .copied()
+        .find(|&p| p > current)
+        .unwrap_or(DECODE_QUEUE_DEPTH_PRESETS[0])
+}
+
+fn next_preset(current: u32, presets: &[u32]) -> u32 {
+    presets
+        .iter()
+        .copied()
+        .find(|&p| p > current)
+        .unwrap_or(presets[0])
+}
+
 impl App {
     pub(crate) fn handle_settings_input(&mut self, command: InputCommand) -> Result<()> {
         let rows = settings_rows(self);
@@ -392,13 +620,55 @@ impl App {
                     enabled: !enabled,
                 });
             }
+            SettingsRow::UnlockVideoFps(enabled) => {
+                return self.handle_settings_command(Command::SetUnlockVideoFps(!enabled));
+            }
             SettingsRow::StreamDebug(enabled) => {
                 return self.handle_settings_command(Command::SetShowStreamDebugInfo(!enabled));
             }
-            SettingsRow::Back => {}
+            SettingsRow::StreamFpsOverlay(enabled) => {
+                return self.handle_settings_command(Command::SetShowFpsOverlay(!enabled));
+            }
+SettingsRow::SwapShouldersTriggers(enabled) => {
+                return self.handle_settings_command(Command::SetSwapShouldersTriggers(!enabled));
+            }
+SettingsRow::PureStreamMode(enabled) => {
+                return self.handle_settings_command(Command::SetPureStreamMode(!enabled));
+            }
+            SettingsRow::HardBandwidthCap(enabled) => {
+                return self.handle_settings_command(Command::SetHardBandwidthCap(!enabled));
+            }
+            SettingsRow::VideoBitrateCap(kbps) => {
+                let next = next_bitrate_preset(*kbps);
+                return self.handle_settings_command(Command::SetVideoBitrateCap(next));
+            }
+            SettingsRow::VideoH264Profile(profile) => {
+                let next = match profile {
+                    H264Profile::Baseline => H264Profile::Main,
+                    H264Profile::Main => H264Profile::High,
+                    H264Profile::High => H264Profile::Baseline,
+                };
+                return self.handle_settings_command(Command::SetVideoH264Profile(next));
+            }
+            SettingsRow::VideoDecodeSleepMs(ms) => {
+                let next = next_decode_sleep_preset(*ms);
+                return self.handle_settings_command(Command::SetVideoDecodeSleepMs(next));
+            }
+            SettingsRow::VideoDecodeQueueDepth(depth) => {
+                let next = next_decode_queue_depth_preset(*depth);
+                return self.handle_settings_command(Command::SetVideoDecodeQueueDepth(next));
+            }
+            SettingsRow::StreamProfile(profile) => {
+                let next = match profile {
+                    StreamProfile::Game => StreamProfile::Media,
+                    StreamProfile::Media => StreamProfile::Custom,
+                    StreamProfile::Custom => StreamProfile::Game,
+                };
+                return self.handle_settings_command(Command::SetStreamProfile(next));
+            }
+            _ => {}
         }
 
-        self.leave_settings();
         Ok(())
     }
 
@@ -455,21 +725,76 @@ impl App {
             Command::SetSwapShouldersAndTriggers { title_id, enabled } => {
                 self.settings
                     .set_swap_shoulders_and_triggers(title_id, enabled);
+self.settings.save();
+            }
+Command::SetHardBandwidthCap(enabled) => {
+                self.settings.hard_bandwidth_cap = enabled;
                 self.settings.save();
             }
-            Command::SetRearTouchEnabled { title_id, enabled } => {
-                self.settings.set_rear_touch_enabled(title_id, enabled);
+            Command::SetStreamProfile(profile) => {
+                // Save current values as custom preset when switching away from Custom
+                if self.settings.stream_profile == StreamProfile::Custom {
+                    self.settings.custom_bitrate_kbps = self.settings.video_bitrate_kbps;
+                    self.settings.custom_h264_profile = self.settings.video_h264_profile;
+                    self.settings.custom_decode_sleep_ms = self.settings.video_decode_sleep_ms;
+                    self.settings.custom_decode_queue_depth = self.settings.video_decode_queue_depth;
+                    self.settings.custom_pure_stream_mode = self.settings.pure_stream_mode;
+                    self.settings.custom_stream_debug_info = self.settings.show_stream_debug_info;
+                    self.settings.custom_fps_overlay = self.settings.show_fps_overlay;
+                    self.settings.custom_hard_bandwidth_cap = self.settings.hard_bandwidth_cap;
+                }
+                self.settings.stream_profile = profile;
+                match profile {
+                    StreamProfile::Game => {
+                        self.settings.video_bitrate_kbps = 2_000;
+                        self.settings.video_h264_profile = H264Profile::Baseline;
+                        self.settings.video_decode_sleep_ms = 0;
+                        self.settings.video_decode_queue_depth = 1;
+                        self.settings.pure_stream_mode = true;
+                        self.settings.show_stream_debug_info = false;
+                        self.settings.show_fps_overlay = false;
+                    }
+                    StreamProfile::Media => {
+                        self.settings.video_bitrate_kbps = 7_500;
+                        self.settings.video_h264_profile = H264Profile::High;
+                        self.settings.video_decode_sleep_ms = 2;
+                        self.settings.video_decode_queue_depth = 4;
+                        self.settings.pure_stream_mode = false;
+                        self.settings.show_stream_debug_info = false;
+                        self.settings.show_fps_overlay = false;
+                    }
+                    StreamProfile::Custom => {
+                        // Restore saved custom values
+                        self.settings.video_bitrate_kbps = self.settings.custom_bitrate_kbps;
+                        self.settings.video_h264_profile = self.settings.custom_h264_profile;
+                        self.settings.video_decode_sleep_ms = self.settings.custom_decode_sleep_ms;
+                        self.settings.video_decode_queue_depth = self.settings.custom_decode_queue_depth;
+                        self.settings.pure_stream_mode = self.settings.custom_pure_stream_mode;
+                        self.settings.show_stream_debug_info = self.settings.custom_stream_debug_info;
+                        self.settings.show_fps_overlay = self.settings.custom_fps_overlay;
+                        self.settings.hard_bandwidth_cap = self.settings.custom_hard_bandwidth_cap;
+                    }
+                }
                 self.settings.save();
             }
-            Command::SetFrontTouchAuxiliaryButtons { title_id, enabled } => {
-                self.settings
-                    .set_front_touch_auxiliary_buttons(title_id, enabled);
+            Command::SetRearTouchEnabled { .. } | Command::SetFrontTouchAuxiliaryButtons { .. } => {}
+            Command::SetUnlockVideoFps(enabled) => { self.settings.unlock_video_fps = enabled; self.settings.save(); }
+            Command::SetShowStreamDebugInfo(enabled) => { self.settings.show_stream_debug_info = enabled; self.settings.save(); }
+            Command::SetShowFpsOverlay(enabled) => { self.settings.show_fps_overlay = enabled; self.settings.save(); }
+            Command::SetVideoBitrateCap(kbps) => {
+                self.settings.video_bitrate_kbps = kbps.min(15_000);
                 self.settings.save();
             }
-            Command::SetShowStreamDebugInfo(enabled) => {
-                self.settings.show_stream_debug_info = enabled;
+            Command::SetVideoH264Profile(profile) => {
+                self.settings.video_h264_profile = profile;
                 self.settings.save();
             }
+            Command::SetVideoDecodeSleepMs(ms) => { self.settings.video_decode_sleep_ms = ms.max(0).min(50); self.settings.save(); }
+            Command::SetVideoDecodeQueueDepth(depth) => { self.settings.video_decode_queue_depth = depth.max(1).min(20); self.settings.save(); }
+            Command::SetPeriodicKeyframe(_) => {}
+            Command::SetRembAutoShock(_) | Command::SetRembShockDropGap(_) | Command::SetRembShockCooldownSecs(_) | Command::SetRembShockDurationMs(_) => {}
+            Command::SetSwapShouldersTriggers(enabled) => { self.settings.swap_shoulders_and_triggers = enabled; self.settings.save(); }
+Command::SetPureStreamMode(enabled) => { self.settings.pure_stream_mode = enabled; self.settings.save(); }
         }
 
         Ok(())

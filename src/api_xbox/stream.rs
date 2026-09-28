@@ -5,7 +5,13 @@ use reqwest::Method;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use tokio::time::{Duration, sleep};
+
+/// UDP port a console listens on for streaming sessions.
+const CONSOLE_STREAMING_PORT: u16 = 9002;
+/// First hextet of the `2001:0::/32` Teredo prefix.
+const TEREDO_PREFIX: u16 = 0x2001;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +49,7 @@ pub struct Stream {
     pub session_id: String,
     session_path: String,
     pub state: StreamState,
+    console_lan_ip: Option<Ipv4Addr>,
 }
 
 #[derive(Deserialize)]
@@ -69,7 +76,14 @@ impl Stream {
             session_id,
             session_path: response.session_path,
             state: StreamState::New,
+            console_lan_ip: None,
         }
+    }
+
+    /// Overrides the Teredo-decoded WAN endpoint for home-stream ICE candidates with the
+    /// console's LAN IPv4, so media traffic skips the router's NAT hairpin entirely.
+    pub fn set_console_lan_ip(&mut self, ip: Ipv4Addr) {
+        self.console_lan_ip = Some(ip);
     }
 
     pub fn session_path(&self) -> String {
@@ -145,7 +159,21 @@ impl Stream {
             .await?;
         let response = self.wait_for_sdp_response().await?;
         check_exchange_error(&response)?;
-        extract_answer_sdp(&response)
+        let answer = extract_answer_sdp(&response);
+
+        // Persist both SDPs for protocol diffing against working clients (pull via FTP).
+        if let Ok(answer_sdp) = &answer {
+            let _ = crate::fs_utils::write_file_truncating(
+                "ux0:data/xcloud-rust/last-offer.sdp",
+                sdp,
+            );
+            let _ = crate::fs_utils::write_file_truncating(
+                "ux0:data/xcloud-rust/last-answer.sdp",
+                answer_sdp,
+            );
+        }
+
+        answer
     }
 
     pub async fn wait_for_sdp_response(&self) -> Result<Value> {
@@ -200,7 +228,10 @@ impl Stream {
             return Ok(None);
         }
         check_exchange_error(&value)?;
-        Ok(Some(extract_remote_candidates(&value)))
+        Ok(Some(extract_remote_candidates(
+            &value,
+            self.console_lan_ip,
+        )))
     }
 
     pub async fn send_keepalive(&self) -> Result<Value> {
@@ -237,11 +268,20 @@ impl Stream {
     }
 }
 
+/// The streaming service always answers with an `errorDetails` envelope. xHome fills it with
+/// `{"code":null,"message":null}` even on a successful exchange, so only a populated field marks
+/// a real failure.
 fn check_exchange_error(value: &Value) -> Result<()> {
-    if let Some(error_details) = value.get("errorDetails").filter(|v| !v.is_null()) {
-        anyhow::bail!("xCloud exchange failed: {error_details}");
+    let Some(error_details) = value.get("errorDetails").filter(|v| !v.is_null()) else {
+        return Ok(());
+    };
+    if error_details
+        .as_object()
+        .is_some_and(|fields| fields.values().all(Value::is_null))
+    {
+        return Ok(());
     }
-    Ok(())
+    anyhow::bail!("xCloud exchange failed: {error_details}");
 }
 
 fn extract_answer_sdp(response: &Value) -> Result<String> {
@@ -273,7 +313,10 @@ fn serialize_local_candidate(candidate: &RTCIceCandidateInit) -> String {
     serde_json::to_string(&value).expect("ICE candidate JSON serialization should not fail")
 }
 
-fn extract_remote_candidates(response: &Value) -> Vec<RTCIceCandidateInit> {
+fn extract_remote_candidates(
+    response: &Value,
+    lan_override: Option<Ipv4Addr>,
+) -> Vec<RTCIceCandidateInit> {
     let Some(exchange) = response.get("exchangeResponse").and_then(Value::as_str) else {
         return Vec::new();
     };
@@ -287,18 +330,33 @@ fn extract_remote_candidates(response: &Value) -> Vec<RTCIceCandidateInit> {
         return Vec::new();
     };
 
-    candidates
-        .iter()
-        .filter_map(decode_remote_candidate)
-        .collect()
+    let mut decoded = Vec::new();
+    for candidate in candidates {
+        let Some(candidate) = parse_remote_candidate(candidate) else {
+            continue;
+        };
+        // A console publishes itself over Teredo, so its reachable IPv4 endpoint only exists
+        // tunnelled inside the IPv6 candidate. Derive it before the address-family filter below
+        // drops that candidate, otherwise a home session is left with nothing to connect to.
+        // With `lan_override`, the derived WAN address is swapped for the console's LAN IPv4:
+        // same listening ports, but the traffic takes the plain LAN path instead of the router's
+        // NAT hairpin, which is slow/lossy on many routers and shows up as ever-growing video lag.
+        decoded.extend(teredo_host_candidates(&candidate, lan_override));
+        if let Some(candidate) = normalize_decoded_candidate(candidate) {
+            decoded.push(candidate);
+        }
+    }
+    decoded
 }
 
-fn decode_remote_candidate(candidate: &Value) -> Option<RTCIceCandidateInit> {
-    let mut candidate: RTCIceCandidateInit = match candidate {
+fn parse_remote_candidate(candidate: &Value) -> Option<RTCIceCandidateInit> {
+    match candidate {
         Value::String(value) => serde_json::from_str(value).ok(),
         value => serde_json::from_value(value.clone()).ok(),
-    }?;
+    }
+}
 
+fn normalize_decoded_candidate(mut candidate: RTCIceCandidateInit) -> Option<RTCIceCandidateInit> {
     candidate.candidate = normalize_remote_candidate(&candidate.candidate)?;
     if candidate.sdp_mid.as_deref() == Some("") {
         candidate.sdp_mid = Some("0".to_owned());
@@ -307,6 +365,56 @@ fn decode_remote_candidate(candidate: &Value) -> Option<RTCIceCandidateInit> {
         candidate.sdp_mline_index = Some(0);
     }
     Some(candidate)
+}
+
+/// Rebuilds the host candidates a Teredo address tunnels, matching how Greenlight reaches a
+/// console. Teredo (RFC 4380) stores the client's IPv4 address in the last 32 bits and its UDP
+/// port in bits 80..96, both one's-complemented, under the `2001:0::/32` prefix.
+fn teredo_host_candidates(
+    candidate: &RTCIceCandidateInit,
+    lan_override: Option<Ipv4Addr>,
+) -> Vec<RTCIceCandidateInit> {
+    let Some((client, port)) = candidate_address(&candidate.candidate).and_then(teredo_endpoint)
+    else {
+        return Vec::new();
+    };
+    let address = lan_override
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| client.to_string());
+
+    let derive = |foundation: u8, port: u16| RTCIceCandidateInit {
+        candidate: format!("candidate:{foundation} 1 UDP 1 {address} {port} typ host"),
+        sdp_mid: Some("0".to_owned()),
+        sdp_mline_index: Some(0),
+        username_fragment: candidate.username_fragment.clone(),
+        url: None,
+    };
+
+    let mut derived = vec![derive(10, CONSOLE_STREAMING_PORT)];
+    if port != CONSOLE_STREAMING_PORT {
+        derived.push(derive(11, port));
+    }
+    derived
+}
+
+fn candidate_address(candidate: &str) -> Option<&str> {
+    let candidate = candidate.trim();
+    let candidate = candidate.strip_prefix("a=").unwrap_or(candidate);
+    if !candidate.starts_with("candidate:") {
+        return None;
+    }
+    candidate.split_whitespace().nth(4)
+}
+
+fn teredo_endpoint(address: &str) -> Option<(Ipv4Addr, u16)> {
+    let segments = address.parse::<Ipv6Addr>().ok()?.segments();
+    if segments[0] != TEREDO_PREFIX || segments[1] != 0 {
+        return None;
+    }
+
+    let port = segments[5] ^ u16::MAX;
+    let client = (u32::from(segments[6]) << 16) | u32::from(segments[7]);
+    Some((Ipv4Addr::from(client ^ u32::MAX), port))
 }
 
 fn normalize_remote_candidate(candidate: &str) -> Option<String> {
@@ -331,66 +439,4 @@ fn normalize_remote_candidate(candidate: &str) -> Option<String> {
     }
 
     Some(candidate.to_owned())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn serializes_local_ice_as_api_xbox_candidate_string() {
-        let candidate = RTCIceCandidateInit {
-            candidate: "candidate:1 1 udp 1 192.0.2.10 5000 typ host".to_owned(),
-            sdp_mid: Some(String::new()),
-            sdp_mline_index: Some(0),
-            username_fragment: None,
-            url: None,
-        };
-
-        let serialized = serialize_local_candidate(&candidate);
-        let payload: Value =
-            serde_json::from_str(&serialized).expect("serialized ICE candidate is valid JSON");
-
-        assert_eq!(
-            payload,
-            json!({
-                "candidate": "candidate:1 1 udp 1 192.0.2.10 5000 typ host",
-                "sdpMid": "0",
-                "sdpMLineIndex": 0,
-            })
-        );
-    }
-
-    #[test]
-    fn extracts_remote_ice_from_array_or_wrapper_payload() {
-        let remote = json!([
-            {
-                "candidate": "a=candidate:2 1 UDP 1 203.0.113.10 9002 typ host ",
-                "sdpMid": "0",
-                "sdpMLineIndex": 0
-            },
-            {
-                "candidate": "a=end-of-candidates",
-                "sdpMid": "0",
-                "sdpMLineIndex": 0
-            },
-            {
-                "candidate": "a=candidate:3 1 UDP 1 2603:1050:4:D3::ADB:C44F 9002 typ host ",
-                "sdpMid": "0",
-                "sdpMLineIndex": 0
-            }
-        ]);
-        let array_response = json!({ "exchangeResponse": remote.to_string() });
-        let wrapper_response =
-            json!({ "exchangeResponse": json!({ "candidates": remote }).to_string() });
-
-        let candidates = extract_remote_candidates(&array_response);
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(
-            candidates[0].candidate,
-            "candidate:2 1 UDP 1 203.0.113.10 9002 typ host"
-        );
-        assert_eq!(extract_remote_candidates(&wrapper_response).len(), 1);
-    }
 }

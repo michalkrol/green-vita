@@ -1,4 +1,5 @@
 use crate::api::streaming::{PlaybackBackend, PlaybackBackendEvent};
+use crate::settings::H264Profile;
 use crate::settings::Settings;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
@@ -7,6 +8,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Notify;
 
 #[derive(Clone, Copy)]
 pub(super) enum StreamReturnTarget {
@@ -20,6 +22,7 @@ pub(crate) struct StreamingSession {
     pub(crate) hint_started_at: Instant,
     pub(in crate::app) pause_selected: usize,
     pub(in crate::app) title_id: Option<String>,
+    pub(crate) kind: StreamKind,
     pub(super) return_target: StreamReturnTarget,
     backend: PlaybackBackend,
     latest_video_frame: Option<u64>,
@@ -27,6 +30,9 @@ pub(crate) struct StreamingSession {
     stream_video_size: Option<(u32, u32)>,
     pending_audio_packets: Vec<Bytes>,
     ignore_confirm_until_release: bool,
+    /// Signalled every time `drain_backend_events` picks up a new decoded frame.
+    /// The shell loop awaits this to wake immediately instead of polling at 4ms.
+    pub(crate) frame_ready: Arc<Notify>,
 }
 
 impl StreamingSession {
@@ -35,8 +41,22 @@ impl StreamingSession {
         kind: StreamKind,
         title_id: Option<String>,
         return_selected: usize,
+        unlock_video_fps: bool,
+        video_bitrate_kbps: u32,
+        video_h264_profile: H264Profile,
+        decode_sleep_ms: u32,
+        decode_queue_depth: u32,
+        hard_bandwidth_cap: bool,
     ) -> Result<Self> {
-        let backend = PlaybackBackend::start_xbox(stream)?;
+        let backend = PlaybackBackend::start_xbox(
+            stream,
+            unlock_video_fps,
+            video_bitrate_kbps,
+            video_h264_profile,
+            decode_sleep_ms,
+            decode_queue_depth,
+            hard_bandwidth_cap,
+        )?;
         let return_target = match kind {
             StreamKind::Cloud => StreamReturnTarget::Titles(return_selected),
             StreamKind::Home => StreamReturnTarget::Consoles(return_selected),
@@ -46,6 +66,7 @@ impl StreamingSession {
             status: "Starting streaming backend".to_owned(),
             hint_started_at: Instant::now(),
             pause_selected: 0,
+            kind,
             title_id,
             return_target,
             backend,
@@ -54,6 +75,7 @@ impl StreamingSession {
             stream_video_size: None,
             pending_audio_packets: Vec::new(),
             ignore_confirm_until_release: false,
+            frame_ready: Arc::new(Notify::new()),
         })
     }
 
@@ -90,7 +112,10 @@ impl StreamingSession {
             .title_id
             .as_deref()
             .and_then(|title_id| settings.game_profile(title_id))
-            .is_some_and(|profile| profile.swap_shoulders_and_triggers);
+            .is_some_and(|profile| profile.swap_shoulders_and_triggers)
+            // When no title_id (local/xHome stream) or no per-game profile,
+            // fall back to the global setting.
+            || settings.swap_shoulders_and_triggers;
         if swap_shoulders_and_triggers {
             std::mem::swap(&mut frame.left_shoulder, &mut frame.left_trigger);
             std::mem::swap(&mut frame.right_shoulder, &mut frame.right_trigger);
@@ -136,6 +161,9 @@ impl StreamingSession {
         if let Some((frame_id, frame)) = self.backend.take_latest_frame() {
             self.latest_video_frame = Some(frame_id);
             self.current_video_frame = Some(frame);
+            // Wake the shell loop so it presents the new frame immediately
+            // instead of waiting up to 16.7ms for the next poll cycle.
+            self.frame_ready.notify_one();
         }
 
         let mut closed = false;
