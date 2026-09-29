@@ -2,6 +2,7 @@ mod decoder;
 pub(crate) mod memory;
 pub(crate) mod metrics;
 mod worker;
+pub(crate) use worker::pin_rtc_thread;
 
 pub const STREAM_WIDTH: u32 = 1280;
 pub const STREAM_HEIGHT: u32 = 720;

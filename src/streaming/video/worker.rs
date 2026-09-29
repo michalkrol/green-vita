@@ -190,6 +190,21 @@ fn pin_decoder_thread() {
     }
 }
 
+/// Pins the calling thread to CPU1 (network/RTCP feedback processing).
+#[cfg(target_os = "vita")]
+pub(crate) fn pin_rtc_thread() {
+    let thread_id = unsafe { vitasdk_sys::sceKernelGetThreadId() };
+    let result = unsafe {
+        vitasdk_sys::sceKernelChangeThreadCpuAffinityMask(
+            thread_id,
+            vitasdk_sys::SCE_KERNEL_CPU_MASK_USER_1 as i32,
+        )
+    };
+    if result < 0 {
+        eprintln!("Failed to pin RTC thread to user CPU 1: {result:#x}");
+    }
+}
+
 fn run_decode_loop(
     access_units: Arc<(Mutex<VecDeque<QueuedAccessUnit>>, Condvar)>,
     commands: crossbeam_channel::Receiver<DecoderCommand>,
