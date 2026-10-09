@@ -18,13 +18,27 @@ if [ ! -d "$APP" ]; then
   git clone https://github.com/Day-OS/green-vita -b "$BRANCH" "$APP"
 fi
 
+# Generate unique build identifier: branch-commit-datetime
+BUILD_BRANCH=$(cd "$APP" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+BUILD_COMMIT=$(cd "$APP" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATETIME=$(date +"%Y%m%d-%H%M%S")
+BUILD_ID="${BUILD_BRANCH}-${BUILD_COMMIT}-${BUILD_DATETIME}"
+
+ARTIFACT_DIR="$APP/target/armv7-sony-vita-newlibeabihf/release"
+
 cmd="${1:-build}"
 case "$cmd" in
   build|vpk)
     cd "$APP"
     make vpk
     echo
-    echo "VPK ready: $APP/target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk"
+    echo "VPK ready: $ARTIFACT_DIR/green-vita.vpk"
+    # Copy with unique build ID for preservation
+    cp "$ARTIFACT_DIR/green-vita.vpk" "$ARTIFACT_DIR/green-vita-${BUILD_ID}.vpk"
+    cp "$ARTIFACT_DIR/green-vita.self" "$ARTIFACT_DIR/green-vita-${BUILD_ID}.self" 2>/dev/null || true
+    cp "$ARTIFACT_DIR/green-vita.velf" "$ARTIFACT_DIR/green-vita-${BUILD_ID}.velf" 2>/dev/null || true
+    cp "$ARTIFACT_DIR/green-vita.elf" "$ARTIFACT_DIR/green-vita-${BUILD_ID}.elf" 2>/dev/null || true
+    echo "Preserved as: green-vita-${BUILD_ID}.vpk"
     ;;
   upload-vpk)
     ip="${2:?usage: build.sh upload-vpk <vita-ip>}"

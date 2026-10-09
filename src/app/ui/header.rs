@@ -62,7 +62,7 @@ pub(crate) fn show_header_row_with_action(
                 egui::Color32::from_rgb(0x26, 0x27, 0x2c)
             };
             let stroke = if action_selected {
-                egui::Stroke::new(2.0, egui::Color32::WHITE)
+                egui::Stroke::new(2.0_f32, egui::Color32::WHITE)
             } else {
                 egui::Stroke::NONE
             };

@@ -75,16 +75,7 @@ pub(crate) fn note_gamepad_activity(frame: &GamepadFrame) {
     }
 }
 
-pub(crate) fn input_quiet_for(min_quiet: Duration) -> bool {
-    match LAST_ACTIVE_INPUT.lock() {
-        Ok(slot) => slot.is_none_or(|at| at.elapsed() >= min_quiet),
-        Err(_) => true,
-    }
-}
-
 static SESSION_START: OnceLock<Instant> = OnceLock::new();
-
-pub(crate) const SEND_METADATA: bool = true;
 
 /// Monotonic session-uptime milliseconds — the wire-format equivalent of the
 /// reference client's performance.now(). Our old header wrote per-packet elapsed
@@ -99,15 +90,6 @@ fn uptime_ms_u32_since(at: Instant) -> u32 {
     at.checked_duration_since(*start)
         .map(|duration| duration.as_millis() as u32)
         .unwrap_or(0)
-}
-
-/// Called by the video assembly path for every access unit accepted by the decoder.
-pub(crate) fn queue_video_metadata(server_data_key: u32, arrival: Instant) {
-    let mut queue = METADATA_QUEUE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if queue.len() >= 240 {
-        queue.pop_front();
-    }
-    queue.push_back(QueuedVideoMetadata { server_data_key, arrival });
 }
 
 fn drain_video_metadata() -> Vec<MetadataFrame> {
