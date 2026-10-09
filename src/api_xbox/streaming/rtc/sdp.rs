@@ -18,30 +18,6 @@ pub(super) fn extract_extmap_id(sdp: &str, uri: &str) -> Option<u8> {
     None
 }
 
-/// Removes advisory `a=framerate` attributes from the video section (browser
-/// parity: browsers never send this line). The console ignores fps declarations
-/// at the app layer yet emits ~58-62 AUs/s regardless; if it paces egress by the
-/// NEGOTIATED framerate instead, advertising 30 against 60 fps production grows
-/// its pre-stamp send queue linearly — the observed drift signature.
-pub(super) fn strip_video_fps(sdp: &str) -> String {
-    let newline = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
-    let trailing_newline = sdp.ends_with('\n');
-    let lines = sdp
-        .lines()
-        .map(|line| line.trim_end_matches('\r'))
-        .collect::<Vec<_>>();
-    let output = lines
-        .into_iter()
-        .filter(|line| !line.starts_with("a=framerate:"))
-        .collect::<Vec<_>>();
-
-    let mut result = output.join(newline);
-    if trailing_newline {
-        result.push_str(newline);
-    }
-    result
-}
-
 /// Adds the advisory receive-frame-rate attribute to the H.264 video section.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn request_video_fps(sdp: &str, video_fps: u32) -> String {
@@ -80,10 +56,6 @@ pub(super) fn request_video_fps(sdp: &str, video_fps: u32) -> String {
     }
     result
 }
-
-/// Bitrate cap injected into the offer's video section, in kbps.
-/// Overridden by settings-based cap. Kept as default for non-settings paths.
-pub(super) const VIDEO_BITRATE_CAP_KBPS: u32 = 15_000;
 
 /// Injects `b=AS`/`b=TIAS` bandwidth lines into the H.264 video media section.
 /// Pass 0 to leave the SDP uncapped (no bandwidth lines injected).

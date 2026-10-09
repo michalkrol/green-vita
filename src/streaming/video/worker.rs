@@ -2,7 +2,6 @@ use super::decoder::HwVideoDecoder;
 use super::metrics;
 use super::{DecodedFrame, DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
-use crossbeam_channel::{Receiver, Sender};
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -21,13 +21,8 @@ pub enum Command {
     SetShowFpsOverlay(bool),
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
-    SetPeriodicKeyframe(bool),
     SetVideoDecodeSleepMs(u32),
     SetVideoDecodeQueueDepth(u32),
-    SetRembAutoShock(bool),
-    SetRembShockDropGap(u32),
-    SetRembShockCooldownSecs(u32),
-    SetRembShockDurationMs(u32),
     SetSwapShouldersTriggers(bool),
     SetPureStreamMode(bool),
     SetHardBandwidthCap(bool),
@@ -46,13 +41,8 @@ enum SettingsRow {
     StreamFpsOverlay(bool),
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
-    PeriodicKeyframe(bool),
     VideoDecodeSleepMs(u32),
     VideoDecodeQueueDepth(u32),
-    RembAutoShock(bool),
-    RembShockDropGap(u32),
-    RembShockCooldownSecs(u32),
-    RembShockDurationMs(u32),
     SwapShouldersTriggers(bool),
     PureStreamMode(bool),
     HardBandwidthCap(bool),
@@ -483,7 +473,7 @@ fn checkbox_row(ui: &mut egui::Ui, selected: bool, checked: bool, label: String)
         ui.painter().rect_stroke(
             box_rect,
             3.0,
-            egui::Stroke::new(1.5, outline),
+            egui::Stroke::new(1.5_f32, outline),
             egui::StrokeKind::Inside,
         );
 
@@ -493,7 +483,7 @@ fn checkbox_row(ui: &mut egui::Ui, selected: bool, checked: bool, label: String)
             } else {
                 egui::Color32::WHITE
             };
-            let check_stroke = egui::Stroke::new(2.5, check_color);
+            let check_stroke = egui::Stroke::new(2.5_f32, check_color);
             let first = egui::pos2(box_rect.left() + 3.5, box_rect.center().y);
             let middle = egui::pos2(box_rect.left() + 7.5, box_rect.bottom() - 4.0);
             let last = egui::pos2(box_rect.right() - 3.0, box_rect.top() + 4.0);
@@ -527,9 +517,6 @@ fn host_text(i18n: &I18n, id: &'static str, host: &str) -> String {
 const BITRATE_PRESETS_KBPS: &[u32] = &[0, 500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500, 4_000, 4_500, 5_000, 5_500, 6_000, 6_500, 7_000, 7_500, 8_000];
 const DECODE_SLEEP_PRESETS_MS: &[u32] = &[0, 1, 2, 4, 6, 8, 10, 13, 16, 20];
 const DECODE_QUEUE_DEPTH_PRESETS: &[u32] = &[1, 2, 3, 4, 6, 8, 12];
-const SHOCK_DROP_GAP_PRESETS: &[u32] = &[3, 5, 10, 15, 20, 30, 50];
-const SHOCK_COOLDOWN_PRESETS: &[u32] = &[5, 10, 15, 30, 60, 120];
-const SHOCK_DURATION_PRESETS: &[u32] = &[50, 100, 150, 200, 300];
 
 fn next_bitrate_preset(current: u32) -> u32 {
     BITRATE_PRESETS_KBPS
@@ -553,14 +540,6 @@ fn next_decode_queue_depth_preset(current: u32) -> u32 {
         .copied()
         .find(|&p| p > current)
         .unwrap_or(DECODE_QUEUE_DEPTH_PRESETS[0])
-}
-
-fn next_preset(current: u32, presets: &[u32]) -> u32 {
-    presets
-        .iter()
-        .copied()
-        .find(|&p| p > current)
-        .unwrap_or(presets[0])
 }
 
 impl App {
@@ -791,10 +770,8 @@ Command::SetHardBandwidthCap(enabled) => {
             }
             Command::SetVideoDecodeSleepMs(ms) => { self.settings.video_decode_sleep_ms = ms.max(0).min(50); self.settings.save(); }
             Command::SetVideoDecodeQueueDepth(depth) => { self.settings.video_decode_queue_depth = depth.max(1).min(20); self.settings.save(); }
-            Command::SetPeriodicKeyframe(_) => {}
-            Command::SetRembAutoShock(_) | Command::SetRembShockDropGap(_) | Command::SetRembShockCooldownSecs(_) | Command::SetRembShockDurationMs(_) => {}
             Command::SetSwapShouldersTriggers(enabled) => { self.settings.swap_shoulders_and_triggers = enabled; self.settings.save(); }
-Command::SetPureStreamMode(enabled) => { self.settings.pure_stream_mode = enabled; self.settings.save(); }
+            Command::SetPureStreamMode(enabled) => { self.settings.pure_stream_mode = enabled; self.settings.save(); }
         }
 
         Ok(())

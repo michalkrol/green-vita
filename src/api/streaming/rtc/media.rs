@@ -45,7 +45,6 @@ pub(crate) struct VideoReceiver {
     last_twcc_at: Option<Instant>,
     twcc_fb_pkt_count: u8,
     stats: VideoStats,
-    direct_output: Arc<DirectVideoOutput>,
     remb_shock_until: Option<Instant>,
 }
 
@@ -53,13 +52,13 @@ impl VideoReceiver {
     pub(crate) fn new(
         config: DecoderConfig,
         direct_output: Arc<DirectVideoOutput>,
-        video_fps: u32,
+        _video_fps: u32,
     ) -> Result<Self> {
-        let decoder = VideoDecodeWorker::spawn(config, Arc::clone(&direct_output))?;
-        Ok(Self::init(decoder, config, direct_output, video_fps))
+        let decoder = VideoDecodeWorker::spawn(config, direct_output)?;
+        Ok(Self::init(decoder))
     }
 
-    fn init(decoder: VideoDecodeWorker, config: DecoderConfig, direct_output: Arc<DirectVideoOutput>, video_fps: u32) -> Self {
+    fn init(decoder: VideoDecodeWorker) -> Self {
         Self {
             track_id: None,
             receiver_id: None,
@@ -75,7 +74,6 @@ impl VideoReceiver {
             last_twcc_at: None,
             twcc_fb_pkt_count: 0,
             stats: VideoStats::default(),
-            direct_output,
             remb_shock_until: None,
         }
     }
@@ -212,15 +210,6 @@ impl VideoReceiver {
                 };
             let _ = receiver.write_rtcp(vec![Box::new(remb)]);
         }
-    }
-
-    /// Trigger a REMB shock: send ~100 kbps for `duration` to force encoder purge.
-    pub(crate) fn trigger_remb_shock(&mut self, duration: Duration) {
-        self.remb_shock_until = Some(Instant::now() + duration);
-    }
-
-    pub(crate) fn remb_shock_active(&self) -> bool {
-        self.remb_shock_until.is_some()
     }
 
     /// Manual transport-cc feedback: per-packet arrival deltas for the console's

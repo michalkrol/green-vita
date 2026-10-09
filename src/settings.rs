@@ -232,20 +232,6 @@ impl Settings {
             .swap_shoulders_and_triggers = enabled;
     }
 
-    pub fn set_front_touch_auxiliary_buttons(&mut self, title_id: String, enabled: bool) {
-        self.game_profiles
-            .entry(title_id)
-            .or_default()
-            .front_touch_auxiliary_buttons = enabled;
-    }
-
-    pub fn set_rear_touch_enabled(&mut self, title_id: String, enabled: bool) {
-        self.game_profiles
-            .entry(title_id)
-            .or_default()
-            .rear_touch_enabled = enabled;
-    }
-
     /// Loads from disk, falling back to defaults on any error.
     pub fn load() -> Self {
         let data = match std::fs::read_to_string(SETTINGS_PATH) {
