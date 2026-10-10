@@ -9,6 +9,10 @@ use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
 
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_COMMIT: &str = env!("GIT_SHA");
+const BUILD_TIMESTAMP: &str = env!("BUILD_TIMESTAMP");
+
 #[derive(Clone, PartialEq)]
 pub enum Command {
     ToggleLocaleExpanded,
@@ -47,6 +51,7 @@ enum SettingsRow {
     PureStreamMode(bool),
     HardBandwidthCap(bool),
     StreamProfile(StreamProfile),
+    Version,
     Back,
 }
 
@@ -109,6 +114,7 @@ rows.push(SettingsRow::UnlockVideoFps(app.settings.unlock_video_fps));
         }
         rows.push(SettingsRow::HardBandwidthCap(app.settings.hard_bandwidth_cap));
     }
+    rows.push(SettingsRow::Version);
     rows.push(SettingsRow::Back);
     rows
 }
@@ -412,6 +418,22 @@ row_index += 1;
                 }
                 row_index += 1;
                 } // end Custom-only params
+
+                // Version info row (non-interactive)
+                let version_text = format!(
+                    "v{}  |  {}  |  {}",
+                    APP_VERSION,
+                    &GIT_COMMIT[..8.min(GIT_COMMIT.len())],
+                    BUILD_TIMESTAMP.split('T').next().unwrap_or(BUILD_TIMESTAMP)
+                );
+                ui.add_sized(
+                    egui::vec2(ui.available_width(), 28.0),
+                    egui::Label::new(
+                        egui::RichText::new(version_text)
+                            .size(14.0)
+                            .color(theme.text)
+                    )
+                );
 
                 if focus_row(ui, selected_index == row_index, i18n.text("action-back")) {
                     commands.push(InputCommand::Back.into());

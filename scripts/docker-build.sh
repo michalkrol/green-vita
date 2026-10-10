@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$ROOT/green-vita"
+APP="$ROOT"
 BRANCH="0.1.9"
 IMAGE="ghcr.io/vita-rust/vitasdk-rs:latest"
 
@@ -34,6 +34,18 @@ case "$cmd" in
     run_in_container "cargo vita build vpk --release"
     echo
     echo "VPK ready: $APP/target/armv7-sony-vita-newlibeabihf/release/green-vita.vpk"
+    # Generate unique build identifier: branch-commit-datetime
+    BUILD_BRANCH=$(cd "$APP" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    BUILD_COMMIT=$(cd "$APP" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    BUILD_DATETIME=$(date +"%Y%m%d-%H%M%S")
+    BUILD_ID="${BUILD_BRANCH}-${BUILD_COMMIT}-${BUILD_DATETIME}"
+    ARTIFACT_DIR="$APP/target/armv7-sony-vita-newlibeabihf/release"
+    # Copy with unique build ID for preservation
+    cp "$ARTIFACT_DIR/green-vita.vpk" "$ARTIFACT_DIR/green-vita-${BUILD_ID}.vpk"
+    cp "$ARTIFACT_DIR/green-vita.self" "$ARTIFACT_DIR/green-vita-${BUILD_ID}.self" 2>/dev/null || true
+    cp "$ARTIFACT_DIR/green-vita.velf" "$ARTIFACT_DIR/green-vita-${BUILD_ID}.velf" 2>/dev/null || true
+    cp "$ARTIFACT_DIR/green-vita.elf" "$ARTIFACT_DIR/green-vita-${BUILD_ID}.elf" 2>/dev/null || true
+    echo "Preserved as: green-vita-${BUILD_ID}.vpk"
     ;;
   test)
     run_in_container "cargo test"

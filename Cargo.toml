@@ -28,6 +28,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 vita-newlib-shims = "0.3"
 vitasdk-sys = { version = "0.3", features = ["SceAppUtil_stub", "SceBt_stub", "SceDisplay_stub", "SceKernelDmacMgr_stub", "SceKernelThreadMgr_stub", "SceLibKernel_stub", "SceNetCtl_stub", "ScePower_stub", "SceProcessmgr_stub", "SceVideodec_stub", "SceSysmem_stub", "SceSysmodule_stub", "SceGxm_stub", "SceShaccCg_stub"] }
 
+[build-dependencies]
+chrono = { version = "0.4", features = ["clock"] }
+
 [patch.crates-io]
 ring = { git = "https://github.com/vita-rust/ring.git", branch = "v0.17.14-vita" }
 rtc-shared = { git = "https://github.com/Day-OS/rtc.git", branch = "vita" }
