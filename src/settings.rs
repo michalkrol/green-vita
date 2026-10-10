@@ -228,7 +228,7 @@ impl Default for Settings {
             swap_shoulders_and_triggers: false,
             pure_stream_mode: false,
             stream_profile: StreamProfile::default(),
-            custom_bitrate_kbps: 2_000,
+            custom_bitrate_kbps: 2_500,
             custom_h264_profile: H264Profile::default(),
             custom_decode_sleep_ms: 1,
             custom_decode_queue_depth: 1,

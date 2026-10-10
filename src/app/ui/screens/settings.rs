@@ -877,9 +877,9 @@ Command::SetHardBandwidthCap(enabled) => {
                 self.settings.stream_profile = profile;
                 match profile {
                     StreamProfile::Game => {
-                        self.settings.video_bitrate_kbps = 2_000;
+                        self.settings.video_bitrate_kbps = 2_500;
                         self.settings.video_h264_profile = H264Profile::Baseline;
-                        self.settings.video_decode_sleep_ms = 0;
+                        self.settings.video_decode_sleep_ms = 1;
                         self.settings.video_decode_queue_depth = 1;
                         self.settings.pure_stream_mode = true;
                         self.settings.show_stream_debug_info = false;
