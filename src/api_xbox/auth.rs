@@ -503,7 +503,13 @@ impl MsalAuth {
             .await?
             .token;
 
-        let home = self.streaming_token(&gssv_token, "xhome").await?;
+        let home = match self.streaming_token(&gssv_token, "xhome").await {
+            Ok(home) => home,
+            Err(error) => {
+                eprintln!("xHome token fetch failed (region restriction?); continuing without home credentials: {error:#}");
+                EndpointCredentials { host: String::new(), token: String::new() }
+            }
+        };
 
         let primary = self.streaming_token(&gssv_token, "xgpuweb").await;
         let f2p = self.streaming_token(&gssv_token, "xgpuwebf2p").await;
