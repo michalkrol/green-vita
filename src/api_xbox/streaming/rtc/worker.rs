@@ -65,6 +65,7 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
         let sdp = sdp::cap_video_bitrate(&offer.sdp, self.video_bitrate_kbps);
         let sdp = sdp::enable_transport_cc(&sdp);
         let sdp = sdp::request_video_fps(&sdp, self.video_fps);
+        let sdp = sdp::constrain_h264_codec(&sdp, self.video_fps);
         let answer = self.stream.send_sdp_offer(&sdp).await?;
         // Try both URIs; the console may echo draft-holmer-rmcat or transport-wide-cc-02.
         let twcc_id = sdp::extract_extmap_id(&answer, super::peer::TWCC_URI)

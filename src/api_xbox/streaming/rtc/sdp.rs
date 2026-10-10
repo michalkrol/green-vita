@@ -228,3 +228,77 @@ mod tests {
         assert_eq!(cap_video_bitrate(offer, 8_000), offer);
     }
 }
+
+/// Injects H.264 codec constraints (profile-level-id, max-fr, max-fs) into the
+/// video SDP to limit encoder GOP size, frame rate, and frame size.
+/// This helps prevent large I-frame bursts and encourages shorter GOP for faster recovery.
+pub(super) fn constrain_h264_codec(sdp: &str, video_fps: u32) -> String {
+    let newline = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
+    let trailing_newline = sdp.ends_with('\n');
+    let lines = sdp
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .collect::<Vec<_>>();
+    let mut output = Vec::with_capacity(lines.len() + 2);
+
+    let mut in_video = false;
+    let mut video_h264_pt = String::new();
+    let mut fmtp_injected = false;
+
+    for line in lines {
+        if line.starts_with("m=") {
+            in_video = line.starts_with("m=video ");
+            fmtp_injected = false;
+        }
+        if in_video && line.starts_with("a=rtpmap:") && line.to_ascii_lowercase().contains("h264") {
+            if let Some(pt) = line
+                .strip_prefix("a=rtpmap:")
+                .and_then(|rest| rest.split_whitespace().next())
+            {
+                video_h264_pt = pt.to_owned();
+            }
+        }
+        // Inject fmtp after the last fmtp line for H264, or before next non-fmtp line
+        if in_video && line.starts_with(&format!("a=fmtp:{video_h264_pt} ")) {
+            output.push(line.to_owned());
+            if !fmtp_injected && !video_h264_pt.is_empty() {
+                // Baseline profile (42e01f), max 30fps, max frame size ~1080p (8160 macroblocks)
+                // max-fs = 8160 (1920*1080/256), max-fr = 30*90000/30 = 90000
+                output.push(format!(
+                    "a=fmtp:{video_h264_pt} profile-level-id=42e01f;packetization-mode=1;max-fr={};max-fs=8160",
+                    video_fps * 90_000 / video_fps
+                ));
+                fmtp_injected = true;
+            }
+            continue;
+        }
+        // If we have H264 PT but no fmtp line yet, inject before next non-fmtp attribute
+        if in_video
+            && !fmtp_injected
+            && !video_h264_pt.is_empty()
+            && !line.starts_with("a=fmtp:")
+            && (line.starts_with("a=") || line.starts_with("b="))
+        {
+            output.push(format!(
+                "a=fmtp:{video_h264_pt} profile-level-id=42e01f;packetization-mode=1;max-fr={};max-fs=8160",
+                video_fps * 90_000 / video_fps
+            ));
+            fmtp_injected = true;
+        }
+        output.push(line.to_owned());
+    }
+
+    // Fallback: inject at end of video section
+    if in_video && !fmtp_injected && !video_h264_pt.is_empty() {
+        output.push(format!(
+            "a=fmtp:{video_h264_pt} profile-level-id=42e01f;packetization-mode=1;max-fr={};max-fs=8160",
+            video_fps * 90_000 / video_fps
+        ));
+    }
+
+    let mut result = output.join(newline);
+    if trailing_newline {
+        result.push_str(newline);
+    }
+    result
+}

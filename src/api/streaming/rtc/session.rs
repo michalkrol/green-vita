@@ -23,13 +23,15 @@ const KEYFRAME_STORM_THRESHOLD: usize = 8;
 const KEYFRAME_STORM_COOLDOWN: Duration = Duration::from_millis(500);
 /// When measured glass lag stays above this for LAG_FLUSH_SUSTAIN, assume the
 /// console-side queue is backlogged and force an encoder reconfigure to flush it.
-const LAG_FLUSH_THRESHOLD_US: u64 = 150_000;
-const LAG_FLUSH_SUSTAIN: Duration = Duration::from_secs(1);
-const LAG_FLUSH_MIN_INTERVAL: Duration = Duration::from_secs(10);
+/// Lowered from 150ms to 75ms for faster backlog detection.
+const LAG_FLUSH_THRESHOLD_US: u64 = 75_000;
+const LAG_FLUSH_SUSTAIN: Duration = Duration::from_millis(300);
+const LAG_FLUSH_MIN_INTERVAL: Duration = Duration::from_secs(3);
 /// Independent trigger: each dropped access unit corresponds to a console-side
 /// shed/skip event whose pacer slip never recovers; flush after this many new
 /// drops even if the (re-anchoring) lag reading hasn't caught up.
-const DROP_FLUSH_THRESHOLD: u64 = 25;
+/// Lowered from 25 to 10 for earlier detection.
+const DROP_FLUSH_THRESHOLD: u64 = 10;
 const INITIAL_VIDEO_GRACE: Duration = Duration::from_millis(500);
 const INITIAL_VIDEO_KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
 /// When true, no keyframe requests are sent (initial watchdog, recovery PLI).
