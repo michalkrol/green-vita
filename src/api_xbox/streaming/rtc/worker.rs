@@ -24,6 +24,11 @@ struct XboxRtcWorkerProvider {
     video_h264_profile: H264Profile,
     decode_sleep_ms: u32,
     decode_queue_depth: usize,
+    remb_interval_ms: u32,
+    twcc_delay_injection: bool,
+    twcc_delay_ramp_max: u8,
+    remb_shock_enabled: bool,
+    periodic_keyframe_enabled: bool,
 }
 
 impl RtcWorkerProvider for XboxRtcWorkerProvider {
@@ -48,6 +53,11 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
                 decode_sleep_ms: self.decode_sleep_ms,
                 decode_queue_depth: self.decode_queue_depth,
             },
+            remb_interval_ms: self.remb_interval_ms,
+            twcc_delay_injection: self.twcc_delay_injection,
+            twcc_delay_ramp_max: self.twcc_delay_ramp_max,
+            remb_shock_enabled: self.remb_shock_enabled,
+            periodic_keyframe_enabled: self.periodic_keyframe_enabled,
         }
     }
 
@@ -74,6 +84,11 @@ pub(crate) fn spawn(
     decode_sleep_ms: u32,
     decode_queue_depth: u32,
     hard_bandwidth_cap: bool,
+    remb_interval_ms: u32,
+    twcc_delay_injection: bool,
+    twcc_delay_ramp_max: u8,
+    remb_shock_enabled: bool,
+    periodic_keyframe_enabled: bool,
 ) -> Result<RtcWorker> {
     let video_fps = if unlock_video_fps {
         UNLOCKED_VIDEO_FPS
@@ -95,5 +110,10 @@ pub(crate) fn spawn(
         video_h264_profile,
         decode_sleep_ms,
         decode_queue_depth: decode_queue_depth as usize,
+        remb_interval_ms,
+        twcc_delay_injection,
+        twcc_delay_ramp_max,
+        remb_shock_enabled,
+        periodic_keyframe_enabled,
     })
 }

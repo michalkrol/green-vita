@@ -43,6 +43,11 @@ pub(crate) struct RtcSessionConfig {
     pub audio_payload_type: u8,
     pub video_fps: u32,
     pub decoder: DecoderConfig,
+    pub remb_interval_ms: u32,
+    pub twcc_delay_injection: bool,
+    pub twcc_delay_ramp_max: u8,
+    pub remb_shock_enabled: bool,
+    pub periodic_keyframe_enabled: bool,
 }
 
 /// Provider-specific hooks invoked by the reusable RTC session.
@@ -84,6 +89,9 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     drops_at_last_flush: u64,
     initial_video_watchdog_started_at: Option<Instant>,
     last_initial_video_keyframe_request: Option<Instant>,
+    /// Periodic keyframe PLI interval (200ms) — experimental, may force encoder catchup.
+    periodic_keyframe_interval: Option<Duration>,
+    last_periodic_keyframe: Option<Instant>,
     pub status: String,
 }
 
@@ -96,7 +104,21 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     ) -> Result<Self> {
         let transport =
             RtcTransport::bind(&mut peer, config.stun_server, config.route_probe).await?;
-        let video = VideoReceiver::new(config.decoder, direct_output, config.video_fps)?;
+        let video = VideoReceiver::new(
+            config.decoder,
+            direct_output,
+            config.video_fps,
+            config.remb_interval_ms,
+            config.twcc_delay_injection,
+            config.twcc_delay_ramp_max,
+            config.remb_shock_enabled,
+        )?;
+
+        let periodic_keyframe_interval = if config.periodic_keyframe_enabled {
+            Some(Duration::from_millis(200))
+        } else {
+            None
+        };
 
         Ok(Self {
             peer,
@@ -112,6 +134,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             drops_at_last_flush: 0,
             initial_video_watchdog_started_at: None,
             last_initial_video_keyframe_request: None,
+            periodic_keyframe_interval,
+            last_periodic_keyframe: None,
             status: "Negotiating WebRTC connection".to_owned(),
         })
     }
@@ -165,6 +189,19 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             keyframe_requested = true;
         }
         self.request_keyframe(keyframe_requested, now);
+        // Periodic keyframe (PLI) — experimental: may force encoder catchup
+        // when lag accumulates by resetting the GOP chain.
+        if let Some(interval) = self.periodic_keyframe_interval
+            && self.connection_state == RTCPeerConnectionState::Connected
+        {
+            let due = self
+                .last_periodic_keyframe
+                .is_none_or(|last| now.duration_since(last) >= interval);
+            if due {
+                self.video.request_keyframe(&mut self.peer);
+                self.last_periodic_keyframe = Some(now);
+            }
+        }
         // REMB+TWCC feedback: keeps the console's bandwidth estimate fresh.
         self.video.send_remb(&mut self.peer, now);
         self.video.send_twcc(&mut self.peer, now);

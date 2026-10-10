@@ -191,6 +191,7 @@ fn pin_decoder_thread() {
 
 /// Pins the calling thread to CPU1 (network/RTCP feedback processing).
 #[cfg(target_os = "vita")]
+#[allow(dead_code)]
 pub(crate) fn pin_rtc_thread() {
     let thread_id = unsafe { vitasdk_sys::sceKernelGetThreadId() };
     let result = unsafe {

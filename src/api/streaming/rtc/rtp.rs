@@ -450,7 +450,14 @@ impl VideoRtp {
         (bytes as u64 * 8_000_000 / elapsed_us.max(1)) as u32
     }
 
-    pub(crate) fn take_twcc_report(&mut self, media_ssrc: u32, _current_bitrate_bps: u32, _ceiling_bps: u32) -> Option<TwccReport> {
+    pub(crate) fn take_twcc_report(
+        &mut self,
+        media_ssrc: u32,
+        _current_bitrate_bps: u32,
+        _ceiling_bps: u32,
+        twcc_delay_injection: bool,
+        twcc_delay_ramp_max: u8,
+    ) -> Option<TwccReport> {
         if self.twcc_annotations.is_empty() {
             return None;
         }
@@ -467,6 +474,9 @@ impl VideoRtp {
         //
         // Clamp max delta to 6 (1.5ms) so transient jitter spikes don't
         // make GCC overreact and throttle too low.
+        // If delay injection is enabled and we're over the ceiling, inject
+        // synthetic delay to signal congestion to the sender's GCC.
+        // Ramp: max delta = twcc_delay_ramp_max * base_delta (capped at 15).
 use rtcp::transport_feedbacks::transport_layer_cc::PacketStatusChunk;
 use rtcp::transport_feedbacks::transport_layer_cc::RecvDelta;
 use rtcp::transport_feedbacks::transport_layer_cc::RunLengthChunk;
@@ -479,13 +489,22 @@ use rtcp::transport_feedbacks::transport_layer_cc::SymbolTypeTcc;
         })];
         let recv_deltas: Vec<_> = (0..count)
             .map(|i| {
-                let delta = if i == 0 {
+                let base_delta = if i == 0 {
                     1 // first packet: small placeholder delta
                 } else {
                     let elapsed_us = annotations[i as usize].1
                         .duration_since(annotations[i as usize - 1].1)
                         .as_micros() as u64;
                     (elapsed_us / 250).clamp(1, 6) as i64
+                };
+                // If delay injection is enabled, apply ramp to signal congestion
+                let delta = if twcc_delay_injection && base_delta > 0 {
+                    // Ramp up the delay proportionally to signal congestion
+                    // Max delta = twcc_delay_ramp_max * base_delta, capped at 15
+                    let ramp_max = twcc_delay_ramp_max as i64;
+                    (base_delta * ramp_max).min(15)
+                } else {
+                    base_delta
                 };
                 RecvDelta {
                     type_tcc_packet: unsafe { std::mem::transmute::<u16, SymbolTypeTcc>(1) },

@@ -239,6 +239,11 @@ impl App {
                     self.settings.video_decode_sleep_ms,
                     self.settings.video_decode_queue_depth,
                     self.settings.hard_bandwidth_cap,
+                    self.settings.remb_interval_ms,
+                    self.settings.twcc_delay_injection,
+                    self.settings.twcc_delay_ramp_max,
+                    self.settings.remb_shock_enabled,
+                    self.settings.periodic_keyframe_enabled,
                 ) {
                     Ok(streaming) => Ok(AppState::Streaming(streaming)),
                     Err(error) => {

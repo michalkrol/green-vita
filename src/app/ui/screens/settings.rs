@@ -31,6 +31,11 @@ pub enum Command {
     SetPureStreamMode(bool),
     SetHardBandwidthCap(bool),
     SetStreamProfile(StreamProfile),
+    SetRembIntervalMs(u32),
+    SetTwccDelayInjection(bool),
+    SetTwccDelayRampMax(u8),
+    SetRembShockEnabled(bool),
+    SetPeriodicKeyframe(bool),
 }
 
 #[derive(Clone)]
@@ -51,6 +56,10 @@ enum SettingsRow {
     PureStreamMode(bool),
     HardBandwidthCap(bool),
     StreamProfile(StreamProfile),
+    RembIntervalMs(u32),
+    TwccDelayInjection(bool),
+    TwccDelayRampMax(u8),
+    RembShockEnabled(bool),
     Version,
     Back,
 }
@@ -113,6 +122,11 @@ rows.push(SettingsRow::UnlockVideoFps(app.settings.unlock_video_fps));
             rows.push(SettingsRow::StreamFpsOverlay(app.settings.show_fps_overlay));
         }
         rows.push(SettingsRow::HardBandwidthCap(app.settings.hard_bandwidth_cap));
+        // RTCP feedback tuning (lag investigation)
+        rows.push(SettingsRow::RembIntervalMs(app.settings.remb_interval_ms));
+        rows.push(SettingsRow::TwccDelayInjection(app.settings.twcc_delay_injection));
+        rows.push(SettingsRow::TwccDelayRampMax(app.settings.twcc_delay_ramp_max));
+        rows.push(SettingsRow::RembShockEnabled(app.settings.remb_shock_enabled));
     }
     rows.push(SettingsRow::Version);
     rows.push(SettingsRow::Back);
@@ -417,6 +431,88 @@ row_index += 1;
                     );
                 }
                 row_index += 1;
+
+                // RTCP feedback tuning
+                {
+                    let label = format!(
+                        "REMB interval: {}ms",
+                        match app.settings.remb_interval_ms {
+                            100 => "100 (aggressive)".to_string(),
+                            250 => "250 (balanced)".to_string(),
+                            500 => "500 (conservative)".to_string(),
+                            1000 => "1000 (slow)".to_string(),
+                            v => v.to_string(),
+                        }
+                    );
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = match app.settings.remb_interval_ms {
+                            100 => 250,
+                            250 => 500,
+                            500 => 1000,
+                            1000 => 100,
+                            _ => 500,
+                        };
+                        commands.push(Command::SetRembIntervalMs(next).into());
+                    }
+                }
+                row_index += 1;
+
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.twcc_delay_injection,
+                    "TWCC delay injection (throttle on overshoot)".to_owned(),
+                ) {
+                    commands.push(
+                        Command::SetTwccDelayInjection(!app.settings.twcc_delay_injection)
+                            .into(),
+                    );
+                }
+                row_index += 1;
+
+                {
+                    let label = format!("TWCC delay ramp max: {}", app.settings.twcc_delay_ramp_max);
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = match app.settings.twcc_delay_ramp_max {
+                            1 => 3,
+                            3 => 6,
+                            6 => 10,
+                            10 => 15,
+                            15 => 20,
+                            20 => 1,
+                            _ => 6,
+                        };
+                        commands.push(Command::SetTwccDelayRampMax(next).into());
+                    }
+                }
+                row_index += 1;
+
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.remb_shock_enabled,
+                    "REMB shock (emergency queue purge)".to_owned(),
+                ) {
+                    commands.push(
+                        Command::SetRembShockEnabled(!app.settings.remb_shock_enabled)
+                            .into(),
+                    );
+                }
+                row_index += 1;
+
+                // Periodic keyframe (theory: forces encoder catchup)
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.periodic_keyframe_enabled,
+                    "Periodic keyframe (200ms PLI) — may force encoder catchup".to_owned(),
+                ) {
+                    commands.push(
+                        Command::SetPeriodicKeyframe(!app.settings.periodic_keyframe_enabled)
+                            .into(),
+                    );
+                }
+                row_index += 1;
                 } // end Custom-only params
 
                 // Version info row (non-interactive)
@@ -667,7 +763,36 @@ SettingsRow::PureStreamMode(enabled) => {
                 };
                 return self.handle_settings_command(Command::SetStreamProfile(next));
             }
-            _ => {}
+            SettingsRow::RembIntervalMs(ms) => {
+                let next = match ms {
+                    100 => 250,
+                    250 => 500,
+                    500 => 1000,
+                    1000 => 100,
+                    _ => 500,
+                };
+                return self.handle_settings_command(Command::SetRembIntervalMs(next));
+            }
+            SettingsRow::TwccDelayInjection(enabled) => {
+                return self.handle_settings_command(Command::SetTwccDelayInjection(!enabled));
+            }
+            SettingsRow::TwccDelayRampMax(max) => {
+                let next = match max {
+                    1 => 3,
+                    3 => 6,
+                    6 => 10,
+                    10 => 15,
+                    15 => 20,
+                    20 => 1,
+                    _ => 6,
+                };
+                return self.handle_settings_command(Command::SetTwccDelayRampMax(next));
+            }
+            SettingsRow::RembShockEnabled(enabled) => {
+                return self.handle_settings_command(Command::SetRembShockEnabled(!enabled));
+            }
+            SettingsRow::Version => {}
+            SettingsRow::Back => {}
         }
 
         Ok(())
@@ -743,6 +868,11 @@ Command::SetHardBandwidthCap(enabled) => {
                     self.settings.custom_stream_debug_info = self.settings.show_stream_debug_info;
                     self.settings.custom_fps_overlay = self.settings.show_fps_overlay;
                     self.settings.custom_hard_bandwidth_cap = self.settings.hard_bandwidth_cap;
+                    self.settings.custom_remb_interval_ms = self.settings.remb_interval_ms;
+                    self.settings.custom_twcc_delay_injection = self.settings.twcc_delay_injection;
+                    self.settings.custom_twcc_delay_ramp_max = self.settings.twcc_delay_ramp_max;
+                    self.settings.custom_remb_shock_enabled = self.settings.remb_shock_enabled;
+                    self.settings.custom_periodic_keyframe_enabled = self.settings.periodic_keyframe_enabled;
                 }
                 self.settings.stream_profile = profile;
                 match profile {
@@ -774,6 +904,11 @@ Command::SetHardBandwidthCap(enabled) => {
                         self.settings.show_stream_debug_info = self.settings.custom_stream_debug_info;
                         self.settings.show_fps_overlay = self.settings.custom_fps_overlay;
                         self.settings.hard_bandwidth_cap = self.settings.custom_hard_bandwidth_cap;
+                        self.settings.remb_interval_ms = self.settings.custom_remb_interval_ms;
+                        self.settings.twcc_delay_injection = self.settings.custom_twcc_delay_injection;
+                        self.settings.twcc_delay_ramp_max = self.settings.custom_twcc_delay_ramp_max;
+                        self.settings.remb_shock_enabled = self.settings.custom_remb_shock_enabled;
+                        self.settings.periodic_keyframe_enabled = self.settings.custom_periodic_keyframe_enabled;
                     }
                 }
                 self.settings.save();
@@ -794,6 +929,11 @@ Command::SetHardBandwidthCap(enabled) => {
             Command::SetVideoDecodeQueueDepth(depth) => { self.settings.video_decode_queue_depth = depth.max(1).min(20); self.settings.save(); }
             Command::SetSwapShouldersTriggers(enabled) => { self.settings.swap_shoulders_and_triggers = enabled; self.settings.save(); }
             Command::SetPureStreamMode(enabled) => { self.settings.pure_stream_mode = enabled; self.settings.save(); }
+            Command::SetRembIntervalMs(ms) => { self.settings.remb_interval_ms = ms; self.settings.save(); }
+            Command::SetTwccDelayInjection(enabled) => { self.settings.twcc_delay_injection = enabled; self.settings.save(); }
+            Command::SetTwccDelayRampMax(max) => { self.settings.twcc_delay_ramp_max = max; self.settings.save(); }
+            Command::SetRembShockEnabled(enabled) => { self.settings.remb_shock_enabled = enabled; self.settings.save(); }
+            Command::SetPeriodicKeyframe(enabled) => { self.settings.periodic_keyframe_enabled = enabled; self.settings.save(); }
         }
 
         Ok(())

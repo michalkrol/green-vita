@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
-const REMB_INTERVAL: Duration = Duration::from_millis(500);
+const DEFAULT_REMB_INTERVAL: Duration = Duration::from_millis(500);
 const TWCC_INTERVAL: Duration = Duration::from_millis(15);
 /// Send TWCC immediately when this many packets have accumulated since last send,
 /// preventing large I-frame bursts from looking like bufferbloat to the rate controller.
@@ -46,6 +46,14 @@ pub(crate) struct VideoReceiver {
     twcc_fb_pkt_count: u8,
     stats: VideoStats,
     remb_shock_until: Option<Instant>,
+    /// Configurable REMB interval (ms).
+    remb_interval_ms: u32,
+    /// Whether TWCC delay injection is enabled (throttle on overshoot).
+    twcc_delay_injection: bool,
+    /// Maximum TWCC delay ramp multiplier.
+    twcc_delay_ramp_max: u8,
+    /// Whether REMB shock is enabled (emergency queue purge).
+    remb_shock_enabled: bool,
 }
 
 impl VideoReceiver {
@@ -53,12 +61,28 @@ impl VideoReceiver {
         config: DecoderConfig,
         direct_output: Arc<DirectVideoOutput>,
         _video_fps: u32,
+        remb_interval_ms: u32,
+        twcc_delay_injection: bool,
+        twcc_delay_ramp_max: u8,
+        remb_shock_enabled: bool,
     ) -> Result<Self> {
         let decoder = VideoDecodeWorker::spawn(config, direct_output)?;
-        Ok(Self::init(decoder))
+        Ok(Self::init(
+            decoder,
+            remb_interval_ms,
+            twcc_delay_injection,
+            twcc_delay_ramp_max,
+            remb_shock_enabled,
+        ))
     }
 
-    fn init(decoder: VideoDecodeWorker) -> Self {
+    fn init(
+        decoder: VideoDecodeWorker,
+        remb_interval_ms: u32,
+        twcc_delay_injection: bool,
+        twcc_delay_ramp_max: u8,
+        remb_shock_enabled: bool,
+    ) -> Self {
         Self {
             track_id: None,
             receiver_id: None,
@@ -75,6 +99,10 @@ impl VideoReceiver {
             twcc_fb_pkt_count: 0,
             stats: VideoStats::default(),
             remb_shock_until: None,
+            remb_interval_ms,
+            twcc_delay_injection,
+            twcc_delay_ramp_max,
+            remb_shock_enabled,
         }
     }
 
@@ -185,18 +213,20 @@ impl VideoReceiver {
             return;
         };
         // If shock mode is active, send a low REMB to trigger encoder queue purge.
-        let bitrate = if self
-            .remb_shock_until
-            .is_some_and(|shock_until| now < shock_until)
+        let bitrate = if self.remb_shock_enabled
+            && self
+                .remb_shock_until
+                .is_some_and(|shock_until| now < shock_until)
         {
             REMB_SHOCK_BPS as f32
         } else {
             self.remb_shock_until = None;
             REMB_BPS.load(Ordering::Relaxed) as f32
         };
+        let remb_interval = Duration::from_millis(self.remb_interval_ms as u64);
         if self
             .last_remb_at
-            .is_some_and(|sent_at| now.duration_since(sent_at) < REMB_INTERVAL)
+            .is_some_and(|sent_at| now.duration_since(sent_at) < remb_interval)
         {
             return;
         }
@@ -233,7 +263,10 @@ impl VideoReceiver {
         // +10% hysteresis: delay injection only triggers when measured bitrate
         // exceeds the REMB target by 10%, preventing GCC oscillation from noise.
         let ceiling_bps = REMB_BPS.load(Ordering::Relaxed).saturating_mul(11) / 10;
-        let Some(report) = self.rtp.take_twcc_report(ssrc, current_bps, ceiling_bps) else {
+        let Some(report) = self
+            .rtp
+            .take_twcc_report(ssrc, current_bps, ceiling_bps, self.twcc_delay_injection, self.twcc_delay_ramp_max)
+        else {
             return;
         };
         self.last_twcc_at = Some(now);
