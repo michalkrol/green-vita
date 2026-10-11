@@ -1,5 +1,5 @@
 use crate::api::streaming::rtc::rtp;
-use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker};
+use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker, metrics::METRICS};
 use anyhow::Result;
 use bytes::Bytes;
 use rtc::media_stream::MediaStreamTrackId;
@@ -54,6 +54,8 @@ pub(crate) struct VideoReceiver {
     twcc_delay_ramp_max: u8,
     /// Whether REMB shock is enabled (emergency queue purge).
     remb_shock_enabled: bool,
+    /// Base REMB ceiling from user settings (hard_bandwidth_cap * bitrate or 15Mbps).
+    remb_base_cap_bps: u32,
 }
 
 impl VideoReceiver {
@@ -65,6 +67,7 @@ impl VideoReceiver {
         twcc_delay_injection: bool,
         twcc_delay_ramp_max: u8,
         remb_shock_enabled: bool,
+        remb_base_cap_bps: u32,
     ) -> Result<Self> {
         let decoder = VideoDecodeWorker::spawn(config, direct_output)?;
         Ok(Self::init(
@@ -73,6 +76,7 @@ impl VideoReceiver {
             twcc_delay_injection,
             twcc_delay_ramp_max,
             remb_shock_enabled,
+            remb_base_cap_bps,
         ))
     }
 
@@ -82,6 +86,7 @@ impl VideoReceiver {
         twcc_delay_injection: bool,
         twcc_delay_ramp_max: u8,
         remb_shock_enabled: bool,
+        remb_base_cap_bps: u32,
     ) -> Self {
         Self {
             track_id: None,
@@ -103,6 +108,7 @@ impl VideoReceiver {
             twcc_delay_injection,
             twcc_delay_ramp_max,
             remb_shock_enabled,
+            remb_base_cap_bps,
         }
     }
 
@@ -213,16 +219,36 @@ impl VideoReceiver {
             return;
         };
         // If shock mode is active, send a low REMB to trigger encoder queue purge.
-        let bitrate = if self.remb_shock_enabled
+        if self.remb_shock_enabled
             && self
                 .remb_shock_until
                 .is_some_and(|shock_until| now < shock_until)
         {
-            REMB_SHOCK_BPS as f32
-        } else {
-            self.remb_shock_until = None;
-            REMB_BPS.load(Ordering::Relaxed) as f32
-        };
+            // Shock mode: send REMB_SHOCK_BPS regardless of dynamic adjustment
+            let remb_interval = Duration::from_millis(self.remb_interval_ms as u64);
+            if self
+                .last_remb_at
+                .is_some_and(|sent_at| now.duration_since(sent_at) < remb_interval)
+            {
+                return;
+            }
+            self.last_remb_at = Some(now);
+            if let Some(mut receiver) = peer.rtp_receiver(receiver_id) {
+                let remb = rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {
+                    sender_ssrc: LOCAL_RTCP_SENDER_SSRC,
+                    bitrate: REMB_SHOCK_BPS as f32,
+                    ssrcs: vec![ssrc],
+                };
+                let _ = receiver.write_rtcp(vec![Box::new(remb)]);
+            }
+            return;
+        }
+        self.remb_shock_until = None;
+
+        // Dynamic REMB adjustment based on network conditions
+        self.adjust_remb_dynamically(now);
+
+        let bitrate = REMB_BPS.load(Ordering::Relaxed) as f32;
         let remb_interval = Duration::from_millis(self.remb_interval_ms as u64);
         if self
             .last_remb_at
@@ -239,6 +265,71 @@ impl VideoReceiver {
                     ssrcs: vec![ssrc],
                 };
             let _ = receiver.write_rtcp(vec![Box::new(remb)]);
+        }
+    }
+
+    /// Dynamically adjusts REMB bitrate based on RTCP feedback and network conditions.
+    /// Called before each REMB send to adapt to changing conditions.
+    fn adjust_remb_dynamically(&mut self, now: Instant) {
+        use crate::streaming::video::metrics::METRICS;
+        use std::sync::atomic::Ordering;
+
+        let base_cap = self.remb_base_cap_bps;
+        let mut target = base_cap;
+
+        // Read RTCP Receiver Report metrics
+        let loss_frac_pct = METRICS.rtcp_rr_loss_fraction.load(Ordering::Relaxed) as f32 / 100.0; // stored as % * 100
+        let jitter = METRICS.rtcp_rr_jitter.load(Ordering::Relaxed) as f32;
+        let stream_lag_us = METRICS.stream_lag_us.load(Ordering::Relaxed);
+
+        // 1. Loss-based reduction: >5% loss → -30%, >2% → -15%, >1% → -5%
+        if loss_frac_pct > 5.0 {
+            target = target.saturating_mul(7) / 10;  // -30%
+        } else if loss_frac_pct > 2.0 {
+            target = target.saturating_mul(85) / 100;  // -15%
+        } else if loss_frac_pct > 1.0 {
+            target = target.saturating_mul(95) / 100;  // -5%
+        }
+
+        // 2. Jitter-based reduction: high jitter indicates congestion
+        // Jitter in RTP timestamp units (90kHz clock). >1000 = ~11ms
+        if jitter > 2000.0 {
+            target = target.saturating_mul(8) / 10;  // -20%
+        } else if jitter > 1000.0 {
+            target = target.saturating_mul(9) / 10;  // -10%
+        }
+
+        // 3. Lag-based reduction: sustained high lag → console queue backing up
+        if stream_lag_us > 100_000 {  // >100ms
+            target = target.saturating_mul(8) / 10;  // -20%
+        } else if stream_lag_us > 50_000 {  // >50ms
+            target = target.saturating_mul(9) / 10;  // -10%
+        }
+
+        // 4. Recovery: slow ramp up when conditions are good
+        // Only recover if: low loss (<1%), low jitter (<500), low lag (<30ms)
+        let conditions_good = loss_frac_pct < 1.0 && jitter < 500.0 && stream_lag_us < 30_000;
+        if conditions_good {
+            let current = REMB_BPS.load(Ordering::Relaxed);
+            if current < base_cap {
+                // Ramp up by 5% per adjustment, capped at base_cap
+                let increased = current.saturating_add(current / 20).min(base_cap);
+                target = target.max(increased);
+            }
+        }
+
+        // 5. Hard floor: never go below 500kbps (minimum viable stream)
+        const MIN_REMB_BPS: u32 = 500_000;
+        target = target.max(MIN_REMB_BPS);
+
+        // Apply the new target
+        REMB_BPS.store(target, Ordering::Release);
+
+        // Debug log when significant change
+        let current = REMB_BPS.load(Ordering::Relaxed);
+        if (current as i32 - target as i32).abs() > (base_cap as i32 / 20) {
+            eprintln!("REMB adjusted: {} -> {} kbps (loss={:.1}% jitter={:.0} lag={}ms)",
+                current / 1000, target / 1000, loss_frac_pct, jitter, stream_lag_us / 1000);
         }
     }
 

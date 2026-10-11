@@ -50,6 +50,7 @@ pub(crate) struct RtcSessionConfig {
     pub twcc_delay_ramp_max: u8,
     pub remb_shock_enabled: bool,
     pub periodic_keyframe_enabled: bool,
+    pub remb_base_cap_bps: u32,
 }
 
 /// Provider-specific hooks invoked by the reusable RTC session.
@@ -114,6 +115,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             config.twcc_delay_injection,
             config.twcc_delay_ramp_max,
             config.remb_shock_enabled,
+            config.remb_base_cap_bps,
         )?;
 
         let periodic_keyframe_interval = if config.periodic_keyframe_enabled {
