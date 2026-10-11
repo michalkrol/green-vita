@@ -343,6 +343,61 @@ impl VideoReceiver {
             self.stats.decode_errors,
         ))
     }
+
+    /// Process incoming RTCP packets from the console (SenderReport, ReceiverReport, etc.)
+    /// Updates internal metrics for dynamic REMB adjustment.
+    pub(crate) fn handle_rtcp(&mut self, rtcp_packets: &[Box<dyn rtcp::Packet>]) {
+        use rtcp::receiver_report::ReceiverReport;
+        use rtcp::sender_report::SenderReport;
+        use rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
+        use rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+        use rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+        use crate::streaming::video::metrics::METRICS;
+
+        for packet in rtcp_packets {
+            // Sender Report from Xbox: contains NTP timestamp for RTT calculation
+            if let Some(sr) = packet.as_any().downcast_ref::<SenderReport>() {
+                // sr.ntp_time = wall clock when report sent
+                // sr.rtp_time = corresponding RTP timestamp
+                // Can compute RTT if we track when we sent our RR
+                eprintln!("RTCP SR from Xbox: ssrc={} ntp={} rtp_ts={} pkt_cnt={} oct_cnt={}",
+                    sr.ssrc, sr.ntp_time, sr.rtp_time, sr.packet_count, sr.octet_count);
+            }
+
+            // Receiver Report from Xbox: how Xbox is receiving our (non-existent) stream
+            // Actually Xbox sends RR for the stream IT sends (our inbound)
+            if let Some(rr) = packet.as_any().downcast_ref::<ReceiverReport>() {
+                for report in &rr.reports {
+                    let loss_frac = report.fraction_lost as f32 / 256.0;
+                    let jitter = report.jitter as f32;
+                    let last_seq = report.last_sequence_number;
+                    let total_lost = report.total_lost;
+
+                    eprintln!("RTCP RR from Xbox: ssrc={} loss={:.1}% jitter={} last_seq={} lost={}",
+                        report.ssrc, loss_frac * 100.0, jitter, last_seq, total_lost);
+
+                    // Store for dynamic REMB
+                    METRICS.rtcp_rr_loss_fraction.store((loss_frac * 100.0) as u64, Ordering::Relaxed);
+                    METRICS.rtcp_rr_jitter.store(jitter as u64, Ordering::Relaxed);
+                }
+            }
+
+            // NACK from Xbox: wants retransmission of our (non-existent) outbound stream
+            if let Some(nack) = packet.as_any().downcast_ref::<TransportLayerNack>() {
+                eprintln!("RTCP NACK from Xbox: ssrc={} nacks={:?}", nack.media_ssrc, nack.nacks);
+            }
+
+            // PLI from Xbox: wants keyframe from our (non-existent) outbound stream
+            if let Some(pli) = packet.as_any().downcast_ref::<PictureLossIndication>() {
+                eprintln!("RTCP PLI from Xbox: ssrc={}", pli.media_ssrc);
+            }
+
+            // FIR from Xbox: wants keyframe from our (non-existent) outbound stream
+            if let Some(fir) = packet.as_any().downcast_ref::<FullIntraRequest>() {
+                eprintln!("RTCP FIR from Xbox: {:?}", fir.fir);
+            }
+        }
+    }
 }
 
 fn rtp_stats_scratch() -> crate::api::streaming::rtc::rtp::VideoSampleStats {

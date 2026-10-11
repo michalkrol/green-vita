@@ -34,6 +34,10 @@ pub(crate) struct VideoMetrics {
     pub(crate) video_bandwidth_kbps: AtomicU64,
     pub(crate) display_pickup_us: AtomicU64,
     pub(crate) display_pickup_max_us: AtomicU64,
+    // RTCP Receiver Report metrics (from Xbox)
+    pub(crate) rtcp_rr_loss_fraction: AtomicU64,  // % * 100 (e.g., 5% = 500)
+    pub(crate) rtcp_rr_jitter: AtomicU64,         // jitter in RTP timestamp units
+    pub(crate) rtcp_sr_ntp_timestamp: AtomicU64,  // NTP timestamp from SenderReport
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -70,6 +74,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     video_bandwidth_kbps: AtomicU64::new(0),
     display_pickup_us: AtomicU64::new(0),
     display_pickup_max_us: AtomicU64::new(0),
+    rtcp_rr_loss_fraction: AtomicU64::new(0),
+    rtcp_rr_jitter: AtomicU64::new(0),
+    rtcp_sr_ntp_timestamp: AtomicU64::new(0),
 };
 
 pub fn video_performance_summary() -> String {

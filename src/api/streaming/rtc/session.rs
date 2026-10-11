@@ -313,7 +313,11 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                         &data_message.data,
                     );
                 }
-                _ => {}
+                RTCMessage::RtcpPacket(track_id, rtcp_packets) => {
+                    if self.video.handles(&track_id) {
+                        self.video.handle_rtcp(&rtcp_packets);
+                    }
+                }
             }
         }
         keyframe_requested
