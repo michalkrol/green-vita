@@ -388,12 +388,7 @@ impl VideoRtp {
             self.damage_score = self.damage_score.saturating_sub(1);
         }
 
-        if !worker.submit_access_unit(
-            data.to_vec(),
-            self.source_frame_duration_us,
-            completed.timestamp,
-            completed.last_packet_at,
-        ) {
+        if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
             eprintln!("Video decoder queue is full; continuing while requesting a keyframe");
             *keyframe_requested = true;
             stats.dropped = stats.dropped.saturating_add(1);

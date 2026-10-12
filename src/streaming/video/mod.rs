@@ -180,10 +180,6 @@ pub struct DecodedFrame {
     pub texture_index: usize,
     pub generation: u64,
     pub published_at: Instant,
-    /// RTP timestamp (90 kHz) of the video frame — the server_data_key for metadata reports.
-    pub rtp_timestamp: u32,
-    /// Arrival time of the last RTP packet of this frame (used for arrival-time metadata).
-    pub last_packet_at: Instant,
 }
 
 #[derive(Clone, Copy)]

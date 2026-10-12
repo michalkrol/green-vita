@@ -159,10 +159,9 @@ Xbox's Google GCC (congestion controller)   You just report conditions
   - they are not packet loss.
 - **Some HUD fields are structurally zero** because nothing ever increments
   them: `hold:S` (saves), plus `abandons`, `wait_drops`, `invalid`,
-  `dec_queue_full`. The only live member of `hold:S/E/G` is `E` (stall
-  expiries), which fired once — at t=2 s of a session, during the startup
-  burst — and never again. `video_metadata_sent` is now live (per-frame
-  render-timing metadata is sent on the input channel).
+  `dec_queue_full`, and `video_metadata_sent`. The only live member of
+  `hold:S/E/G` is `E` (stall expiries), which fired once — at t=2 s of a
+  session, during the startup burst — and never again.
 - The 0.2.5 latency accumulation and artefacts were caused by the once-per-second
   blocking metrics-CSV write on the RTC pump thread (fixed in 966f885, confirmed
   on hardware at a 4000 kbps cap with low latency, no accumulation, and only

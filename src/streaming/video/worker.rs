@@ -21,8 +21,6 @@ struct QueuedAccessUnit {
     data: Vec<u8>,
     queued_at: Instant,
     generation: u64,
-    rtp_timestamp: u32,
-    last_packet_at: Instant,
 }
 
 enum DecoderCommand {
@@ -119,13 +117,7 @@ impl VideoDecodeWorker {
         })
     }
 
-    pub fn submit_access_unit(
-        &self,
-        data: Vec<u8>,
-        source_frame_duration_us: Option<u64>,
-        rtp_timestamp: u32,
-        last_packet_at: Instant,
-    ) -> bool {
+    pub fn submit_access_unit(&self, data: Vec<u8>, source_frame_duration_us: Option<u64>) -> bool {
         if let Some(duration) = source_frame_duration_us
             .filter(|d| (MIN_DECODE_INTERVAL_US..=MAX_DECODE_INTERVAL_US).contains(d))
         {
@@ -147,8 +139,6 @@ impl VideoDecodeWorker {
             data,
             queued_at: Instant::now(),
             generation: self.generation.load(Ordering::Acquire),
-            rtp_timestamp,
-            last_packet_at,
         };
 
         let (queue, cvar) = &*self.access_units;
@@ -353,8 +343,6 @@ fn decode_queued_access_unit(
                     texture_index,
                     generation,
                     published_at: Instant::now(),
-                    rtp_timestamp: access_unit.rtp_timestamp,
-                    last_packet_at: access_unit.last_packet_at,
                 }),
             );
         }
