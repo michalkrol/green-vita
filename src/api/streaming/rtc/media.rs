@@ -1,5 +1,5 @@
 use crate::api::streaming::rtc::rtp;
-use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker, metrics::METRICS};
+use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker, MetricsLog};
 use anyhow::Result;
 use bytes::Bytes;
 use rtc::media_stream::MediaStreamTrackId;
@@ -56,6 +56,9 @@ pub(crate) struct VideoReceiver {
     remb_shock_enabled: bool,
     /// Base REMB ceiling from user settings (hard_bandwidth_cap * bitrate or 15Mbps).
     remb_base_cap_bps: u32,
+    /// Once-per-second CSV log of stream metrics; `None` off-device or after a
+    /// write failure.  See `streaming/video/metrics_log.rs`.
+    metrics_log: Option<MetricsLog>,
 }
 
 impl VideoReceiver {
@@ -109,6 +112,7 @@ impl VideoReceiver {
             twcc_delay_ramp_max,
             remb_shock_enabled,
             remb_base_cap_bps,
+            metrics_log: MetricsLog::open(),
         }
     }
 
@@ -415,7 +419,8 @@ impl VideoReceiver {
             self.last_bw_bytes = total;
         }
 
-        let performance = crate::streaming::video::video_performance_summary();
+        let snapshot = crate::streaming::video::drain_metrics();
+        let performance = crate::streaming::video::format_summary(&snapshot);
         let source_fps = self
             .stats
             .last_sample_duration_us
@@ -427,6 +432,22 @@ impl VideoReceiver {
             .encoded_resolution
             .map(|(width, height)| format!("{width}x{height}"))
             .unwrap_or_else(|| "?".to_owned());
+        
+        if let Some(log) = self.metrics_log.as_mut() {
+            let (enc_width, enc_height) = self.stats.encoded_resolution.unwrap_or((0, 0));
+            log.write_row(
+                &snapshot,
+                &crate::streaming::video::RowExtras {
+                    src_fps: source_fps,
+                    enc_width,
+                    enc_height,
+                    waiting_keyframe: self.rtp.waiting_for_keyframe(),
+                    drops: self.stats.dropped,
+                    decode_errors: self.stats.decode_errors,
+                },
+            );
+        }
+        
         Some(format!(
             "enc:{encoded_resolution} srcfps:{source_fps} {performance} wait:{} drop:{} err:{}",
             u8::from(self.rtp.waiting_for_keyframe()),

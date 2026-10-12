@@ -1,6 +1,7 @@
 mod decoder;
 pub(crate) mod memory;
 pub(crate) mod metrics;
+pub(crate) mod metrics_log;
 mod worker;
 // pin_rtc_thread is used on Vita for CPU affinity; kept for future use
 // pub(crate) use worker::pin_rtc_thread;
@@ -14,7 +15,8 @@ pub(crate) const UNLOCKED_VIDEO_FPS: u32 = 60;
 pub(crate) const NUM_TEXTURES: usize = 3;
 
 pub use memory::reserve_decoder_cdram;
-pub use metrics::video_performance_summary;
+pub(crate) use metrics::{drain_metrics, format_summary};
+pub(crate) use metrics_log::{MetricsLog, RowExtras};
 pub use worker::VideoDecodeWorker;
 
 use std::sync::atomic::AtomicBool;
