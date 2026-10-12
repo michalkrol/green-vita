@@ -33,6 +33,7 @@ pub struct MetadataFrame {
 struct QueuedVideoMetadata {
     server_data_key: u32,
     arrival: Instant,
+    presented_at: Instant,
 }
 
 /// Frames completed by the video path await their render-timing report. The
@@ -92,19 +93,30 @@ fn uptime_ms_u32_since(at: Instant) -> u32 {
         .unwrap_or(0)
 }
 
+/// Queue a per-frame render-timing report for the input channel.
+/// Called at the presentation point (when a frame is actually displayed).
+pub(crate) fn queue_video_metadata(server_data_key: u32, arrival: Instant, presented_at: Instant) {
+    let mut queue = METADATA_QUEUE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    queue.push_back(QueuedVideoMetadata {
+        server_data_key,
+        arrival,
+        presented_at,
+    });
+}
+
 fn drain_video_metadata() -> Vec<MetadataFrame> {
     let mut queue = METADATA_QUEUE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     queue
         .drain(..)
         .map(|queued| {
             let arrival_ms = uptime_ms_u32_since(queued.arrival);
+            let presented_ms = uptime_ms_u32_since(queued.presented_at);
             MetadataFrame {
                 server_data_key: queued.server_data_key,
                 first_frame_packet_arrival_ms: arrival_ms,
-                // Minimal values test best (verified experimentally).
                 frame_submitted_ms: arrival_ms,
-                frame_decoded_ms: uptime_ms_u32_since(Instant::now()),
-                frame_rendered_ms: uptime_ms_u32_since(Instant::now()),
+                frame_decoded_ms: presented_ms,
+                frame_rendered_ms: presented_ms,
             }
         })
         .collect()
@@ -200,9 +212,13 @@ impl InputPacket {
     }
 
     fn write_metadata(&self, bytes: &mut Vec<u8>) {
-        bytes.push(self.metadata_frames.len() as u8);
+        // Clamp to u8::MAX (255) to avoid count wrap-around if the queue ever grows
+        // unboundedly. In practice the metadata_due flush (~30ms oldest frame) and
+        // regular gamepad polling (16ms cadence) keep this well below 10.
+        let count = self.metadata_frames.len().min(u8::MAX as usize) as u8;
+        bytes.push(count);
         let now_u32 = uptime_ms_u32_since(SESSION_START.get().copied().unwrap_or_else(Instant::now));
-        for frame in &self.metadata_frames {
+        for frame in &self.metadata_frames[..count as usize] {
             crate::streaming::video::metrics::METRICS
                 .video_metadata_sent
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

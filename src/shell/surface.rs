@@ -7,6 +7,7 @@ use sdl2::render::{Canvas, Texture};
 use sdl2::video::Window;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 pub const WIDTH: u32 = 960;
 pub const HEIGHT: u32 = 544;
@@ -90,8 +91,16 @@ impl VitaSurface {
         crate::streaming::video::metrics::METRICS
             .presented
             .fetch_add(1, Ordering::Relaxed);
+        // Queue per-frame render-timing metadata for the input channel.
+        // Uses the RTP timestamp (server_data_key) and last packet arrival time
+        // from the decoder, with presentation time = now.
+        crate::api_xbox::streaming::control::input::queue_video_metadata(
+            frame.rtp_timestamp,
+            frame.last_packet_at,
+            Instant::now(),
+        );
         self.last_frame_id = frame_id;
-Ok(())
+   Ok(())
     }
 
     fn ensure_direct_video_output(&mut self, streaming: &StreamingSession) -> Result<()> {
