@@ -24,14 +24,91 @@
     which is the structural blind spot: RTP-schedule slip cannot see pre-stamp
     queue growth, so this cannot be used to argue glass latency was flat.
     Attribution: 4000 kbps very likely saturates the ~8 Mbps-usable 2.4 GHz
-    airtime for high-motion content, and the drop-count flush trigger then forms
-    a feedback loop (loss -> drops -> flush -> `dimensionschanged` encoder
-    rebuild -> more disruption), the prime suspect for the artefacts.
+    airtime for high-motion content.
   - **Experiment armed:** `FLUSH_TRIGGER_ENABLED = false` in `session.rs` disables
     the flush trigger entirely for the next run, so the console is never asked to
     rebuild its encoder. If artefacts stop but the steady drift continues, the
     drift is console-side and the flushes only caused the glitches; if both stop,
     the flushes were causing the drift too.
+
+- **HARDWARE BISECT (three builds, real hardware, same content):**
+  - `888c1e0` (0.2.4 baseline, pre-0.2.5): GOOD. At a 2500 kbps cap: no artefacts,
+    very low latency. Also held up at 4000 and even uncapped, settling 4000-5500
+    kbps, artefacts only when spiking to ~8000.
+  - `256bac0` (first 0.2.5 commit): GOOD. No perceptible latency accumulation,
+    artefacts low.
+  - `e988430` (0.2.5 tip): BAD. Artefacts plus latency accumulation.
+  => The regression is not inherited from upstream/master; it was introduced after
+     `256bac0`.
+
+- **EXONERATED:**
+  - `256bac0`: its `session.rs` change is behaviourally inert
+    (`LAG_FLUSH_THRESHOLD_US` = 75 ms, so with the metric previously dead the lag
+    term was already false; `drops_since_flush` is monotonic between flushes, so
+    the new `lag_high_since = None` reset never behaves differently from baseline).
+    Its `flush_expired` stall path never fired in any run (`rtp_hold_expired`
+    stayed 0). Per-packet cost is one extra `Instant::now()` in
+    `PendingVideoFrame::insert`. It DOES newly make `stream_lag_us` live, which
+    `adjust_remb_dynamically` consumes (REMB cut at >100 ms / >50 ms, and the
+    `conditions_good` recovery gate requires `stream_lag_us < 30_000`) - a
+    genuinely new coupling, but `256bac0` measured good, so it is not the
+    regression.
+  - `416a66f` (debug overlay): UI-only, trivially cheap - one extra `rect_filled`
+    plus ~3 extra `format!` per frame in the UI loop. Cannot cause RTP assembly
+    drops or a load-dependent latency ramp.
+  - The per-second `eprintln!("{}", self.status)`: pre-existing (introduced in
+    `989b62a`) and present in the good `256bac0`, so stderr I/O on the pump
+    thread is not the cause.
+  - `a6545c1` (SDP fmtp merge / `max-fr`): postdates `a7b70ea`, which was already
+    bad, so it cannot explain the regression.
+  - The flush trigger: falsified as the cause - artefacts appeared in a run with
+    zero flushes, and the trigger's behaviour is unchanged from the baseline.
+
+- **PRIME SUSPECT (strong hypothesis, not proven):** `a7b70ea` added a
+  once-per-second blocking `writeln!` + `flush()` of the metrics CSV to `ux0:`
+  (memory card) on the `green-vita-rtc` pump thread, called from
+  `VideoReceiver::status()`. That thread drains incoming RTP, sends RTCP feedback
+  and submits access units to the decoder. A once-a-second stall becomes a burst
+  of buffered RTP on resume, and the AU assembly window is only 12.5 ms, so
+  higher bitrate makes blowing it likelier -> dropped AU -> broken reference
+  chain -> artefacts. The high flush/drop counts seen at a 4000 cap are a
+  CONSEQUENCE of the stall, not the cause.
+
+- **FIX ALREADY COMMITTED:** `966f885` "0.2.5: move metrics CSV I/O off the RTC
+  pump thread; stop stderr spam there". `metrics_log.rs::open()` still creates
+  the file and writes the header once per session, then spawns a
+  `"green-vita-metrics-log"` thread owning the file; `write_row` only formats a
+  row and sends it over an unbounded channel, doing no file I/O, so it cannot
+  block the pump. `session.rs` gates the per-second status `eprintln!` behind
+  `LOG_STATUS_TO_STDERR = false`.
+
+- **CRITICAL CAVEAT:** every 0.2.5 metrics CSV currently on record was produced by
+  the perturbing build — that includes the "latency NOT reproduced" sessions
+  (12.1 min game / 37.4 min movie) recorded above — so those specific numbers
+  must be re-taken before being cited again.
+
+- **Builds for re-testing** live in `/Users/mk/git/vita-xbox/dist` (git-ignored,
+  local only) and are flashed with `bash scripts/docker-build.sh deploy <ip>
+  <dist-name>`:
+  - `green-vita-0.2.5-e988430-20261012-221600` (the `966f885` fix build,
+    currently on the device)
+  - `green-vita-0.2.5-256bac0-20261012-224541` (known good)
+  - `green-vita-0.2.4-888c1e0-20261012-222527` (0.2.4 baseline)
+
+- **STATUS:** CONFIRMED. The blocking once-per-second CSV write on the pump thread
+  is the regression cause. The earlier flush-trigger → `dimensionschanged` →
+  artefacts theory is dead: both the artefacts and the drift were downstream of
+  the pump-thread stall.
+
+- **Confirmation run:** `green-vita-0.2.5-e988430-20261012-221600` (the `966f885`
+  fix build), racing game, **4000 kbps cap, baseline profile** — the exact
+  conditions under which `e988430` had previously degraded monotonically (the
+  16.9 min session described as "every minute a little bit worse"). Result now:
+  **latency low, no perceptible accumulation**, and only **minor artefacts**,
+  which the user cleared by turning PLI on. This was a SHORT race, not the 30+
+  min condition, so "fixed" vs "slower onset" is not fully discriminated; the
+  30+ min active-input session remains untested on the fixed build.
+
 - **Still untested**: sustained ACTIVE INPUT over 30+ min (both measured sessions
   were input-free; input packet rate is the last remaining variable), and an A/B
   of the aggressive toggles.
