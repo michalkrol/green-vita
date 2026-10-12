@@ -77,12 +77,18 @@ egui::Area::new(egui::Id::new("fps_overlay"))
                     .order(egui::Order::Foreground)
                     .anchor(egui::Align2::LEFT_TOP, egui::vec2(8.0, 8.0))
                     .show(ctx, |ui| {
-                        let painter = ui.painter();
-                        let rect = egui::Rect::from_min_size(
+                        // Inside an empty Area `ui.available_width()` is ~0, which used to
+                        // collapse the backdrop rectangle to zero width (invisible). Claim
+                        // the full panel size and paint through a painter whose clip rect is
+                        // the panel itself so the opaque backdrop is always drawn.
+                        let panel_rect = egui::Rect::from_min_size(
                             egui::pos2(0.0, 0.0),
-                            egui::vec2(panel_w.min(ui.available_width()), panel_h),
+                            egui::vec2(panel_w, panel_h),
                         );
-                        painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(200));
+                        ui.set_min_size(panel_rect.size());
+                        let painter = ui.painter_at(panel_rect.expand(4.0));
+
+                        painter.rect_filled(panel_rect, 4.0, egui::Color32::from_black_alpha(235));
 
                         for (i, (left, right)) in rows.iter().enumerate() {
                             let y = 8.0 + i as f32 * row_h;
@@ -134,6 +140,15 @@ fn extract_field(status: &str, key: &str) -> String {
     }
 }
 
+/// Converts a raw microsecond HUD value to a millisecond string for display.
+/// Falls back to the original text when the value is not a plain integer.
+fn us_to_ms(value: &str) -> String {
+    value
+        .parse::<u64>()
+        .map(|us| (us / 1000).to_string())
+        .unwrap_or_else(|_| value.to_owned())
+}
+
 /// Build curated debug rows (2 columns, fixed positions, permanently exclude always-zero fields).
 fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(String, Option<String>)> {
     let f = |key: &str| extract_field(status, key);
@@ -147,6 +162,9 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(
     let lagmax = f("lagMax:");
     let fl = f("fl:");
     let rs = f("rs:");
+    let rst = f("rst:");
+    let hold = f("hold:");
+    let drop = f("drop:");
     let tw_s = f("tw:");
     let st = f("st:");
     let pick = f("pick:");
@@ -159,12 +177,14 @@ use crate::settings::H264Profile;
     };
 
     vec![
-        (format!("Dec/Pres:{}", dp),   Some(format!("Dec/Pip:{}ms", da))),
+        (format!("Dec/Pres:{}", dp),   Some(format!("Dec/Pip:{}us", da))),
         (format!("Repl:{}", repl),      Some(format!("Skip:{}", skip))),
-        (format!("HWbuf:{}", hwb),      Some(format!("Lag:{}ms", lag))),
-        (format!("BW:{}kbps", bw),      Some(format!("LagMx:{}ms", lagmax))),
+        (format!("HWbuf:{}", hwb),      Some(format!("Lag:{}ms", us_to_ms(&lag)))),
+        (format!("BW:{}kbps", bw),      Some(format!("LagMx:{}ms", us_to_ms(&lagmax)))),
         (format!("Resync:{}", rs),      Some(format!("Flush:{}", fl))),
         (format!("TWCC:{}", tw_s),      Some(format!("Strd:{}", st))),
         (format!("Pick:{}us", pick),    Some(format!("Prof:{}", profile_label))),
+        (format!("Drop:{}", drop),      Some(format!("Hold:{}", hold))),
+        (format!("Rst:{}", rst),        None),
     ]
 }
