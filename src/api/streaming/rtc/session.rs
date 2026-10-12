@@ -52,6 +52,11 @@ const LAG_FLUSH_ENABLED: bool = false;
 /// counted and logged.  Supersedes LAG_FLUSH_ENABLED while disabled.
 const FLUSH_TRIGGER_ENABLED: bool = false;
 
+/// Prints the per-second HUD/status line to stderr.  Disabled because it runs on
+/// the latency-critical RTC pump thread and stderr is blocking I/O on the Vita;
+/// the same data is available in the metrics CSV.
+const LOG_STATUS_TO_STDERR: bool = false;
+
 pub(crate) struct RtcSessionConfig {
     pub stun_server: &'static str,
     pub route_probe: &'static str,
@@ -231,7 +236,9 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             } else {
                 format!("srv:? {status} {debug_state}")
             };
-            eprintln!("{}", self.status);
+            if LOG_STATUS_TO_STDERR {
+                eprintln!("{}", self.status);
+            }
         }
 
         Ok(gathered_candidates)

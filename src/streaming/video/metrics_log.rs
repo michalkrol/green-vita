@@ -1,10 +1,15 @@
 //! Append-only CSV logging of the once-per-second metrics snapshot, so a
 //! streaming session can be analysed offline (fetched over the Vita FTP server
 //! from `ux0:/data/xcloud-rust/metrics.csv`).
+//!
+//! All per-row file I/O happens on a dedicated writer thread: `write_row` runs on
+//! the latency-critical RTC pump thread and must never block on the memory card.
 
 use super::metrics::MetricsSnapshot;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
+use std::sync::mpsc::{self, Sender};
+use std::thread;
 use std::time::Instant;
 
 const LOG_DIR: &str = "ux0:data/xcloud-rust";
@@ -25,14 +30,21 @@ pub(crate) struct RowExtras {
 const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,asm_avg_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,rtcp_rr_loss_fraction,rtcp_rr_jitter,rtcp_sr_ntp_timestamp,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors";
 
 pub(crate) struct MetricsLog {
-    writer: BufWriter<File>,
+    /// Rows are formatted on the RTC pump thread (cheap) and handed to the
+    /// writer thread, which owns the file.  The channel is unbounded so `send`
+    /// never blocks; the producer is capped at 1 row/s.
+    rows_tx: Sender<String>,
     started_at: Instant,
     rows: u64,
 }
 
 impl MetricsLog {
-    /// Creates (truncating) the log and writes the header.  Returns `None` when
-    /// the path is unavailable (e.g. running off-device), so logging is optional.
+    /// Creates (truncating) the log, writes the header, and starts the writer
+    /// thread.  Returns `None` when the path is unavailable (e.g. running
+    /// off-device), so logging is optional.
+    ///
+    /// The open/header writes happen once per session on the calling thread; all
+    /// subsequent writes are handed to the writer thread.
     pub(crate) fn open() -> Option<Self> {
         if fs::create_dir_all(LOG_DIR).is_err() {
             return None;
@@ -41,20 +53,40 @@ impl MetricsLog {
         let mut writer = BufWriter::new(file);
         writeln!(writer, "{HEADER}").ok()?;
         writer.flush().ok()?;
-        eprintln!("Metrics log: writing {LOG_PATH}");
+
+        let (rows_tx, rows_rx) = mpsc::channel::<String>();
+        thread::Builder::new()
+            .name("green-vita-metrics-log".to_owned())
+            .spawn(move || {
+                while let Ok(row) = rows_rx.recv() {
+                    if writeln!(writer, "{row}").is_err() {
+                        break;
+                    }
+                    if writer.flush().is_err() {
+                        break;
+                    }
+                }
+                let _ = writer.flush();
+            })
+            .ok()?;
+
+        eprintln!("Metrics log: writing {LOG_PATH} (writer thread)");
         Some(Self {
-            writer,
+            rows_tx,
             started_at: Instant::now(),
             rows: 0,
         })
     }
 
+    /// Formats one row and queues it for the writer thread.  Does no file I/O,
+    /// so it is safe to call from the RTC pump thread.
     pub(crate) fn write_row(&mut self, s: &MetricsSnapshot, e: &RowExtras) {
         if self.rows >= MAX_ROWS {
             return;
         }
         self.rows += 1;
         let t_s = self.started_at.elapsed().as_secs();
+
         // Fixed-size array so the column count is compiler-enforced and can never
         // drift out of sync with HEADER (44 columns).  Order MUST match HEADER.
         let cols: [u64; 44] = [
@@ -108,7 +140,8 @@ impl MetricsLog {
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        let _ = writeln!(self.writer, "{row}");
-        let _ = self.writer.flush();
+        // Unbounded channel: never blocks the pump thread.  If the writer thread
+        // has died the send fails and the row is simply dropped.
+        let _ = self.rows_tx.send(row);
     }
 }
