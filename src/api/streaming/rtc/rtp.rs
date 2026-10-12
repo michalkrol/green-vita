@@ -26,6 +26,12 @@ const TWCC_MAX_ANNOTATIONS: usize = 200;
 /// 15ms left only 1.67ms margin — guaranteed VSYNC miss.  12.5ms leaves 4.17ms.
 const AU_ASSEMBLY_TIMEOUT: Duration = Duration::from_micros(12_500);
 
+/// Stall expiry for an access unit whose marker bit never arrived: abandon it
+/// once no further packets have been seen for this long.  Measured from the
+/// LAST observed packet (not the first) — first-packet expiry caused a resync
+/// storm historically.
+const AU_STALL_EXPIRY: Duration = Duration::from_millis(100);
+
 /// Negotiated transport-cc extmap ID from the answer SDP (0 = not negotiated).
 pub(crate) static TWCC_EXT_ID: AtomicU8 = AtomicU8::new(0);
 
@@ -87,6 +93,7 @@ pub(crate) struct VideoRtp {
 struct PendingVideoFrame {
     timestamp: u32,
     first_packet_at: Instant,
+    last_packet_at: Instant,
     packets: Vec<Packet>,
 }
 
@@ -101,11 +108,13 @@ impl PendingVideoFrame {
         Self {
             timestamp: packet.header.timestamp,
             first_packet_at: Instant::now(),
+            last_packet_at: Instant::now(),
             packets: vec![packet],
         }
     }
 
     fn insert(&mut self, packet: Packet) {
+        self.last_packet_at = Instant::now();
         if !self
             .packets
             .iter()
@@ -310,6 +319,7 @@ impl VideoRtp {
             } => (data, marker_sequence),
         };
         let completed = self.pending.take().expect("assembled pending video frame");
+        self.update_stream_lag(completed.timestamp, completed.first_packet_at);
         // Record both average and worst-case RTP assembly time for the stream HUD.
         let assembly_us = completed.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS
@@ -416,7 +426,63 @@ impl VideoRtp {
         self.damage_score = 0;
     }
     
-    pub(crate) fn flush_expired(&mut self, _worker: &VideoDecodeWorker, _kr: &mut bool, _stats: &mut crate::api::streaming::rtc::rtp::VideoSampleStats) {}
+    /// Schedule slip: how much later than its own RTP-implied schedule an access
+    /// unit actually arrived, relative to the stream clock anchor.  Clamped >= 0
+    /// and wrapping-safe across the 32-bit RTP timestamp space.
+    fn update_stream_lag(&mut self, au_timestamp: u32, au_first_packet_at: Instant) {
+        let (anchor_at, anchor_timestamp) = *self
+            .stream_clock_anchor
+            .get_or_insert((au_first_packet_at, au_timestamp));
+        let lag_us = schedule_slip_us(
+            anchor_at,
+            anchor_timestamp,
+            au_first_packet_at,
+            au_timestamp,
+        );
+        crate::streaming::video::metrics::METRICS
+            .stream_lag_us
+            .store(lag_us, Ordering::Relaxed);
+        crate::streaming::video::metrics::METRICS
+            .stream_lag_max_us
+            .fetch_max(lag_us, Ordering::Relaxed);
+    }
+
+    /// Expire an access unit whose marker bit never arrived and after which no
+    /// further packets were seen (e.g. a burst followed by silence).  The
+    /// newer-timestamp abandonment path cannot fire when nothing newer arrives,
+    /// which would otherwise strand the frame forever.
+    ///
+    /// Only applies when the marker is absent and the stall is measured from the
+    /// LAST observed packet.  The marker-present + first-packet timeout path
+    /// above is intentionally left untouched.
+    pub(crate) fn flush_expired(
+        &mut self,
+        worker: &VideoDecodeWorker,
+        keyframe_requested: &mut bool,
+        stats: &mut crate::api::streaming::rtc::rtp::VideoSampleStats,
+    ) {
+        let stalled = match self.pending.as_ref() {
+            Some(pending) => {
+                pending.marker_sequence().is_none()
+                    && pending.last_packet_at.elapsed() >= AU_STALL_EXPIRY
+            }
+            None => false,
+        };
+        if !stalled {
+            return;
+        }
+
+        self.pending = None;
+        self.next_sequence = None;
+        self.depacketizer = H264Packet::default();
+        *keyframe_requested = true;
+        self.record_damage(worker);
+        stats.dropped = stats.dropped.saturating_add(1);
+        crate::streaming::video::metrics::METRICS
+            .rtp_hold_expired
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn reset_lag_anchor(&mut self) { self.stream_clock_anchor = None; }
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
     pub(crate) fn twcc_median_stride(&self) -> u16 {
@@ -542,6 +608,22 @@ fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
     distance != 0 && distance < (1 << 31)
 }
 
+/// Expected-vs-actual arrival slip for one access unit, in microseconds.
+/// `expected` is how long the RTP timestamps say should have elapsed since the
+/// anchor; `actual` is how long really elapsed.  Never negative.
+fn schedule_slip_us(
+    anchor_at: Instant,
+    anchor_timestamp: u32,
+    au_at: Instant,
+    au_timestamp: u32,
+) -> u64 {
+    let expected_us = u64::from(au_timestamp.wrapping_sub(anchor_timestamp))
+        .saturating_mul(1_000_000)
+        / u64::from(VIDEO_RTP_CLOCK_RATE);
+    let actual_us = au_at.saturating_duration_since(anchor_at).as_micros() as u64;
+    actual_us.saturating_sub(expected_us)
+}
+
 struct AccessUnitInfo {
     has_idr: bool,
     resolution: Option<(u32, u32)>,
@@ -575,4 +657,50 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
     reader.push(data);
     reader.reset();
     info
+}
+
+#[cfg(test)]
+mod tests {
+    use super::schedule_slip_us;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn zero_slip_when_arrival_matches_schedule() {
+        let anchor = Instant::now();
+        // 30 frames at 90 kHz == 1 second of RTP time, arriving 1s later.
+        assert_eq!(
+            schedule_slip_us(anchor, 0, anchor + Duration::from_secs(1), 90_000),
+            0
+        );
+    }
+
+    #[test]
+    fn reports_positive_slip_when_late() {
+        let anchor = Instant::now();
+        // RTP says 0.5s elapsed, but 0.75s really elapsed -> 250ms slip.
+        assert_eq!(
+            schedule_slip_us(anchor, 0, anchor + Duration::from_millis(750), 45_000),
+            250_000
+        );
+    }
+
+    #[test]
+    fn clamps_early_or_reordered_arrival_to_zero() {
+        let anchor = Instant::now();
+        assert_eq!(
+            schedule_slip_us(anchor, 0, anchor, 45_000),
+            0
+        );
+    }
+
+    #[test]
+    fn wraps_across_the_rtp_timestamp_space() {
+        let anchor = Instant::now();
+        // Anchor near u32::MAX; the next timestamp wraps around.
+        let anchor_ts = u32::MAX - 45_000 + 1;
+        assert_eq!(
+            schedule_slip_us(anchor, anchor_ts, anchor + Duration::from_secs(1), 90_000 - 45_000),
+            0
+        );
+    }
 }
