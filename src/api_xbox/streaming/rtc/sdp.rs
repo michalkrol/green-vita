@@ -324,13 +324,12 @@ mod tests {
 /// preserved and only `max-fr`/`max-fs` are merged in.
 ///
 /// `max-fr` follows the offered frame rate, which comes from the "Unlock video
-/// FPS" setting (30 by default, 60 when unlocked), so this doubles as the 30/60
-/// frame-rate switch.  Per RFC 6184 section 8.1 `max-fr` is expressed in whole
-/// frames per second.  Whether the console honours it is measured by the
-/// `src_fps` column of the metrics log: it ignores `a=framerate`, but it does
-/// honour capability declarations such as b=AS/b=TIAS, so this is worth testing.
-/// The previous expression (`video_fps * 90_000 / video_fps`) always evaluated
-/// to 90_000, i.e. it declared no cap at all.
+/// FPS" setting (30 by default, 60 when unlocked), so this is intended as the
+/// 30/60 frame-rate switch.  Per RFC 6184 section 8.1 `max-fr` is expressed in
+/// whole frames per second.  However, the console ignores both `a=framerate`
+/// and `max-fr`; measured `src_fps` (metrics log) averages 58–70 fps regardless
+/// of the offer.  The previous expression (`video_fps * 90_000 / video_fps`)
+/// always evaluated to 90_000, i.e. it declared no cap at all.
 pub(super) fn constrain_h264_codec(sdp: &str, video_fps: u32) -> String {
     let max_fr_param = format!("max-fr={video_fps}");
     const MAX_FS_PARAM: &str = "max-fs=8160";

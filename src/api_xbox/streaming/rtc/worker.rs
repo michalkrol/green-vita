@@ -27,7 +27,6 @@ struct XboxRtcWorkerProvider {
     remb_interval_ms: u32,
     twcc_delay_injection: bool,
     twcc_delay_ramp_max: u8,
-    remb_shock_enabled: bool,
     periodic_keyframe_enabled: bool,
     remb_base_cap_bps: u32,
 }
@@ -57,7 +56,6 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
             remb_interval_ms: self.remb_interval_ms,
             twcc_delay_injection: self.twcc_delay_injection,
             twcc_delay_ramp_max: self.twcc_delay_ramp_max,
-            remb_shock_enabled: self.remb_shock_enabled,
             periodic_keyframe_enabled: self.periodic_keyframe_enabled,
             remb_base_cap_bps: self.remb_base_cap_bps,
         }
@@ -90,7 +88,6 @@ pub(crate) fn spawn(
     remb_interval_ms: u32,
     twcc_delay_injection: bool,
     twcc_delay_ramp_max: u8,
-    remb_shock_enabled: bool,
     periodic_keyframe_enabled: bool,
 ) -> Result<RtcWorker> {
     let video_fps = if unlock_video_fps {
@@ -116,7 +113,6 @@ pub(crate) fn spawn(
         remb_interval_ms,
         twcc_delay_injection,
         twcc_delay_ramp_max,
-        remb_shock_enabled,
         periodic_keyframe_enabled,
         remb_base_cap_bps: remb_bps,
     })

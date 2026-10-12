@@ -80,10 +80,9 @@ These settings expose the RTCP feedback loop for empirical tuning. They are **on
 
 | Setting | Range | Default | What it does |
 |---------|-------|---------|--------------|
-| **REMB shock** | On / Off | Off | **Emergency queue purge.** When enabled, on sustained high lag (flush triggers at 75ms) sends ~100 kbps REMB burst for a few cycles. This tells Xbox "drastically reduce bitrate NOW" to flush its encoder queue. Use when: latency keeps climbing and won't come down, or after network hiccup. |
 | **REMB interval** | 100 / 250 / 500 / 1000 ms | 500 ms | How often we tell Xbox our max receive bitrate (REMB). Lower = Xbox reacts faster to bandwidth changes. **100 ms** = aggressive (best for unstable WiFi). **500 ms** = conservative (stable WiFi). |
 | **TWCC delay injection** | On / Off | Off | When our measured bitrate exceeds your cap + 10%, we report fake "network delays" to Xbox's congestion controller. This triggers its overuse detector to throttle bitrate down. Use when: bitrate overshoots your cap during WiFi contention. |
-| **TWCC delay ramp max** | 1–15 | 6 | Strength of the fake delay signal when injection is ON. 1 = barely noticeable, 15 = strong throttle (capped at 15). Higher = Xbox backs off more aggressively. Start at 6, increase if overshoot persists. |
+| **TWCC delay ramp max** | 1–20 | 6 | Strength of the fake delay signal when injection is ON. 1 = barely noticeable, 20 = strong throttle. Higher = Xbox backs off more aggressively. Start at 6, increase if overshoot persists. |
 | **Periodic keyframe (PLI)** | On / Off | Off | Sends PLI (Picture Loss Indication) every 200 ms asking Xbox for a fresh keyframe (IDR). **Primary purpose: clears macroblock artifacts / frozen blocks** by forcing a full frame render. Encoder "catchup" is experimental/theory. **Risk:** Xbox may rate-limit or ignore frequent PLI; spamming PLI can overload encoder and worsen backlog. Use when: persistent blocky/frozen areas that don't recover. Cost: extra bandwidth (large I-frames every 200 ms). |
 | **RSSI-based bitrate cap** | — | — | *Disabled — NetCtl crashes on some Vita units.* |
 
@@ -93,10 +92,10 @@ These settings expose the RTCP feedback loop for empirical tuning. They are **on
 
 | Symptom you see | Try this first |
 |-----------------|----------------|
-| **Latency keeps climbing, won't come down** | Enable **REMB shock**; lower **REMB interval** to 100 ms |
-| **Bitrate overshoots cap during WiFi contention** | Enable **TWCC delay injection**; increase **ramp max** to 10–15 |
+| **Latency keeps climbing, won't come down** | Lower **REMB interval** to 100 ms; ensure **Hard bandwidth cap** is ON |
+| **Bitrate overshoots cap during WiFi contention** | Enable **TWCC delay injection**; increase **ramp max** to 10–20 |
 | **Persistent blocky/frozen macroblocks that don't recover** | Enable **Periodic keyframe** (forces full frame refresh) |
-| **Sudden quality drop after 30+ min session** | Try enabling **REMB shock** + **REMB interval 100ms**; ensure **Hard bandwidth cap** is ON |
+| **Sudden quality drop after 30+ min session** | Lower **REMB interval** to 100 ms; ensure **Hard bandwidth cap** is ON |
 | **Video stutters on weak WiFi** | Lower **Bandwidth cap** manually; ensure **Hard bandwidth cap** is ON |
 
 ---
@@ -127,7 +126,6 @@ Xbox's Google GCC (congestion controller)   You just report conditions
 **REMB** = "Don't send faster than this."
 **TWCC** = "Here's exactly when packets arrived — you figure out the delay."
 **PLI** = "Send me a clean frame (IDR), the current one is corrupted."
-**REMB shock** = "EMERGENCY: Drop to 100 kbps NOW to clear your queue."
 
 ---
 
@@ -135,7 +133,6 @@ Xbox's Google GCC (congestion controller)   You just report conditions
 
 | Feature | Pros | Cons |
 |---------|------|------|
-| **REMB shock** | Clears encoder queue during lag spike | Brief quality drop (100 kbps burst) |
 | **Lower REMB interval** (100 ms) | Faster reaction to bandwidth drops | More RTCP overhead (~1% bandwidth) |
 | **TWCC delay injection** | Forces Xbox to pace smoothly on contention | May under-utilize bandwidth if too aggressive |
 | **Periodic keyframe** | Clears frozen/blocky artifacts | Extra bandwidth (large I-frames every 200 ms) |
@@ -144,34 +141,31 @@ Xbox's Google GCC (congestion controller)   You just report conditions
 
 ### Known limitations (0.2.5)
 
-- **REMB shock currently has no effect.** `remb_shock_until` is never armed, so
-  the emergency ~100 kbps burst described above is never sent. The setting is
-  plumbed through the UI but inert.
-- **The H.264 profile setting may not reach the console.** The SDP constraint
-  pass appends a *second* `a=fmtp` line for the video payload type that hardcodes
-  `profile-level-id=42e01f` (Constrained Baseline) after the negotiated one; two
-  fmtp lines for one payload type is invalid SDP and the injected line likely
-  wins. Selecting Main or High can therefore silently fall back to Baseline. The
-  same pass also emits `max-fr` as a constant (`90 000`) instead of the requested
-  frame rate. Main/High additionally require decode queue depth 3+ (B-frame
-  reordering) and are unverified on the Vita hardware decoder.
+- **The H.264 profile setting now reaches the console.** The SDP constraint
+  pass (commit a6545c1) merges `max-fr`/`max-fs` into the existing `a=fmtp`
+  line and preserves the negotiated `profile-level-id`. The duplicate-fmtp
+  bug is fixed. Remaining caveat: Main/High still need decode queue depth 3+
+  (B-frame reordering) and are unverified on the Vita hardware decoder.
 - **`lag:`/`lagMax:` are transport-side only.** They measure RTP schedule slip
   and are structurally blind to the console's pre-RTP-stamp queue, so a flat
   `lag:` does **not** mean zero glass latency.
-- **The console adapts its output frame rate to content and activity.** Measured
-  24 fps for film and ~60 fps for gameplay, rising again when input resumed. The
-  `framerate` request in the offer is not what governs it.
+- **The console ignores both `a=framerate` and `max-fr`** and picks its own
+  output rate from content and activity. Measured `src_fps` averaged 70.2 for a
+  racing game; another session stayed at 58–60 fps with the "Unlock video FPS"
+  switch OFF (offer declares `max-fr=30`, `a=framerate:30`). The 30/60 switch
+  has no effect on the console's output rate.
 - **The console skips whole access units of its own accord.** These appear as
   `drop:` and feed the drop-count flush trigger, while RTCP RR loss stays at 0%
   - they are not packet loss.
 - **Some HUD fields are structurally zero** because nothing ever increments
-  them: `hold:S` (saves), plus `abandons`, `wait_drops`, `invalid` and
-  `dec_queue_full`. The only live member of `hold:S/E/G` is `E` (stall
-  expiries), which has not fired in 49 minutes of measurement.
-- **Not reproduced:** a 37.4-minute measured session showed no latency
-  accumulation in any client-side or transport-side signal (`lag` slope
-  -0.13 ms/min, `ageMax` flat, zero resyncs). Drift may be specific to sustained
-  gamepad input and/or to the aggressive feedback toggles being enabled.
+  them: `hold:S` (saves), plus `abandons`, `wait_drops`, `invalid`,
+  `dec_queue_full`, and `video_metadata_sent`. The only live member of
+  `hold:S/E/G` is `E` (stall expiries), which fired once — at t=2 s of a
+  session, during the startup burst — and never again.
+- The 0.2.5 latency accumulation and artefacts were caused by the once-per-second
+  blocking metrics-CSV write on the RTC pump thread (fixed in 966f885, confirmed
+  on hardware at a 4000 kbps cap with low latency, no accumulation, and only
+  minor PLI-clearable artefacts). All pre-fix measurements are suspect.
 
 ---
 

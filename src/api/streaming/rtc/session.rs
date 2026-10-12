@@ -67,7 +67,6 @@ pub(crate) struct RtcSessionConfig {
     pub remb_interval_ms: u32,
     pub twcc_delay_injection: bool,
     pub twcc_delay_ramp_max: u8,
-    pub remb_shock_enabled: bool,
     pub periodic_keyframe_enabled: bool,
     pub remb_base_cap_bps: u32,
 }
@@ -133,7 +132,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             config.remb_interval_ms,
             config.twcc_delay_injection,
             config.twcc_delay_ramp_max,
-            config.remb_shock_enabled,
             config.remb_base_cap_bps,
         )?;
 

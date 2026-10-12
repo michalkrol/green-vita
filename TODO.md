@@ -136,10 +136,9 @@
   - `constrain_h264_codec` appends a second `a=fmtp` line hardcoding
     `profile-level-id=42e01f` after the negotiated one (see item 2), and `max-fr`
     is a constant: `video_fps * 90_000 / video_fps` == 90 000.
-  - REMB shock is inert: `remb_shock_until` is never armed.
   - Dead counters never incremented anywhere, so HUD `hold:S` and several CSV
     columns are structurally 0: `rtp_abandons`, `rtp_hold_saved`,
-    `rtp_wait_drops`, `rtp_invalid`, `dec_queue_full`.
+    `rtp_wait_drops`, `rtp_invalid`, `dec_queue_full`, `video_metadata_sent`.
 - **Suspected root cause** (unchanged as a hypothesis): console-side send buffer
   buildup. Note `lag` is structurally blind to it; `ageMax`/`display_pickup` are
   client-side and were also flat.
@@ -202,13 +201,12 @@
 ## Done ✓
 
 - [x] xHome region fix (403 error)
-- [x] 4 lag investigation toggles (REMB interval, TWCC delay injection, ramp, REMB shock, periodic keyframe)
+- [x] 4 lag investigation toggles (REMB interval, TWCC delay injection, ramp, periodic keyframe)
 - [x] Aggressive flush thresholds (75ms/300ms/3s/10 drops)
-- [x] SDP H264 constraints (profile-level-id=42e01f, max-fr, max-fs=8160)
+- [x] SDP H264 constraints (profile-level-id preserved, max-fr, max-fs=8160)
 - [x] GAME profile: 2500kbps, 1ms sleep, queue=1
 - [x] RTCP RR/SR parsing (loss%, jitter, NTP timestamp)
 - [x] Dynamic REMB adjustment (loss/jitter/lag-based + recovery)
-- [x] REMB shock (emergency 100kbps burst)
 - [x] Periodic keyframe PLI (200ms toggle)
 - [x] TWCC delay injection with ramp
 - [x] Version/build info in settings
@@ -220,11 +218,11 @@
 - **Current version**: 0.2.5 (branch `0.2.5`, based on upstream 0.2.4 / `568cca3`)
 - **Profiles**: GAME (default ON for low latency), MEDIA (quality), Custom (all toggles)
 - **HUD metrics to watch**: `lag`, `d/p`, `ageMax`, `flushes`, `hwb`, `hs:`/`in:` handshake state
-- **Test config for the two clean sessions (2026-10-12)**: Custom mode, 3000 kbps cap, Baseline, queue=1, sleep=1 ms, and **all aggressive feedback toggles OFF** (REMB shock, TWCC delay injection, periodic keyframe)
+- **Test config for the two clean sessions (2026-10-12)**: Custom mode, 3000 kbps cap, Baseline, queue=1, sleep=1 ms, and **all aggressive feedback toggles OFF** (TWCC delay injection, periodic keyframe)
 - **Metrics log**: every streaming session writes `ux0:data/xcloud-rust/metrics.csv` (44 columns, 1 Hz, truncated at session start). Always on - independent of the debug overlay and of `pure_stream_mode`:
   ```sh
   curl -s 'ftp://192.168.0.67:1337/ux0:/data/xcloud-rust/metrics.csv' -o metrics.csv
   python3 scripts/analyze_metrics.py metrics.csv
   ```
   Fetch before starting a new stream (a new session truncates the file).
-- **Historical aggressive test config**: Custom mode, 2500 kbps, Baseline, queue=1, sleep=1ms, REMB=100ms, TWCC delay injection=ON, REMB shock=ON
+- **Historical aggressive test config**: Custom mode, 2500 kbps, Baseline, queue=1, sleep=1ms, REMB=100ms, TWCC delay injection=ON

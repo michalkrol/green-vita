@@ -35,7 +35,6 @@ impl PlaybackBackend {
         remb_interval_ms: u32,
         twcc_delay_injection: bool,
         twcc_delay_ramp_max: u8,
-        remb_shock_enabled: bool,
         periodic_keyframe_enabled: bool,
     ) -> Result<Self> {
         Ok(Self::Xbox(XboxStreamingBackend::start(
@@ -49,7 +48,6 @@ impl PlaybackBackend {
             remb_interval_ms,
             twcc_delay_injection,
             twcc_delay_ramp_max,
-            remb_shock_enabled,
             periodic_keyframe_enabled,
         )?))
     }

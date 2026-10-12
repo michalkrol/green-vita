@@ -16,9 +16,8 @@ const TWCC_INTERVAL: Duration = Duration::from_millis(15);
 /// Send TWCC immediately when this many packets have accumulated since last send,
 /// preventing large I-frame bursts from looking like bufferbloat to the rate controller.
 const TWCC_PACKET_THRESHOLD: usize = 8;
-/// Shared REMB bitrate knob accessible from main thread for shock triggers.
+/// Shared REMB bitrate knob accessible from main thread.
 pub(crate) static REMB_BPS: AtomicU32 = AtomicU32::new(15_000_000);
-pub(crate) const REMB_SHOCK_BPS: u32 = 100_000;
 /// Arbitrary stable local RTCP sender SSRC (we transmit no RTP of our own).
 const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
 
@@ -45,15 +44,12 @@ pub(crate) struct VideoReceiver {
     last_twcc_at: Option<Instant>,
     twcc_fb_pkt_count: u8,
     stats: VideoStats,
-    remb_shock_until: Option<Instant>,
     /// Configurable REMB interval (ms).
     remb_interval_ms: u32,
     /// Whether TWCC delay injection is enabled (throttle on overshoot).
     twcc_delay_injection: bool,
     /// Maximum TWCC delay ramp multiplier.
     twcc_delay_ramp_max: u8,
-    /// Whether REMB shock is enabled (emergency queue purge).
-    remb_shock_enabled: bool,
     /// Base REMB ceiling from user settings (hard_bandwidth_cap * bitrate or 15Mbps).
     remb_base_cap_bps: u32,
     /// Once-per-second CSV log of stream metrics; `None` off-device or after a
@@ -69,7 +65,6 @@ impl VideoReceiver {
         remb_interval_ms: u32,
         twcc_delay_injection: bool,
         twcc_delay_ramp_max: u8,
-        remb_shock_enabled: bool,
         remb_base_cap_bps: u32,
     ) -> Result<Self> {
         let decoder = VideoDecodeWorker::spawn(config, direct_output)?;
@@ -78,7 +73,6 @@ impl VideoReceiver {
             remb_interval_ms,
             twcc_delay_injection,
             twcc_delay_ramp_max,
-            remb_shock_enabled,
             remb_base_cap_bps,
         ))
     }
@@ -88,7 +82,6 @@ impl VideoReceiver {
         remb_interval_ms: u32,
         twcc_delay_injection: bool,
         twcc_delay_ramp_max: u8,
-        remb_shock_enabled: bool,
         remb_base_cap_bps: u32,
     ) -> Self {
         Self {
@@ -106,11 +99,9 @@ impl VideoReceiver {
             last_twcc_at: None,
             twcc_fb_pkt_count: 0,
             stats: VideoStats::default(),
-            remb_shock_until: None,
             remb_interval_ms,
             twcc_delay_injection,
             twcc_delay_ramp_max,
-            remb_shock_enabled,
             remb_base_cap_bps,
             metrics_log: MetricsLog::open(),
         }
@@ -222,32 +213,6 @@ impl VideoReceiver {
         let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else {
             return;
         };
-        // If shock mode is active, send a low REMB to trigger encoder queue purge.
-        if self.remb_shock_enabled
-            && self
-                .remb_shock_until
-                .is_some_and(|shock_until| now < shock_until)
-        {
-            // Shock mode: send REMB_SHOCK_BPS regardless of dynamic adjustment
-            let remb_interval = Duration::from_millis(self.remb_interval_ms as u64);
-            if self
-                .last_remb_at
-                .is_some_and(|sent_at| now.duration_since(sent_at) < remb_interval)
-            {
-                return;
-            }
-            self.last_remb_at = Some(now);
-            if let Some(mut receiver) = peer.rtp_receiver(receiver_id) {
-                let remb = rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {
-                    sender_ssrc: LOCAL_RTCP_SENDER_SSRC,
-                    bitrate: REMB_SHOCK_BPS as f32,
-                    ssrcs: vec![ssrc],
-                };
-                let _ = receiver.write_rtcp(vec![Box::new(remb)]);
-            }
-            return;
-        }
-        self.remb_shock_until = None;
 
         // Dynamic REMB adjustment based on network conditions
         self.adjust_remb_dynamically(now);

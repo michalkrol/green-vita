@@ -166,7 +166,6 @@ pub struct Settings {
     pub custom_remb_interval_ms: u32,
     pub custom_twcc_delay_injection: bool,
     pub custom_twcc_delay_ramp_max: u8,
-    pub custom_remb_shock_enabled: bool,
     pub custom_periodic_keyframe_enabled: bool,
     /// When enabled, sends RTCP REMB at 100ms at the user's configured bitrate
     /// cap to force the Xbox encoder to stay within the bandwidth ceiling.
@@ -182,9 +181,6 @@ pub struct Settings {
     /// Maximum delay ramp for TWCC delay injection (1-20, default 6).
     /// 1 = 0.25ms, 20 = 5ms per packet. Higher = stronger throttling signal.
     pub twcc_delay_ramp_max: u8,
-    /// REMB shock (Custom mode only). When enabled, sends ~100 kbps REMB
-    /// for a short burst to force encoder queue purge when lag spikes.
-    pub remb_shock_enabled: bool,
     /// Periodic keyframe PLI (Custom mode only). Sends PLI every 200ms to
     /// force the Xbox encoder to produce keyframes — may help encoder catchup
     /// during lag accumulation. Experimental; can increase bandwidth.
@@ -239,13 +235,11 @@ impl Default for Settings {
             custom_remb_interval_ms: 500,
             custom_twcc_delay_injection: false,
             custom_twcc_delay_ramp_max: 6,
-            custom_remb_shock_enabled: false,
             custom_periodic_keyframe_enabled: false,
             hard_bandwidth_cap: false,
             remb_interval_ms: 500,
             twcc_delay_injection: false,
             twcc_delay_ramp_max: 6,
-            remb_shock_enabled: false,
             periodic_keyframe_enabled: false,
             game_profiles: HashMap::new(),
         }
