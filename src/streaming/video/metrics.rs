@@ -35,7 +35,7 @@ pub(crate) struct VideoMetrics {
     pub(crate) display_pickup_us: AtomicU64,
     pub(crate) display_pickup_max_us: AtomicU64,
     // RTCP Receiver Report metrics (from Xbox)
-    pub(crate) rtcp_rr_loss_fraction: AtomicU64,  // % * 100 (e.g., 5% = 500)
+    pub(crate) rtcp_rr_loss_fraction: AtomicU64,  // integer percent (e.g., 5% = 5)
     pub(crate) rtcp_rr_jitter: AtomicU64,         // jitter in RTP timestamp units
     pub(crate) rtcp_sr_ntp_timestamp: AtomicU64,  // NTP timestamp from SenderReport
 }

@@ -281,17 +281,21 @@ impl VideoReceiver {
         let base_cap = self.remb_base_cap_bps;
         let mut target = base_cap;
 
-        // Read RTCP Receiver Report metrics
-        let loss_frac_pct = METRICS.rtcp_rr_loss_fraction.load(Ordering::Relaxed) as f32 / 100.0; // stored as % * 100
+        // Read RTCP Receiver Report metrics.
+        // The RR handler stores an integer percent (5% -> 5).
+        // NOTE: this value comes from the Xbox's RTCP Receiver Report about the
+        // client's non-existent outbound stream, and is observed at 0.0% in
+        // practice, so the loss ladder is advisory rather than currently load-bearing.
+        let loss_pct = METRICS.rtcp_rr_loss_fraction.load(Ordering::Relaxed) as f32;
         let jitter = METRICS.rtcp_rr_jitter.load(Ordering::Relaxed) as f32;
         let stream_lag_us = METRICS.stream_lag_us.load(Ordering::Relaxed);
 
         // 1. Loss-based reduction: >5% loss → -30%, >2% → -15%, >1% → -5%
-        if loss_frac_pct > 5.0 {
+        if loss_pct > 5.0 {
             target = target.saturating_mul(7) / 10;  // -30%
-        } else if loss_frac_pct > 2.0 {
+        } else if loss_pct > 2.0 {
             target = target.saturating_mul(85) / 100;  // -15%
-        } else if loss_frac_pct > 1.0 {
+        } else if loss_pct > 1.0 {
             target = target.saturating_mul(95) / 100;  // -5%
         }
 
@@ -312,7 +316,7 @@ impl VideoReceiver {
 
         // 4. Recovery: slow ramp up when conditions are good
         // Only recover if: low loss (<1%), low jitter (<500), low lag (<30ms)
-        let conditions_good = loss_frac_pct < 1.0 && jitter < 500.0 && stream_lag_us < 30_000;
+        let conditions_good = loss_pct < 1.0 && jitter < 500.0 && stream_lag_us < 30_000;
         if conditions_good {
             let current = REMB_BPS.load(Ordering::Relaxed);
             if current < base_cap {
@@ -333,7 +337,7 @@ impl VideoReceiver {
         let current = REMB_BPS.load(Ordering::Relaxed);
         if (current as i32 - target as i32).abs() > (base_cap as i32 / 20) {
             eprintln!("REMB adjusted: {} -> {} kbps (loss={:.1}% jitter={:.0} lag={}ms)",
-                current / 1000, target / 1000, loss_frac_pct, jitter, stream_lag_us / 1000);
+                current / 1000, target / 1000, loss_pct, jitter, stream_lag_us / 1000);
         }
     }
 
