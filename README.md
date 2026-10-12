@@ -25,10 +25,14 @@ but ~8 Mbps usable in practice. Higher bitrates exceed the radio's airtime
 capacity, leading to packet drops, macroblock artifacts, and multi-second
 smearing that cannot recover until a full keyframe arrives.
 
-Overclocking the Vita CPU/GPU does not improve streaming performance — the
-bottleneck is WiFi airtime, not decode speed.
+Overclocking CPU/XBAR helps Vita-side packet processing (RTP reassembly,
+RTCP generation), but the **dominant bottleneck is WiFi airtime** (~8 Mbps
+usable). If your bitrate exceeds airtime, overclocking won't prevent
+packet loss.
 
-Recommendations:
+Fix WiFi environment first (20 MHz channel, clean channel 1/6/11,
+Bluetooth off). Overclocking is a minor optimization, not a fix.
+
 - Use 20 MHz channel width on your router (not 40 MHz — causes retransmits)
 - Pick an unused channel (1, 6, or 11)
 - Turn Bluetooth OFF in Vita system settings (shares the same 2.4 GHz antenna)
@@ -40,7 +44,7 @@ scenarios. Changing profiles requires a video reconnection.
 
 | Profile | Bandwidth | H264 | Sleep | Queue | HUD | When to use |
 |---------|-----------|------|-------|-------|-----|-------------|
-| **Game** | 2000 kbps | Baseline | 0 ms | 1 | Hidden | Fast-paced games (racing, FPS) |
+| **Game** | 2500 kbps | Baseline | 1 ms | 1 | Hidden | Fast-paced games (racing, FPS) |
 | **Media** | 7500 kbps | High | 2 ms | 4 | Visible | Slow-paced/story games |
 | **Custom** | User-set | User-set | User-set | User-set | Configurable | Fine-tune every knob |
 
@@ -50,23 +54,91 @@ scenarios. Changing profiles requires a video reconnection.
 0 = unlimited, 500-8000 kbps. Lower = faster response, fewer artifacts.
 
 #### H264 profile
-Baseline (fast decode): no B-frames, any queue depth
-Main (balanced): B-frames, requires queue depth 3+
-High (image quality): B-frames + CABAC, requires queue depth 3+
+- **Baseline** (fast decode): no B-frames, works with any queue depth
+- **Main** (balanced): B-frames, requires queue depth 3+
+- **High** (image quality): B-frames + CABAC, requires queue depth 3+
 
 #### Decode sleep
-0 ms = fastest decode, may cause artifacts
-1 ms = safe default
-2 ms = safer on noisy WiFi
+- 0 ms = fastest decode, may cause artifacts on noisy WiFi
+- 1 ms = safe default for most setups
+- 2 ms = safer on noisy/weak WiFi
 
 #### Decode queue depth
-Main/High profiles require 3+. 1 = ~60ms latency, 8-10 = smoothest.
+1 frame = ~16ms latency. Higher = smoother on jitter but more latency. Main/High profiles require 3+.
 
 #### Hard bandwidth cap
-REMB feedback at 500ms to enforce the bandwidth ceiling.
+When ON, enforces the bandwidth ceiling via REMB feedback. When OFF, Xbox manages its own rate (default 15 Mbps).
 
 #### Disable UI overlay
 Bypasses egui entirely, saving ~8.3ms display latency (half a frame at 60 FPS).
+
+---
+
+### Lag investigation knobs — Custom profile only
+
+These settings expose the RTCP feedback loop for empirical tuning. They are **only visible in Custom profile**; Game/Media profiles use fixed presets.
+
+| Setting | Range | Default | What it does |
+|---------|-------|---------|--------------|
+| **REMB shock** | On / Off | Off | **Emergency queue purge.** When enabled, on sustained high lag (flush triggers at 75ms) sends ~100 kbps REMB burst for a few cycles. This tells Xbox "drastically reduce bitrate NOW" to flush its encoder queue. Use when: latency keeps climbing and won't come down, or after network hiccup. |
+| **REMB interval** | 100 / 250 / 500 / 1000 ms | 500 ms | How often we tell Xbox our max receive bitrate (REMB). Lower = Xbox reacts faster to bandwidth changes. **100 ms** = aggressive (best for unstable WiFi). **500 ms** = conservative (stable WiFi). |
+| **TWCC delay injection** | On / Off | Off | When our measured bitrate exceeds your cap + 10%, we report fake "network delays" to Xbox's congestion controller. This triggers its overuse detector to throttle bitrate down. Use when: bitrate overshoots your cap during WiFi contention. |
+| **TWCC delay ramp max** | 1–15 | 6 | Strength of the fake delay signal when injection is ON. 1 = barely noticeable, 15 = strong throttle (capped at 15). Higher = Xbox backs off more aggressively. Start at 6, increase if overshoot persists. |
+| **Periodic keyframe (PLI)** | On / Off | Off | Sends PLI (Picture Loss Indication) every 200 ms asking Xbox for a fresh keyframe (IDR). **Primary purpose: clears macroblock artifacts / frozen blocks** by forcing a full frame render. Encoder "catchup" is experimental/theory. **Risk:** Xbox may rate-limit or ignore frequent PLI; spamming PLI can overload encoder and worsen backlog. Use when: persistent blocky/frozen areas that don't recover. Cost: extra bandwidth (large I-frames every 200 ms). |
+| **RSSI-based bitrate cap** | — | — | *Disabled — NetCtl crashes on some Vita units.* |
+
+---
+
+#### When to tweak each (by observed symptom)
+
+| Symptom you see | Try this first |
+|-----------------|----------------|
+| **Latency keeps climbing, won't come down** | Enable **REMB shock**; lower **REMB interval** to 100 ms |
+| **Bitrate overshoots cap during WiFi contention** | Enable **TWCC delay injection**; increase **ramp max** to 10–15 |
+| **Persistent blocky/frozen macroblocks that don't recover** | Enable **Periodic keyframe** (forces full frame refresh) |
+| **Sudden quality drop after 30+ min session** | Try enabling **REMB shock** + **REMB interval 100ms**; ensure **Hard bandwidth cap** is ON |
+| **Video stutters on weak WiFi** | Lower **Bandwidth cap** manually; ensure **Hard bandwidth cap** is ON |
+
+---
+
+#### How the feedback loop works (plain English)
+
+```
+Vita (you)                              Xbox (stream source)
+────────────────────────────────────────────────────────────────
+     │                                        │
+     │  Video frames arrive                   │
+     ├───────────────────────────────────────►│
+     │                                        │
+     │  "My max bitrate is X" (REMB)          │
+     │◄───────────────────────────────────────┤
+     │  "Packets arrived at these times" (TWCC)│
+     │◄────────────────────────────────────────┤
+     │  "Send me a fresh keyframe" (PLI)       │
+     │◄────────────────────────────────────────┤
+     │                                        │
+     ▼                                        ▼
+Xbox's Google GCC (congestion controller)   You just report conditions
+- "Is network delay increasing?"            - "I got X bytes in Y ms"
+- "Should I send slower?"                   - "Loss = Z%"
+- Adjusts encoder bitrate                   - "RTT = N ms"
+```
+
+**REMB** = "Don't send faster than this."
+**TWCC** = "Here's exactly when packets arrived — you figure out the delay."
+**PLI** = "Send me a clean frame (IDR), the current one is corrupted."
+**REMB shock** = "EMERGENCY: Drop to 100 kbps NOW to clear your queue."
+
+---
+
+#### Pro / Con summary
+
+| Feature | Pros | Cons |
+|---------|------|------|
+| **REMB shock** | Clears encoder queue during lag spike | Brief quality drop (100 kbps burst) |
+| **Lower REMB interval** (100 ms) | Faster reaction to bandwidth drops | More RTCP overhead (~1% bandwidth) |
+| **TWCC delay injection** | Forces Xbox to pace smoothly on contention | May under-utilize bandwidth if too aggressive |
+| **Periodic keyframe** | Clears frozen/blocky artifacts | Extra bandwidth (large I-frames every 200 ms) |
 
 ---
 
@@ -76,7 +148,7 @@ You need a homebrew-enabled PS Vita with VitaShell and an Xbox account that has
 access to Xbox Cloud Gaming.
 
 1. Download `green-vita.vpk` from the
-   [latest release](https://github.com/Day-OS/green-vita/releases/latest).
+   [latest release](https://github.com/michalkrol/green-vita/releases/latest).
 2. Transfer the VPK to the Vita.
 3. Install it with VitaShell.
 4. Launch GreenVita and complete the device-code sign-in.
