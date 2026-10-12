@@ -142,6 +142,58 @@ Xbox's Google GCC (congestion controller)   You just report conditions
 
 ---
 
+### Known limitations (0.2.5)
+
+- **REMB shock currently has no effect.** `remb_shock_until` is never armed, so
+  the emergency ~100 kbps burst described above is never sent. The setting is
+  plumbed through the UI but inert.
+- **The H.264 profile setting may not reach the console.** The SDP constraint
+  pass appends a *second* `a=fmtp` line for the video payload type that hardcodes
+  `profile-level-id=42e01f` (Constrained Baseline) after the negotiated one; two
+  fmtp lines for one payload type is invalid SDP and the injected line likely
+  wins. Selecting Main or High can therefore silently fall back to Baseline. The
+  same pass also emits `max-fr` as a constant (`90 000`) instead of the requested
+  frame rate. Main/High additionally require decode queue depth 3+ (B-frame
+  reordering) and are unverified on the Vita hardware decoder.
+- **`lag:`/`lagMax:` are transport-side only.** They measure RTP schedule slip
+  and are structurally blind to the console's pre-RTP-stamp queue, so a flat
+  `lag:` does **not** mean zero glass latency.
+- **The console adapts its output frame rate to content and activity.** Measured
+  24 fps for film and ~60 fps for gameplay, rising again when input resumed. The
+  `framerate` request in the offer is not what governs it.
+- **The console skips whole access units of its own accord.** These appear as
+  `drop:` and feed the drop-count flush trigger, while RTCP RR loss stays at 0%
+  - they are not packet loss.
+- **Some HUD fields are structurally zero** because nothing ever increments
+  them: `hold:S` (saves), plus `abandons`, `wait_drops`, `invalid` and
+  `dec_queue_full`. The only live member of `hold:S/E/G` is `E` (stall
+  expiries), which has not fired in 49 minutes of measurement.
+- **Not reproduced:** a 37.4-minute measured session showed no latency
+  accumulation in any client-side or transport-side signal (`lag` slope
+  -0.13 ms/min, `ageMax` flat, zero resyncs). Drift may be specific to sustained
+  gamepad input and/or to the aggressive feedback toggles being enabled.
+
+---
+
+### Debug metrics log
+
+Every streaming session writes a 44-column, 1 Hz CSV to
+`ux0:data/xcloud-rust/metrics.csv`, truncated at the start of each session. It is
+always on - it does not depend on the debug overlay or on `pure_stream_mode`.
+Fetch it over the Vita's FTP server and analyse it offline:
+
+```sh
+curl -s 'ftp://<vita-ip>:1337/ux0:/data/xcloud-rust/metrics.csv' -o metrics.csv
+python3 scripts/analyze_metrics.py metrics.csv
+```
+
+The analyser prints a per-minute aggregation table, least-squares drift trends
+(ms/min) and a chronological event log for flushes, resyncs, resets and stall
+expiries. Fetch **before** starting the next stream, since a new session
+truncates the file.
+
+---
+
 ## Install
 
 You need a homebrew-enabled PS Vita with VitaShell and an Xbox account that has
