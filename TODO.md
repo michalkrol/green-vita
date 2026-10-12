@@ -15,6 +15,23 @@
     including a few seconds of input at the end.
   - The old drift floor (~0.25-0.5 s/min) predicts **+9 to +18 s** over 37 min.
     Measured: none, in any client-side or transport-side signal.
+  - **REPRODUCED (16.9 min, racing game, 4000 kbps cap, ~58.5 fps):** steady
+    monotonic growth - user: *"every minute a little bit worse until it was just
+    very bad"* - plus early freezes / frame drops and heavy artefacts.
+    Metrics: drops **20.1/min** (340 total), flushes **29** (one every ~20 s,
+    sometimes only 6 s apart), resyncs 5, rtp_gaps 124, bandwidth pegged at the
+    4000 cap. `lag` slope -0.74 ms/min and `ageMax` +0.03 ms/min stayed FLAT,
+    which is the structural blind spot: RTP-schedule slip cannot see pre-stamp
+    queue growth, so this cannot be used to argue glass latency was flat.
+    Attribution: 4000 kbps very likely saturates the ~8 Mbps-usable 2.4 GHz
+    airtime for high-motion content, and the drop-count flush trigger then forms
+    a feedback loop (loss -> drops -> flush -> `dimensionschanged` encoder
+    rebuild -> more disruption), the prime suspect for the artefacts.
+  - **Experiment armed:** `FLUSH_TRIGGER_ENABLED = false` in `session.rs` disables
+    the flush trigger entirely for the next run, so the console is never asked to
+    rebuild its encoder. If artefacts stop but the steady drift continues, the
+    drift is console-side and the flushes only caused the glitches; if both stop,
+    the flushes were causing the drift too.
 - **Still untested**: sustained ACTIVE INPUT over 30+ min (both measured sessions
   were input-free; input packet rate is the last remaining variable), and an A/B
   of the aggressive toggles.
@@ -51,6 +68,14 @@
   client-side and were also flat.
 - **Next steps**:
   - 30+ min game session with continuous input (the untested variable).
+  - Compare the flush-disabled run against the 4000 kbps run above (same
+    workload ideally): do the artefacts/freezes stop?
+  - Drop the bitrate cap back to <=3000 for high-motion content; 4000 pegged the
+    link and multiplied drops ~8x.
+  - Add a **real inbound packet-loss metric**. Xbox's RTCP RR reports 0.0% loss
+    but those report blocks describe a stream it would receive FROM us, which
+    does not exist, so `rr%` is meaningless. `rtp_gaps` (assembly timeouts) is
+    only a proxy. A sequence-number-based loss/late counter is needed.
   - A/B the aggressive toggles against the same workload.
   - If drift reproduces, add a better drift detector (`ageMax`/`pick` or the
     metadata round-trip) since `lag` cannot see the pre-stamp queue.

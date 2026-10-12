@@ -43,6 +43,15 @@ const SUPPRESS_KEYFRAME_REQUESTS: bool = false;
 /// while flush behaviour is unchanged (the drop-count trigger still applies).
 const LAG_FLUSH_ENABLED: bool = false;
 
+/// Gates the backlog flush trigger ENTIRELY.  Disabled while we test whether the
+/// flush feedback loop is responsible for the artefacts and the steady latency
+/// drift observed at a high bitrate cap: the drop-count trigger fired 29 times in
+/// 17 minutes (one flush every ~20 s, sometimes only 6 s apart), and every flush
+/// asks the console to rebuild its encoder via `dimensionschanged`.  With this
+/// false both the drop-count and the lag triggers no-op; drops and lag are still
+/// counted and logged.  Supersedes LAG_FLUSH_ENABLED while disabled.
+const FLUSH_TRIGGER_ENABLED: bool = false;
+
 pub(crate) struct RtcSessionConfig {
     pub stun_server: &'static str,
     pub route_probe: &'static str,
@@ -366,7 +375,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         let drops_since_flush = total_drops.saturating_sub(self.drops_at_last_flush);
         let lag_us = METRICS.stream_lag_us.load(Ordering::Relaxed);
         let lag_eligible = LAG_FLUSH_ENABLED && lag_us >= LAG_FLUSH_THRESHOLD_US;
-        let eligible = lag_eligible || drops_since_flush >= DROP_FLUSH_THRESHOLD;
+        let drop_eligible = drops_since_flush >= DROP_FLUSH_THRESHOLD;
+        let eligible = FLUSH_TRIGGER_ENABLED && (lag_eligible || drop_eligible);
         if !eligible {
             // Only an eligible stretch counts toward the sustain window; without
             // this reset a single eligible instant would permanently satisfy
