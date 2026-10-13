@@ -122,13 +122,25 @@ fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32, video_h2
 }
 
 fn h264_profile_level_id(video_fps: u32, video_h264_profile: H264Profile) -> &'static str {
+    // profile-level-id encoding per RFC 6184 / H.264:
+    // byte 0 = profile_idc (66=Baseline, 77=Main, 100=High)
+    // bytes 1-2 = constraint_set flags + level_idc
+    // constraint_set0_flag (bit 7 of byte 1) = 1 means "Baseline compatible"
+    //   - Baseline (66) with constraint_set0=1 => Constrained Baseline (42e0xx)
+    //   - Main (77) with constraint_set0=1 => declares Baseline-compatible (4de0xx)
+    //   - High (100) with constraint_set0=1 => declares Baseline-compatible (64e0xx)
+    // The xHome console matches offered payload types on profile_idc + constraint flags
+    // and IGNORES the level byte. Our old Main entry "4de0xx" set constraint_set0=1,
+    // so the console treated it as Baseline-compatible and fell back to our Baseline PT.
+    // Chrome offers Main as "4d00xx" (no constraint flags); the console answers
+    // "4d002a" (Main, level 4.2) for that PT and offers NO High PT at all.
     match (video_h264_profile, video_fps > 30) {
-        (H264Profile::Baseline, false) => "42e01f",
-        (H264Profile::Baseline, true) => "42e020",
-        (H264Profile::Main, false) => "4de01f",
-        (H264Profile::Main, true) => "4de020",
-        (H264Profile::High, false) => "64001f",
-        (H264Profile::High, true) => "640020",
+        (H264Profile::Baseline, false) => "42e01f", // Constrained Baseline, level 3.1
+        (H264Profile::Baseline, true) => "42e020",  // Constrained Baseline, level 4.0
+        (H264Profile::Main, false) => "4d001f",     // Main, level 3.1 (no constraint flags)
+        (H264Profile::Main, true) => "4d0020",      // Main, level 4.0 (no constraint flags)
+        (H264Profile::High, false) => "64001f",     // High, level 3.1
+        (H264Profile::High, true) => "640020",      // High, level 4.0
     }
 }
 
@@ -141,8 +153,8 @@ mod tests {
     fn selects_profile_level_id() {
         assert_eq!(h264_profile_level_id(30, H264Profile::Baseline), "42e01f");
         assert_eq!(h264_profile_level_id(60, H264Profile::Baseline), "42e020");
-        assert_eq!(h264_profile_level_id(30, H264Profile::Main), "4de01f");
-        assert_eq!(h264_profile_level_id(60, H264Profile::Main), "4de020");
+        assert_eq!(h264_profile_level_id(30, H264Profile::Main), "4d001f");
+        assert_eq!(h264_profile_level_id(60, H264Profile::Main), "4d0020");
         assert_eq!(h264_profile_level_id(30, H264Profile::High), "64001f");
         assert_eq!(h264_profile_level_id(60, H264Profile::High), "640020");
     }

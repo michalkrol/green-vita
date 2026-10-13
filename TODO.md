@@ -156,24 +156,25 @@
   - If drift reproduces, add a better drift detector (`ageMax`/`pick` or the
     metadata round-trip) since `lag` cannot see the pre-stamp queue.
 
-### 2. Dark Scene Blockiness (Baseline Profile Limitation)
+### 2. Dark Scene Blockiness (Baseline Profile Limitation) — RESOLVED
 - **Issue**: Dark areas with subtle gradients show heavy blocking/banding
 - **Root cause**: Baseline lacks CABAC entropy coding
-- **Options**:
-  - Test Main profile (if Vita HW decoder supports CABAC)
-  - Add SDP `max-qp` constraint (e.g., `max-qp=35`)
-  - Add SDP `min-qp` constraint to prevent over-quantization
-- **Status (2026-10-13)**: the duplicate-fmtp blocker was fixed by `a6545c1`
-  (the offer now carries a single fmtp line and preserves the negotiated profile).
-  `max-qp=35` is now merged in (both the merge and synthesised paths).
-  `min-qp` remains unimplemented (it limits how FINE the quantiser may go,
-  i.e. it saves bits rather than protecting dark gradients, so it is a bandwidth
-  knob, not a dark-scene one).
-- **Fresh device evidence**: our offer declares `profile-level-id=42e01f`
-  (Baseline, level 3.1) while the console's ANSWER declares
-  `profile-level-id=42e02a` — the SAME profile bits (Baseline) but level 4.2 —
-  and the answer contains no `b=` line, no `max-fr` and no `max-fs`, confirming
-  it discards our bandwidth and frame-rate hints while mirroring the profile.
+- **Resolution (2026-10-13)**: The console's encoder DOES support Main profile.
+  Proven by capturing a real Chrome xHome session (webrtc-internals dump):
+  - Chrome offers Main as `profile-level-id=4d001f` (no constraint flags)
+  - The console ANSWERS that PT with `profile-level-id=4d002a` (Main, level 4.2)
+  - The console's answer contains NO High PT, even though Chrome offered one
+  - Our bug: we declared Main as `4de01f` (constraint_set0=1 = Baseline-compatible)
+    so the console matched our Baseline fallback PT (`42e01f`) instead.
+  - Fix: `peer.rs::h264_profile_level_id` now returns `4d001f`/`4d0020` for Main.
+    This brings CABAC, 8x8 transform, and weighted prediction — exactly what
+    dark/flat gradients need.
+- **Status**: Fixed in code. First session on this build is the hardware test.
+  Watch `decode_errors` and `enc_width`/`enc_height` in the metrics CSV to
+  verify Vita HW decoder handles Main (CABAC) without errors.
+- **Note**: Console does NOT support High (no High PT in Chrome answer).
+  Main is the ceiling. High entries (`64001f`/`640020`) kept as-is for parity
+  with Chrome's offer but will not be negotiated.
 
 ### 3. RSSI-Based Adaptive Bitrate (Disabled - NetCtl Crash)
 - **Issue**: `sceNetCtlInit()` causes hard crash on some Vita units
