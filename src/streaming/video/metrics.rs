@@ -49,6 +49,12 @@ pub(crate) struct VideoMetrics {
     // Measures console capture queue + transport + assembly; NOT blind to pre-RTP-stamp queue
     pub(crate) capture_to_arrival_us: AtomicU64,
     pub(crate) capture_to_arrival_max_us: AtomicU64,
+
+    // Loss recovery metrics (Stage 3)
+    // Number of NACK feedback packets sent (each packet may carry multiple sequence numbers)
+    pub(crate) rtcp_nack_sent: AtomicU64,
+    // Number of RTX packets received and successfully unwrapped
+    pub(crate) rtx_packets_received: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -93,6 +99,8 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     sr_anchor_local_us: AtomicU64::new(0),
     capture_to_arrival_us: AtomicU64::new(0),
     capture_to_arrival_max_us: AtomicU64::new(0),
+    rtcp_nack_sent: AtomicU64::new(0),
+    rtx_packets_received: AtomicU64::new(0),
 };
 
 /// One drained sample of every metric, taken once per second.
@@ -136,6 +144,9 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) rtcp_sr_ntp_timestamp: u64,
     pub(crate) capture_to_arrival_us: u64,
     pub(crate) capture_to_arrival_max_us: u64,
+    // Loss recovery metrics (Stage 3)
+    pub(crate) rtcp_nack_sent: u64,
+    pub(crate) rtx_packets_received: u64,
 }
 
 /// Drains all per-second metric atomics exactly once and returns a snapshot.
@@ -181,6 +192,9 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let rtcp_sr_ntp_timestamp = METRICS.rtcp_sr_ntp_timestamp.load(Ordering::Relaxed);
     let capture_to_arrival_us = METRICS.capture_to_arrival_us.load(Ordering::Relaxed);
     let capture_to_arrival_max_us = METRICS.capture_to_arrival_max_us.swap(0, Ordering::Relaxed);
+    // Loss recovery metrics (Stage 3)
+    let rtcp_nack_sent = METRICS.rtcp_nack_sent.swap(0, Ordering::Relaxed);
+    let rtx_packets_received = METRICS.rtx_packets_received.swap(0, Ordering::Relaxed);
 
     MetricsSnapshot {
         rtp_assembly_sum_us,
@@ -222,6 +236,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
         rtcp_sr_ntp_timestamp,
         capture_to_arrival_us,
         capture_to_arrival_max_us,
+        rtcp_nack_sent,
+        rtx_packets_received,
     }
 }
 

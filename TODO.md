@@ -274,7 +274,7 @@
 - **Normal** → user configured depth
 - **Benefit**: Less buffered latency during congestion
 
-### 8. No RTX payload type and no generic NACK (loss-induced artefacts)
+### 8. No RTX payload type and no generic NACK (loss-induced artefacts) — PARTIALLY IMPLEMENTED
 - **Measured evidence (Chrome xHome, LAN, inbound shaped to 1.5 Mbit/s via dnctl/pf):**
   - 1280x720@60 stream, 32715 packets, 1532 lost (~4.7% loss)
   - nackCount 499, retransmittedPacketsReceived 1809 (1,426,756 bytes ≈ 5.5% of stream recovered)
@@ -288,15 +288,18 @@
   2. Chrome HOLDS the last good frame instead of rendering corruption (10 freezes, 12.1 s total); our client presents damaged frames → persistent macroblocking until next IDR.
   3. Keyframe requests are a last resort for Chrome (38 PLIs vs 499 NACKs); our only recovery tool is the keyframe request, and an IDR at low bitrate is enormous — which is why periodic PLI measurably made things worse.
 - **Raw evidence location:** `/Users/mk/git/vita-xbox/chrome-dumps/October 13 1307/`
-- **Implementation plan:**
-  1. **Advertise the capability.** Add RTX payload type (`a=rtpmap:<rtx-pt> rtx/90000` + `a=fmtp:<rtx-pt> apt=<h264-pt>`) and generic `a=rtcp-fb:<h264-pt> nack` (in addition to existing `nack pli`) to the video section of the SDP offer. Relevant code: `src/api_xbox/streaming/rtc/peer.rs::register_vita_codecs` (registers selected H.264 profile at PT 102 + Constrained Baseline fallback at PT 103) and/or offer post-processing in `src/api_xbox/streaming/rtc/sdp.rs` (already rewrites fmtp/rtcp-fb lines — see `constrain_h264_codec`, `cap_video_bitrate`, `enable_transport_cc`). Prerequisite: console's negotiation is capability-driven; it only retransmits if client offers RTX and nack.
-  2. **Generate NACKs for missing sequence numbers.** We already detect gaps (`rtp_gaps` assembly-timeout counter and sequence tracking in `src/api/streaming/rtc/rtp.rs`); missing is the RTCP feedback packet itself (PT=205, FMT=1, carrying list of missing sequence numbers and bitmasks). Send through same path as keyframe request — `src/api/streaming/rtc/media.rs::request_keyframe` shows the pattern (`peer.rtp_receiver(id)` then `receiver.write_rtcp(vec![Box::new(packet)])`). Batch and rate-limit: Chrome sent 499 NACKs covering 1809 packets (~few NACKs/sec at 4.7% loss), each NACK should carry multiple sequence numbers.
-  3. **Handle incoming RTX.** Retransmitted packet arrives on RTX payload type with RTX SSRC; first two payload bytes are ORIGINAL sequence number. Unwrap those two bytes, rewrite sequence number to original, feed payload into existing reassembly path so frame assembles as if packet arrived normally. RTX SSRC/PT must be accepted by depacketiser rather than discarded.
-  4. **Hold last good frame on unrecoverable damage (secondary, makes picture clean).** Chrome's freeze behaviour: on unrecoverable damage, HOLD last good frame instead of presenting damaged one, until IDR arrives. Relevant machinery: `VideoRtp::waiting_for_keyframe`, `record_damage` / `damage_score` / `LOW_FPS_DAMAGE_LIMIT` (8) and `HIGH_FPS_DAMAGE_LIMIT` (3) in `src/api/streaming/rtc/rtp.rs`, `worker.begin_resync()`, presentation path in `src/shell/surface.rs`. **CAVEAT:** our damage detection only fires on incomplete current access unit; a frame that arrives COMPLETE but references a lost earlier frame is NOT detected at all — a whole missing AU (jump of >1 frame interval in RTP timestamp) currently goes unnoticed. Detecting that is part of this item.
-- **Acceptance criteria:**
-  - At ~1 Mbps with several percent loss, metrics CSV must show NACKs sent and RTX packets received → two new CSV counters needed for verification (`rtcp_nack_sent`, `rtx_packets_received` or similar). CSV HEADER in `src/streaming/video/metrics_log.rs`; analyser in parent repo's `scripts/analyze_metrics.py`.
+- **Implementation status (2026-10-13):**
+  - ✅ **Stage 1 - Advertise capability & generate NACKs (commit 11674a5 + this work):** Generic `a=rtcp-fb:<pt> nack` added to both H.264 codecs; RTX payload types 112/113 registered with `apt=102`/`apt=103`. NACK generator interceptor (`rtc_interceptor::nack::generator::NackGeneratorInterceptor`) wired into the interceptor registry (`feedback_registry()` in `src/api/streaming/rtc/peer.rs`). Activation condition satisfied: codec's `rtcp_feedback` contains `RTCPFeedback { typ: "nack", parameter: "" }` (generic NACK, empty parameter). The interceptor automatically binds to remote video streams that advertise generic NACK and generates RTCP TransportLayerNack packets for missing sequences.
+  - ✅ **Stage 2 - RTX receive:** 
+    - (a) Negotiated RTX payload types extracted from console's ANSWER SDP via `extract_negotiated_rtx_mapping()` in `src/api_xbox/streaming/rtc/sdp.rs`. Parses `a=rtpmap:<pt> rtx/90000` + `a=fmtp:<pt> apt=<h264-pt>` and publishes mapping globally via `set_negotiated_rtx_map()` (called from `session.rs::set_remote_answer()`).
+    - (b) RTX unwrapping implemented in `VideoRtp::receive_unwrapped_rtx()` (`src/api/streaming/rtc/rtp.rs`): detects negotiated RTX payload types, reads 2-byte original sequence number (big-endian, RFC 4588), feeds remaining payload into normal reassembly path using original sequence number. RTX packets do not disturb main stream's sequence accounting, gap/damage detection, stream-lag metric, or decoder queue.
+    - (c) RTX packets are pure duplicates — they only fill gaps in pending frames, never trigger keyframe requests or damage scoring on their own.
+  - ✅ **Stage 3 - Counters for hardware verification:** Added `rtcp_nack_sent` (sequence numbers requested for retransmission, approximated from assembly-timeout gaps) and `rtx_packets_received` (RTX packets successfully unwrapped) to `VideoMetrics`, CSV header (now 48 columns), and `analyze_metrics.py` (window table + totals). Script degrades gracefully on older CSVs.
+  - ⬜ **Stage 4 - Hold last good frame (secondary):** Not yet implemented. Chrome's freeze behaviour (hold last good frame on unrecoverable damage) would require changes to the presentation path (`src/shell/surface.rs`) and damage detection (detect whole missing AUs via RTP timestamp jumps).
+- **Acceptance criteria (for Stages 1-3):**
+  - At ~1 Mbps with several percent loss, metrics CSV must show `rtcp_nack_sent` and `rtx_packets_received` climbing.
   - Console's retransmissions must actually arrive — verifiable on hardware by watching those counters climb.
-  - Subjective: artefacts should stop persisting for seconds at low bitrate; picture should hold/freeze instead of showing macroblocking.
+  - Subjective: artefacts should stop persisting for seconds at low bitrate; picture should hold/freeze instead of showing macroblocking (pending Stage 4).
 
 ### 9. 30/60 fps switch: only untried lever is clientdevicecapabilities
 - The switch is inert through every path tried so far. It feeds the SDP

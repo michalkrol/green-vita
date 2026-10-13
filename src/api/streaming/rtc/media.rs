@@ -6,7 +6,8 @@ use rtc::media_stream::MediaStreamTrackId;
 use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,32 @@ const TWCC_PACKET_THRESHOLD: usize = 8;
 pub(crate) static REMB_BPS: AtomicU32 = AtomicU32::new(15_000_000);
 /// Arbitrary stable local RTCP sender SSRC (we transmit no RTP of our own).
 const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
+
+/// Negotiated RTX payload type -> primary H.264 payload type mapping from the
+/// answer SDP. Populated once when the remote answer is set.
+static NEGOTIATED_RTX_MAP: OnceLock<HashMap<u8, u8>> = OnceLock::new();
+
+/// Gets the negotiated RTX payload type mapping. Returns an empty map if not
+/// yet initialized (before SDP answer is processed).
+pub(crate) fn negotiated_rtx_map() -> &'static HashMap<u8, u8> {
+    NEGOTIATED_RTX_MAP.get_or_init(HashMap::new)
+}
+
+/// Sets the negotiated RTX payload type mapping from the answer SDP.
+/// Should be called once during session setup.
+pub(crate) fn set_negotiated_rtx_map(map: HashMap<u8, u8>) {
+    let _ = NEGOTIATED_RTX_MAP.set(map);
+}
+
+/// Checks if a payload type is a negotiated RTX type.
+pub(crate) fn is_negotiated_rtx_pt(payload_type: u8) -> bool {
+    negotiated_rtx_map().contains_key(&payload_type)
+}
+
+/// Gets the primary H.264 payload type for a negotiated RTX payload type.
+pub(crate) fn rtx_apt_for(payload_type: u8) -> Option<u8> {
+    negotiated_rtx_map().get(&payload_type).copied()
+}
 
 #[derive(Default)]
 struct VideoStats {
@@ -134,6 +161,17 @@ impl VideoReceiver {
             crate::streaming::video::metrics::METRICS
                 .rtp_gaps
                 .fetch_add(sample_stats.nack_requests.len() as u64, Ordering::Relaxed);
+            // Count sequence numbers requested for retransmission (each tuple is a range).
+            // This approximates NACK feedback sent since the NackGeneratorInterceptor
+            // generates NACKs for the same gaps we detect at assembly timeout.
+            let nack_seqs: u64 = sample_stats
+                .nack_requests
+                .iter()
+                .map(|(start, end)| end.wrapping_sub(*start).wrapping_add(1) as u64)
+                .sum();
+            crate::streaming::video::metrics::METRICS
+                .rtcp_nack_sent
+                .fetch_add(nack_seqs, Ordering::Relaxed);
         }
         self.stats.dropped = self
             .stats

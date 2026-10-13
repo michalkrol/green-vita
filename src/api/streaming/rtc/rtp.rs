@@ -1,4 +1,5 @@
 use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker};
+use crate::api::streaming::rtc::media::is_negotiated_rtx_pt;
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
@@ -256,6 +257,31 @@ impl VideoRtp {
             }
         }
 
+        // Handle RTX (retransmission) packets: unwrap the original sequence number
+        // and feed the payload into the normal reassembly path. RTX packets must
+        // not disturb the main stream's sequence accounting, gap detection, or metrics.
+        if is_negotiated_rtx_pt(packet.header.payload_type) {
+            if packet.payload.len() >= 2 {
+                let original_seq = u16::from_be_bytes([packet.payload[0], packet.payload[1]]);
+                let inner_payload = &packet.payload[2..];
+                if !inner_payload.is_empty() {
+                    // Create a synthetic packet with the original sequence number and payload
+                    // but preserve the original timestamp, marker, and SSRC for assembly.
+                    let mut rtx_packet = packet.clone();
+                    rtx_packet.header.sequence_number = original_seq;
+                    rtx_packet.payload = Bytes::copy_from_slice(inner_payload);
+                    // Process the unwrapped packet through the normal path, but skip
+                    // RTX-specific metrics and sequence accounting.
+                    return self.receive_unwrapped_rtx(worker, rtx_packet, keyframe_requested);
+                }
+            }
+            // Malformed RTX packet (too short); count and drop.
+            crate::streaming::video::metrics::METRICS
+                .rtp_invalid
+                .fetch_add(1, Ordering::Relaxed);
+            return stats;
+        }
+
         if packet.payload.is_empty() {
             if self.next_sequence == Some(packet.header.sequence_number) {
                 self.next_sequence = Some(packet.header.sequence_number.wrapping_add(1));
@@ -408,6 +434,132 @@ impl VideoRtp {
             self.waiting_for_keyframe = false;
             self.damage_score = 0;
         } else if !frame_was_damaged {
+            self.damage_score = self.damage_score.saturating_sub(1);
+        }
+
+        if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
+            eprintln!("Video decoder queue is full; continuing while requesting a keyframe");
+            *keyframe_requested = true;
+            stats.dropped = stats.dropped.saturating_add(1);
+        }
+        stats
+    }
+
+    /// Processes an unwrapped RTX packet (retransmission) by feeding it into the
+    /// normal reassembly path WITHOUT updating the main stream's sequence accounting,
+    /// gap/damage detection, stream-lag metric, or decoder queue. RTX packets are
+    /// duplicates by definition and must not count as new frames or trigger keyframe
+    /// requests on their own.
+    fn receive_unwrapped_rtx(
+        &mut self,
+        worker: &VideoDecodeWorker,
+        packet: Packet,
+        keyframe_requested: &mut bool,
+    ) -> VideoSampleStats {
+        let mut stats = VideoSampleStats::default();
+        
+        // Count RTX packets received for metrics
+        crate::streaming::video::metrics::METRICS
+            .rtx_packets_received
+            .fetch_add(1, Ordering::Relaxed);
+
+        let packet_timestamp = packet.header.timestamp;
+        
+        // Skip timestamp validation for RTX packets - they belong to a frame
+        // that may already be pending or even completed. We only care about
+        // assembling the missing pieces.
+        
+        // If we have no pending frame, this RTX is for an already-completed frame.
+        // Check if it matches the last completed frame's timestamp.
+        if self.pending.is_none() {
+            // RTX for an already-assembled frame - nothing to do
+            return stats;
+        }
+
+        // If the pending frame has a different timestamp, this RTX is for an
+        // older frame that we've already moved past (keyframe requested, etc.)
+        if let Some(pending) = &self.pending
+            && pending.timestamp != packet_timestamp
+        {
+            return stats;
+        }
+
+        // Insert the RTX packet into the pending frame assembly
+        if let Some(pending) = &mut self.pending {
+            pending.insert(packet);
+        } else {
+            // Should not happen given the check above, but handle gracefully
+            return stats;
+        }
+
+        // Try to assemble the frame (same logic as normal receive)
+        let assembly = self
+            .pending
+            .as_ref()
+            .map(|pending| pending.assemble(&mut self.depacketizer, self.next_sequence));
+        let Some(assembly) = assembly else {
+            return stats;
+        };
+        let (data, marker_sequence) = match assembly {
+            FrameAssembly::Pending => {
+                // Still waiting for more packets - RTX helped but not complete yet
+                return stats;
+            }
+            FrameAssembly::Invalid => {
+                // Assembly failed - this shouldn't happen for RTX but handle gracefully
+                self.pending = None;
+                self.next_sequence = None;
+                *keyframe_requested = true;
+                self.record_damage(worker);
+                stats.dropped = stats.dropped.saturating_add(1);
+                return stats;
+            }
+            FrameAssembly::Complete { data, marker_sequence } => (data, marker_sequence),
+        };
+        
+        let completed = self.pending.take().expect("assembled pending video frame");
+        
+        // NOTE: We do NOT update stream lag, capture-to-arrival, or next_sequence
+        // for RTX-recovered frames. They are duplicates and must not affect metrics.
+        
+        let unit = inspect_h264_access_unit(&data);
+        stats.encoded_resolution = unit.resolution;
+        let sample_too_large = unit
+            .resolution
+            .is_some_and(|(width, height)| width > STREAM_WIDTH || height > STREAM_HEIGHT);
+        if sample_too_large {
+            eprintln!(
+                "Dropping H264 access unit larger than decoder: {:?} > {}x{}",
+                unit.resolution, STREAM_WIDTH, STREAM_HEIGHT
+            );
+            self.stream_too_large = true;
+            *keyframe_requested = true;
+            if !self.waiting_for_keyframe {
+                worker.begin_resync();
+            }
+            self.waiting_for_keyframe = true;
+            stats.dropped = stats.dropped.saturating_add(1);
+            return stats;
+        }
+        if self.stream_too_large {
+            if unit.resolution.is_none() || !unit.has_idr {
+                *keyframe_requested = true;
+                self.waiting_for_keyframe = true;
+                stats.dropped = stats.dropped.saturating_add(1);
+                return stats;
+            }
+            self.stream_too_large = false;
+        }
+        if self.waiting_for_keyframe {
+            if !unit.has_idr {
+                *keyframe_requested = true;
+                stats.dropped = stats.dropped.saturating_add(1);
+                return stats;
+            }
+            self.waiting_for_keyframe = false;
+            self.damage_score = 0;
+        } else {
+            // RTX recovery succeeded - reduce damage score since we filled a gap
             self.damage_score = self.damage_score.saturating_sub(1);
         }
 

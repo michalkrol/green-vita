@@ -7,21 +7,32 @@ use rtc::peer_connection::configuration::setting_engine::SettingEngine;
 use rtc::peer_connection::transport::RTCIceServer;
 use rtc::peer_connection::{RTCPeerConnection, RTCPeerConnectionBuilder};
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+use rtc_interceptor::NackGeneratorBuilder;
 use std::time::Duration;
 
 /// The interceptor chain fulfilling the minimal RTCP contract (periodic sender/receiver
-/// reports only). The concrete chain type is crate-private upstream, so downstream
-/// code refers to this alias everywhere instead of bare `RTCPeerConnection`.
+/// reports only) plus NACK generation for loss recovery. The concrete chain type is
+/// crate-private upstream, so downstream code refers to this alias everywhere instead
+/// of bare `RTCPeerConnection`.
 pub(crate) type FeedbackChain = impl Interceptor;
 pub(crate) type FeedbackPeer = RTCPeerConnection<FeedbackChain>;
 
 #[define_opaque(FeedbackChain)]
 pub(crate) fn feedback_registry() -> Result<Registry<FeedbackChain>> {
-    // Fully silent registry: transport-cc feedback is generated MANUALLY in
-    // media.rs/rtp.rs (the crate's TwccReceiverInterceptor never fired — tw:0
-    // despite negotiated extmap). RR/SR, REMB and NACK variants all proved
-    // inert or harmful for drift; only manual TWCC + REMB flow.
-    Ok(Registry::new())
+    // Registry with NACK generator for loss recovery. The generator activates only
+    // for remote streams whose rtcp_feedback contains a generic NACK entry
+    // (typ="nack", parameter=""), which we advertise for both H.264 payload types
+    // in register_vita_codecs. Transport-wide CC, RR/SR, REMB responders, etc.
+    // remain disabled — they proved inert or harmful for drift; only manual TWCC +
+    // REMB flow is used (see media.rs).
+    let registry = Registry::new().with(
+        NackGeneratorBuilder::new()
+            .with_size(512)
+            .with_interval(Duration::from_millis(100))
+            .with_skip_last_n(2)
+            .build(),
+    );
+    Ok(registry)
 }
 
 pub(crate) struct RtcDataChannelConfig {

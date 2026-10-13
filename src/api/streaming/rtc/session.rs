@@ -1,4 +1,4 @@
-use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver};
+use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver, set_negotiated_rtx_map};
 use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
@@ -173,7 +173,15 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     }
 
     pub fn set_remote_answer(&mut self, sdp: impl Into<String>) -> Result<()> {
-        let answer = RTCSessionDescription::answer(sdp.into());
+        let answer_str: String = sdp.into();
+        // Extract negotiated RTX payload types from the answer SDP before setting it.
+        // The console may renumber payload types, so the answer is the source of truth.
+        let rtx_map = crate::api_xbox::streaming::rtc::sdp::extract_negotiated_rtx_mapping(&answer_str);
+        if !rtx_map.is_empty() {
+            eprintln!("Negotiated RTX mapping: {:?}", rtx_map);
+            set_negotiated_rtx_map(rtx_map);
+        }
+        let answer = RTCSessionDescription::answer(answer_str);
         self.peer
             .set_remote_description(answer?)
             .context("failed to set remote rtc answer")

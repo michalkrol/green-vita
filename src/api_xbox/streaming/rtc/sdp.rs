@@ -18,6 +18,62 @@ pub(super) fn extract_extmap_id(sdp: &str, uri: &str) -> Option<u8> {
     None
 }
 
+/// Parses the ANSWER SDP for negotiated RTX payload types and their associated
+/// primary H.264 payload types (via `a=fmtp:<rtx-pt> apt=<h264-pt>`).
+/// Returns a mapping from RTX payload type -> primary H.264 payload type.
+/// The console may renumber payload types, so the answer is the source of truth.
+pub fn extract_negotiated_rtx_mapping(sdp: &str) -> std::collections::HashMap<u8, u8> {
+    use std::collections::HashMap;
+    let mut rtx_map = HashMap::new();
+    let mut rtx_apt: HashMap<u8, u8> = HashMap::new();
+    let mut in_video = false;
+
+    for line in sdp.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.starts_with("m=") {
+            in_video = line.starts_with("m=video ");
+            continue;
+        }
+        if !in_video {
+            continue;
+        }
+        // Parse a=rtpmap:<pt> rtx/90000
+        if let Some(rest) = line.strip_prefix("a=rtpmap:") {
+            if let Some((pt_str, encoding)) = rest.split_once(' ') {
+                if let Ok(pt) = pt_str.parse::<u8>() {
+                    if encoding.to_ascii_lowercase().starts_with("rtx/") {
+                        rtx_map.insert(pt, 0); // placeholder, will fill from fmtp
+                    }
+                }
+            }
+        }
+        // Parse a=fmtp:<pt> apt=<h264-pt>
+        if let Some(rest) = line.strip_prefix("a=fmtp:") {
+            if let Some((pt_str, fmtp)) = rest.split_once(' ') {
+                if let Ok(pt) = pt_str.parse::<u8>() {
+                    for param in fmtp.split(';') {
+                        let param = param.trim();
+                        if let Some(apt_str) = param.strip_prefix("apt=") {
+                            if let Ok(apt) = apt_str.parse::<u8>() {
+                                rtx_apt.insert(pt, apt);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Combine: only keep RTX payload types that have a valid apt mapping
+    let mut result = HashMap::new();
+    for (rtx_pt, _) in rtx_map {
+        if let Some(&h264_pt) = rtx_apt.get(&rtx_pt) {
+            result.insert(rtx_pt, h264_pt);
+        }
+    }
+    result
+}
+
 /// Adds the advisory receive-frame-rate attribute to the H.264 video section.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn request_video_fps(sdp: &str, video_fps: u32) -> String {
