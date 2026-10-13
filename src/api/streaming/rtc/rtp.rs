@@ -32,6 +32,24 @@ const AU_ASSEMBLY_TIMEOUT: Duration = Duration::from_micros(12_500);
 /// storm historically.
 const AU_STALL_EXPIRY: Duration = Duration::from_millis(100);
 
+/// Length of the lag measurement window.  The reported lag is the slip relative
+/// to the best-served access unit seen within this window, so a constant
+/// clock-rate difference between the console's 90 kHz RTP timeline and our
+/// monotonic clock (which accumulates as a linear bias) cancels out instead of
+/// being reported as queue growth.  At a 25 ppm rate difference the residual
+/// tilt across one window is ~1.5 ms, negligible against the 30/50/100 ms
+/// thresholds the REMB controller uses.
+const LAG_WINDOW: Duration = Duration::from_secs(60);
+
+/// A slip estimate this far *behind* schedule cannot come from queueing, so the
+/// RTP timeline must have been reset (encoder rebuild, new SSRC).  Re-anchor
+/// rather than pin the metric at zero for the rest of the session.
+const LAG_RESET_BACKWARD_US: u64 = 1_000_000;
+
+/// A slip estimate this far *ahead* of schedule is equally impossible; treat it
+/// as a discontinuity rather than reporting a phantom latency spike.
+const LAG_RESET_FORWARD_US: u64 = 5_000_000;
+
 /// Negotiated transport-cc extmap ID from the answer SDP (0 = not negotiated).
 pub(crate) static TWCC_EXT_ID: AtomicU8 = AtomicU8::new(0);
 
@@ -82,6 +100,9 @@ pub(crate) struct VideoRtp {
     stream_too_large: bool,
     waiting_for_keyframe: bool,
     stream_clock_anchor: Option<(Instant, u32)>,
+    /// Best (smallest) raw slip observed since the current lag anchor, in
+    /// microseconds.  `u64::MAX` means "no sample yet in this window".
+    lag_baseline_us: u64,
     total_bytes: u64,
     twcc_annotations: Vec<(u16, Instant)>,
     /// Sliding-window bitrate tracker: (bytes_snapshot, timestamp) pairs sampled
@@ -190,6 +211,7 @@ impl VideoRtp {
             stream_too_large: false,
             waiting_for_keyframe: false,
             stream_clock_anchor: None,
+            lag_baseline_us: u64::MAX,
             total_bytes: 0,
             twcc_annotations: Vec::with_capacity(TWCC_MAX_ANNOTATIONS),
             bitrate_sample_bytes: 0,
@@ -426,18 +448,14 @@ impl VideoRtp {
         self.damage_score = 0;
     }
     
-    /// Schedule slip: how much later than its own RTP-implied schedule an access
-    /// unit actually arrived, relative to the stream clock anchor.  Clamped >= 0
-    /// and wrapping-safe across the 32-bit RTP timestamp space.
+    /// Drift-free stream lag: how much later than the best-served access unit in
+    /// the current window this one arrived.  See `lag_sample` and `LAG_WINDOW`.
     fn update_stream_lag(&mut self, au_timestamp: u32, au_first_packet_at: Instant) {
-        let (anchor_at, anchor_timestamp) = *self
-            .stream_clock_anchor
-            .get_or_insert((au_first_packet_at, au_timestamp));
-        let lag_us = schedule_slip_us(
-            anchor_at,
-            anchor_timestamp,
-            au_first_packet_at,
+        let lag_us = lag_sample(
+            &mut self.stream_clock_anchor,
+            &mut self.lag_baseline_us,
             au_timestamp,
+            au_first_packet_at,
         );
         crate::streaming::video::metrics::METRICS
             .stream_lag_us
@@ -483,7 +501,10 @@ impl VideoRtp {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn reset_lag_anchor(&mut self) { self.stream_clock_anchor = None; }
+    pub(crate) fn reset_lag_anchor(&mut self) {
+        self.stream_clock_anchor = None;
+        self.lag_baseline_us = u64::MAX;
+    }
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
     pub(crate) fn twcc_median_stride(&self) -> u16 {
         let mut gaps: Vec<u16> = self
@@ -608,6 +629,60 @@ fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
     distance != 0 && distance < (1 << 31)
 }
 
+/// Microseconds of stream time between two RTP timestamps, wrapping-safe.
+fn rtp_span_us(anchor_timestamp: u32, au_timestamp: u32) -> u64 {
+    u64::from(au_timestamp.wrapping_sub(anchor_timestamp))
+        .saturating_mul(1_000_000)
+        / u64::from(VIDEO_RTP_CLOCK_RATE)
+}
+
+/// Drift-tolerant schedule-slip filter.
+///
+/// Returns the arrival slip above the *best* slip seen since the anchor, which
+/// removes the linear bias a session-long anchor accumulates from a clock-rate
+/// difference between the console's RTP timeline and our monotonic clock.  The
+/// anchor is refreshed when the window rolls over and when the RTP timeline
+/// jumps (either direction), so a base reset can neither pin the metric at zero
+/// forever nor produce a phantom spike.  The first sample of every window
+/// reports 0.
+fn lag_sample(
+    anchor: &mut Option<(Instant, u32)>,
+    baseline_us: &mut u64,
+    au_timestamp: u32,
+    au_at: Instant,
+) -> u64 {
+    let Some((anchor_at, anchor_timestamp)) = *anchor else {
+        *anchor = Some((au_at, au_timestamp));
+        *baseline_us = u64::MAX;
+        return 0;
+    };
+
+    let elapsed = au_at.saturating_duration_since(anchor_at);
+    let actual_us = elapsed.as_micros() as u64;
+    let expected_us = rtp_span_us(anchor_timestamp, au_timestamp);
+
+    // Window rollover bounds the uncorrected clock-rate tilt.
+    if elapsed >= LAG_WINDOW {
+        *anchor = Some((au_at, au_timestamp));
+        *baseline_us = u64::MAX;
+        return 0;
+    }
+    // Timeline discontinuity: re-anchor instead of reporting a phantom spike
+    // (forward jump) or pinning the metric at zero for the rest of the session
+    // (backward jump).
+    if expected_us > actual_us.saturating_add(LAG_RESET_BACKWARD_US)
+        || actual_us > expected_us.saturating_add(LAG_RESET_FORWARD_US)
+    {
+        *anchor = Some((au_at, au_timestamp));
+        *baseline_us = u64::MAX;
+        return 0;
+    }
+
+    let raw_us = schedule_slip_us(anchor_at, anchor_timestamp, au_at, au_timestamp);
+    *baseline_us = (*baseline_us).min(raw_us);
+    raw_us - *baseline_us
+}
+
 /// Expected-vs-actual arrival slip for one access unit, in microseconds.
 /// `expected` is how long the RTP timestamps say should have elapsed since the
 /// anchor; `actual` is how long really elapsed.  Never negative.
@@ -661,7 +736,7 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::schedule_slip_us;
+    use super::{lag_sample, schedule_slip_us, LAG_WINDOW};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -700,6 +775,102 @@ mod tests {
         let anchor_ts = u32::MAX - 45_000 + 1;
         assert_eq!(
             schedule_slip_us(anchor, anchor_ts, anchor + Duration::from_secs(1), 90_000 - 45_000),
+            0
+        );
+    }
+
+    #[test]
+    fn first_lag_sample_of_a_window_reports_zero() {
+        let mut anchor = None;
+        let mut baseline = u64::MAX;
+        let t0 = Instant::now();
+        assert_eq!(lag_sample(&mut anchor, &mut baseline, 0, t0), 0);
+    }
+
+    #[test]
+    fn lag_reports_growth_above_the_window_best() {
+        let mut anchor = None;
+        let mut baseline = u64::MAX;
+        let t0 = Instant::now();
+        // Anchor: ts 0 at t0.
+        assert_eq!(lag_sample(&mut anchor, &mut baseline, 0, t0), 0);
+        // 15 ms elapsed against 10 ms of RTP time -> 5 ms slip, the new best.
+        assert_eq!(
+            lag_sample(&mut anchor, &mut baseline, 900, t0 + Duration::from_millis(15)),
+            0
+        );
+        // 60 ms elapsed against 20 ms of RTP time -> 40 ms slip, i.e. 35 ms
+        // above the window's best.
+        assert_eq!(
+            lag_sample(&mut anchor, &mut baseline, 1_800, t0 + Duration::from_millis(60)),
+            35_000
+        );
+    }
+
+    #[test]
+    fn lag_window_rollover_discards_accumulated_drift() {
+        let mut anchor = None;
+        let mut baseline = u64::MAX;
+        let t0 = Instant::now();
+        assert_eq!(lag_sample(&mut anchor, &mut baseline, 0, t0), 0);
+        // 60 s of wall clock against 59 s of RTP time: a 1 s "tilt" that a
+        // session-long anchor reported forever.  The window boundary discards it.
+        assert_eq!(
+            lag_sample(&mut anchor, &mut baseline, 59 * 90_000, t0 + LAG_WINDOW),
+            0
+        );
+    }
+
+    #[test]
+    fn lag_backward_timeline_jump_reanchors_and_stays_alive() {
+        let mut anchor = None;
+        let mut baseline = u64::MAX;
+        let t0 = Instant::now();
+        assert_eq!(lag_sample(&mut anchor, &mut baseline, 1_000_000, t0), 0);
+        // Console restarts its RTP base at 0: expected becomes astronomically
+        // large.  Re-anchor instead of pinning lag at zero forever.
+        assert_eq!(
+            lag_sample(&mut anchor, &mut baseline, 0, t0 + Duration::from_millis(17)),
+            0
+        );
+        // First sample of the new window establishes its baseline.
+        assert_eq!(
+            lag_sample(&mut anchor, &mut baseline, 1_800, t0 + Duration::from_millis(117)),
+            0
+        );
+        // A later 60 ms of growth is still reported: the metric is alive.
+        assert_eq!(
+            lag_sample(&mut anchor, &mut baseline, 3_600, t0 + Duration::from_millis(197)),
+            60_000
+        );
+    }
+
+    #[test]
+    fn lag_forward_timeline_jump_is_not_a_phantom_spike() {
+        let mut anchor = None;
+        let mut baseline = u64::MAX;
+        let t0 = Instant::now();
+        assert_eq!(lag_sample(&mut anchor, &mut baseline, 0, t0), 0);
+        // One frame of RTP time but 10 s of wall clock.
+        assert_eq!(
+            lag_sample(&mut anchor, &mut baseline, 1_500, t0 + Duration::from_secs(10)),
+            0
+        );
+    }
+
+    #[test]
+    fn lag_reports_growth_only_not_a_steady_queue() {
+        let mut anchor = None;
+        let mut baseline = u64::MAX;
+        let t0 = Instant::now();
+        // ~40 ms queue present from the start.
+        assert_eq!(
+            lag_sample(&mut anchor, &mut baseline, 1_500, t0 + Duration::from_millis(57)),
+            0
+        );
+        // Same queue one frame later: no growth, so still zero.
+        assert_eq!(
+            lag_sample(&mut anchor, &mut baseline, 3_000, t0 + Duration::from_millis(73)),
             0
         );
     }

@@ -126,6 +126,17 @@
     half of the flush trigger could never fire. Now computed per access unit from
     RTP schedule slip. The lag trigger is gated behind `LAG_FLUSH_ENABLED = false`
     (observe-only build); the drop trigger is live.
+  - **Drift fix (2026-10-13)**: the lag estimator used a single session-long
+    anchor, so a fixed rate difference between the console's RTP clock and the
+    Vita monotonic clock accumulated linearly (measured `-1.51 ms/min` on the
+    15.2 min Main session, ~25 ppm ~= 90 ms/h) and was indistinguishable from real
+    queue growth. It now reports the slip relative to the best access unit of the
+    current 60 s window, re-anchoring at each window boundary and on any
+    forward/backward RTP timeline jump (a backward jump previously pinned `lag` at
+    0 for the rest of the session; a forward jump produced a phantom spike).
+    Consequence: `lag` now measures *growth* above the recent floor, so a steady
+    non-growing queue reads 0, and the 59.6 ms startup blip is gone. `lagMax`
+    keeps its per-second-max meaning. Validate with a >=30 min session.
   - `maybe_flush_backlog` never cleared `lag_high_since` when not eligible, so a
     single eligible instant permanently satisfied `LAG_FLUSH_SUSTAIN`.
   - `rtp::flush_expired` was an empty stub; now a stall-based expiry (100 ms from

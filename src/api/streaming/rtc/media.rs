@@ -272,7 +272,8 @@ impl VideoReceiver {
             target = target.saturating_mul(9) / 10;  // -10%
         }
 
-        // 3. Lag-based reduction: sustained high lag → console queue backing up
+        // 3. Lag-based reduction: sustained lag growth above the recent best
+        // (the metric is drift-free; see rtp::lag_sample) → console queue backing up
         if stream_lag_us > 100_000 {  // >100ms
             target = target.saturating_mul(8) / 10;  // -20%
         } else if stream_lag_us > 50_000 {  // >50ms
