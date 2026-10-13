@@ -77,6 +77,24 @@ pub(crate) struct VideoMetrics {
     pub(crate) rtx_crate_received: AtomicU64,
     // RTX bytes counted by the rtc crate's stats accumulator.
     pub(crate) rtx_crate_bytes: AtomicU64,
+
+    // RTX interceptor diagnostics (Task 1)
+    // Total bind_remote_stream calls observed by the interceptor
+    pub(crate) rtx_bind_total: AtomicU64,
+    // bind_remote_stream calls where payload type is a known primary H.264 PT
+    pub(crate) rtx_bind_primary: AtomicU64,
+    // bind_remote_stream calls where is_negotiated_rtx_pt(pt) was true
+    pub(crate) rtx_bind_rtx: AtomicU64,
+    // bind_remote_stream calls with payload type 0 or any PT that is neither primary nor RTX
+    pub(crate) rtx_bind_unknown_pt: AtomicU64,
+    // Successful rtx_ssrc -> primary_ssrc mapping insertions
+    pub(crate) rtx_map_learned: AtomicU64,
+    // Inbound packets whose payload type is a negotiated RTX PT
+    pub(crate) rtx_read_rtx_pt: AtomicU64,
+    // Packets actually rewritten (SSRC changed)
+    pub(crate) rtx_read_rewritten: AtomicU64,
+    // RTX-PT packets with no usable mapping (unmapped)
+    pub(crate) rtx_read_unmapped: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -130,6 +148,14 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     unknown_track_packets: AtomicU64::new(0),
     rtx_crate_received: AtomicU64::new(0),
     rtx_crate_bytes: AtomicU64::new(0),
+    rtx_bind_total: AtomicU64::new(0),
+    rtx_bind_primary: AtomicU64::new(0),
+    rtx_bind_rtx: AtomicU64::new(0),
+    rtx_bind_unknown_pt: AtomicU64::new(0),
+    rtx_map_learned: AtomicU64::new(0),
+    rtx_read_rtx_pt: AtomicU64::new(0),
+    rtx_read_rewritten: AtomicU64::new(0),
+    rtx_read_unmapped: AtomicU64::new(0),
 };
 
 /// One drained sample of every metric, taken once per second.
@@ -185,6 +211,15 @@ pub(crate) struct MetricsSnapshot {
     // RTX metrics from crate stats accumulator (Task 1)
     pub(crate) rtx_crate_received: u64,
     pub(crate) rtx_crate_bytes: u64,
+    // RTX interceptor diagnostics (Task 1)
+    pub(crate) rtx_bind_total: u64,
+    pub(crate) rtx_bind_primary: u64,
+    pub(crate) rtx_bind_rtx: u64,
+    pub(crate) rtx_bind_unknown_pt: u64,
+    pub(crate) rtx_map_learned: u64,
+    pub(crate) rtx_read_rtx_pt: u64,
+    pub(crate) rtx_read_rewritten: u64,
+    pub(crate) rtx_read_unmapped: u64,
 }
 
 /// Drains all per-second metric atomics exactly once and returns a snapshot.
@@ -241,6 +276,15 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let unknown_track_packets = METRICS.unknown_track_packets.swap(0, Ordering::Relaxed);
     let rtx_crate_received = METRICS.rtx_crate_received.swap(0, Ordering::Relaxed);
     let rtx_crate_bytes = METRICS.rtx_crate_bytes.swap(0, Ordering::Relaxed);
+    // RTX interceptor diagnostics (Task 1)
+    let rtx_bind_total = METRICS.rtx_bind_total.swap(0, Ordering::Relaxed);
+    let rtx_bind_primary = METRICS.rtx_bind_primary.swap(0, Ordering::Relaxed);
+    let rtx_bind_rtx = METRICS.rtx_bind_rtx.swap(0, Ordering::Relaxed);
+    let rtx_bind_unknown_pt = METRICS.rtx_bind_unknown_pt.swap(0, Ordering::Relaxed);
+    let rtx_map_learned = METRICS.rtx_map_learned.swap(0, Ordering::Relaxed);
+    let rtx_read_rtx_pt = METRICS.rtx_read_rtx_pt.swap(0, Ordering::Relaxed);
+    let rtx_read_rewritten = METRICS.rtx_read_rewritten.swap(0, Ordering::Relaxed);
+    let rtx_read_unmapped = METRICS.rtx_read_unmapped.swap(0, Ordering::Relaxed);
 
     MetricsSnapshot {
         rtp_assembly_sum_us,
@@ -291,6 +335,14 @@ pub fn drain_metrics() -> MetricsSnapshot {
         unknown_track_packets,
         rtx_crate_received,
         rtx_crate_bytes,
+        rtx_bind_total,
+        rtx_bind_primary,
+        rtx_bind_rtx,
+        rtx_bind_unknown_pt,
+        rtx_map_learned,
+        rtx_read_rtx_pt,
+        rtx_read_rewritten,
+        rtx_read_unmapped,
     }
 }
 

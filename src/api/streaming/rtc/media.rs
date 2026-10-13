@@ -172,6 +172,8 @@ impl VideoReceiver {
         self.track_id = Some(track_id);
         self.receiver_id = Some(receiver_id);
         self.ssrc = Some(ssrc);
+        // Publish primary video SSRC for RTX interceptor fallback (source 3b)
+        crate::api::streaming::rtc::rtx_interceptor::set_primary_video_ssrc(ssrc);
     }
 
     pub(crate) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {
