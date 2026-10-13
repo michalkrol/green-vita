@@ -122,22 +122,17 @@ egui::Area::new(egui::Id::new("fps_overlay"))
     }
 }
 
-/// Extract a value after `key` in the status string (e.g. `srcfps:60` → "60").
+/// Extract the value of `key` from the whitespace-separated status line.
+///
+/// Token-based so a shorter key cannot match inside a longer one: `st:` (TWCC
+/// stride) must not match the `rst:` token, which previously made the `Strd:`
+/// row display the reset count.
 fn extract_field(status: &str, key: &str) -> String {
-    if let Some(pos) = status.find(key) {
-        let start = pos + key.len();
-        let mut val = String::new();
-        for ch in status[start..].chars() {
-            if ch.is_ascii_alphanumeric() || ch == '/' || ch == '.' || ch == '%' {
-                val.push(ch);
-            } else {
-                break;
-            }
-        }
-        val
-    } else {
-        String::new()
-    }
+    status
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix(key))
+        .map(str::to_owned)
+        .unwrap_or_default()
 }
 
 /// Converts a raw microsecond HUD value to a millisecond string for display.
@@ -187,4 +182,27 @@ use crate::settings::H264Profile;
         (format!("Drop:{}", drop),      Some(format!("Hold:{}", hold))),
         (format!("Rst:{}", rst),        None),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_field;
+
+    #[test]
+    fn extracts_adjacent_and_similar_field_names() {
+        let status = "d/p:60/58 rs:3 rst:7 wk:0 ab:0 hold:0/1/0 tw:10/20/30 st:42 md:0";
+        assert_eq!(extract_field(status, "rs:"), "3");
+        assert_eq!(extract_field(status, "rst:"), "7");
+        assert_eq!(extract_field(status, "st:"), "42");
+        assert_eq!(extract_field(status, "hold:"), "0/1/0");
+        assert_eq!(extract_field(status, "missing:"), "");
+    }
+
+    #[test]
+    fn extracts_fields_across_the_two_summary_lines() {
+        let status = "d/p:60/58 lag:12345 lagMax:67890 bw:2500\nrs:3 rst:7 st:42";
+        assert_eq!(extract_field(status, "lag:"), "12345");
+        assert_eq!(extract_field(status, "lagMax:"), "67890");
+        assert_eq!(extract_field(status, "bw:"), "2500");
+    }
 }
