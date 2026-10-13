@@ -169,6 +169,9 @@ impl XboxRtcProtocol {
     /// alternating) target resolution. A real parameter change forces an encoder
     /// rebuild, which drains its internal queue — the only known lever that resets
     /// accumulated console-side backlog mid-session.
+    /// NOTE: This path deliberately derives from STREAM_WIDTH/STREAM_HEIGHT (the
+    /// hard max 1280x720) to force an encoder rebuild; it must NOT use the
+    /// HW_OUTPUT_* preferred size.
     fn notify_stream_flush_inner(&mut self, peer: &mut RTCPeerConnection) {
         let (width, height) = if self.flush_size_toggle {
             (STREAM_WIDTH, STREAM_HEIGHT)

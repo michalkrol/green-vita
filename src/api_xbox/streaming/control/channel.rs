@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::api::streaming::rtc::peer::RtcDataChannelConfig;
 use crate::api_xbox::streaming::rtc::protocol::ChannelIds;
-use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH};
+use crate::streaming::video::{HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HandshakeStage {
@@ -35,8 +35,10 @@ pub(in crate::api_xbox::streaming) fn handle_data_channel_message(
     if let Some(mut control_channel) = pc.data_channel(ids.control) {
         let _ = control_channel.send_text(authorization_request().to_string());
         let _ = control_channel.send_text(gamepad_changed(0, true).to_string());
+        // Vita panel / HW output is 960x544; declaring 1280x720 wastes ~43% of
+        // the bitrate and decode budget on pixels that are immediately scaled away.
         let _ = control_channel.send_text(
-            video_preference(STREAM_WIDTH, STREAM_HEIGHT, video_fps).to_string(),
+            video_preference(HW_OUTPUT_WIDTH, HW_OUTPUT_HEIGHT, video_fps).to_string(),
         );
     }
     if let Some(mut message_channel) = pc.data_channel(ids.message) {
@@ -167,8 +169,10 @@ pub fn dimensions_changed_message(width: u32, height: u32) -> Value {
 }
 
 pub fn startup_messages(_video_fps: u32) -> Vec<Value> {
-    let width = STREAM_WIDTH;
-    let height = STREAM_HEIGHT;
+    // Vita panel / HW output is 960x544; declaring 1280x720 wastes ~43% of
+    // the bitrate and decode budget on pixels that are immediately scaled away.
+    let width = HW_OUTPUT_WIDTH;
+    let height = HW_OUTPUT_HEIGHT;
 
     vec![
         generate_message(
