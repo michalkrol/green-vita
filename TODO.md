@@ -156,7 +156,7 @@
   - If drift reproduces, add a better drift detector (`ageMax`/`pick` or the
     metadata round-trip) since `lag` cannot see the pre-stamp queue.
 
-### 2. Dark Scene Blockiness (Baseline Profile Limitation) — RESOLVED
+### 2. Dark Scene Blockiness (Baseline Profile Limitation) — RESOLVED ✅ HARDWARE-VERIFIED
 - **Issue**: Dark areas with subtle gradients show heavy blocking/banding
 - **Root cause**: Baseline lacks CABAC entropy coding
 - **Resolution (2026-10-13)**: The console's encoder DOES support Main profile.
@@ -169,9 +169,26 @@
   - Fix: `peer.rs::h264_profile_level_id` now returns `4d001f`/`4d0020` for Main.
     This brings CABAC, 8x8 transform, and weighted prediction — exactly what
     dark/flat gradients need.
-- **Status**: Fixed in code. First session on this build is the hardware test.
-  Watch `decode_errors` and `enc_width`/`enc_height` in the metrics CSV to
-  verify Vita HW decoder handles Main (CABAC) without errors.
+- **Status**: Fixed in code (commit b9cbe82). **Hardware-verified 2026-10-13**:
+  a 15.2-minute session (Main profile, level 4.2, 4000 kbps cap, decode queue
+  depth 3) produced **`decode_errors 0` for the entire session** — the Vita's
+  hardware decoder handles Main/CABAC cleanly. This was the last open unknown
+  about Main and it is now resolved in the affirmative.
+  - Console answer SDP for the Main session:
+    ```
+    m=video 9 UDP/TLS/RTP/SAVPF 102 103
+    a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4d002a
+    a=fmtp:103 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e02a
+    ```
+    i.e. Main (level 4.2) accepted on primary PT 102, Constrained Baseline
+    fallback also accepted at PT 103.
+  - Session metrics: fps 59.6–59.9 steady (50.7 first window), lag 0.0–1.4 ms
+    after 59.6 ms startup blip (least-squares slope −1.51 ms/min — no
+    accumulation), resyncs 1 (t=8 s startup), drops 103 total (6.77/min, 82 in
+    first window), queue_full 0.45/s decaying to 0.0, flushes 0, resets 0,
+    stall expiries 0, rtp_gaps 15, rtcp_rr_loss_fraction 0.00.
+  - Bandwidth mean 3469 kbps, per-minute windows up to 4024 — riding the 4000
+    cap, versus 2877 kbps at a 3500 cap in earlier Baseline sessions.
 - **Console H.264 capability set (measured)**: exactly Baseline (`4200`),
   Constrained Baseline (`42e0`), Main (`4d00`). **High (`6400`) and High 4:4:4
   (`f400`) are NOT supported**.
@@ -201,8 +218,8 @@
 - **Our fmtp extras** (`max-fr`, `max-fs`, `max-qp`) are NOT the cause of these
   refusals — Chrome's clean High PT (none of those params) was refused too.
 - **Note**: Main is the ceiling. High entries (`64001f`/`640020`) kept as-is for
-  parity with Chrome's offer but will not be negotiated. CABAC support on the
-  Vita HW decoder is still unverified — watch `decode_errors` in metrics CSV.
+  parity with Chrome's offer but will not be negotiated. **Main/CABAC is now
+  verified working on the Vita HW decoder (`decode_errors 0`)**.
 
 ### 3. RSSI-Based Adaptive Bitrate (Disabled - NetCtl Crash)
 - **Issue**: `sceNetCtlInit()` causes hard crash on some Vita units
