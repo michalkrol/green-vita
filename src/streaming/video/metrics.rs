@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 pub(crate) struct VideoMetrics {
     pub(crate) rtp_assembly_sum_us: AtomicU64,
@@ -49,6 +49,16 @@ pub(crate) struct VideoMetrics {
     // Measures console capture queue + transport + assembly; NOT blind to pre-RTP-stamp queue
     pub(crate) capture_to_arrival_us: AtomicU64,
     pub(crate) capture_to_arrival_max_us: AtomicU64,
+
+    // Absolute stream slip metric (microseconds, SIGNED via i64 storage)
+    // Measures cumulative divergence between real elapsed time and RTP-timestamp elapsed time
+    // since session start.  Anchor is session-fixed, only re-anchored on timeline discontinuity.
+    // Positive = console clock running slow (delay accumulating), negative = console clock fast.
+    pub(crate) stream_slip_us: AtomicI64,
+    // Maximum magnitude of slip seen in the current 1-second window (unsigned, reset via swap(0))
+    pub(crate) stream_slip_max_us: AtomicU64,
+    // Count of discontinuity-induced re-anchors of the slip metric
+    pub(crate) stream_slip_reanchor_count: AtomicU64,
 
     // Loss recovery metrics (Stage 3)
     // Number of NACK feedback packets sent (each packet may carry multiple sequence numbers)
@@ -111,6 +121,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     sr_anchor_local_us: AtomicU64::new(0),
     capture_to_arrival_us: AtomicU64::new(0),
     capture_to_arrival_max_us: AtomicU64::new(0),
+    stream_slip_us: AtomicI64::new(0),
+    stream_slip_max_us: AtomicU64::new(0),
+    stream_slip_reanchor_count: AtomicU64::new(0),
     rtcp_nack_sent: AtomicU64::new(0),
     rtx_packets_received: AtomicU64::new(0),
     rtx_packets_seen: AtomicU64::new(0),
@@ -160,6 +173,10 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) rtcp_sr_ntp_timestamp: u64,
     pub(crate) capture_to_arrival_us: u64,
     pub(crate) capture_to_arrival_max_us: u64,
+    // Absolute stream slip metrics (microseconds)
+    pub(crate) stream_slip_us: i64,
+    pub(crate) stream_slip_max_us: u64,
+    pub(crate) stream_slip_reanchor_count: u64,
     // Loss recovery metrics (Stage 3)
     pub(crate) rtcp_nack_sent: u64,
     pub(crate) rtx_packets_received: u64,
@@ -213,6 +230,10 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let rtcp_sr_ntp_timestamp = METRICS.rtcp_sr_ntp_timestamp.load(Ordering::Relaxed);
     let capture_to_arrival_us = METRICS.capture_to_arrival_us.load(Ordering::Relaxed);
     let capture_to_arrival_max_us = METRICS.capture_to_arrival_max_us.swap(0, Ordering::Relaxed);
+    // Absolute stream slip metrics (Stage 4)
+    let stream_slip_us = METRICS.stream_slip_us.load(Ordering::Relaxed);
+    let stream_slip_max_us = METRICS.stream_slip_max_us.swap(0, Ordering::Relaxed);
+    let stream_slip_reanchor_count = METRICS.stream_slip_reanchor_count.swap(0, Ordering::Relaxed);
     // Loss recovery metrics (Stage 3)
     let rtcp_nack_sent = METRICS.rtcp_nack_sent.swap(0, Ordering::Relaxed);
     let rtx_packets_received = METRICS.rtx_packets_received.swap(0, Ordering::Relaxed);
@@ -261,6 +282,9 @@ pub fn drain_metrics() -> MetricsSnapshot {
         rtcp_sr_ntp_timestamp,
         capture_to_arrival_us,
         capture_to_arrival_max_us,
+        stream_slip_us,
+        stream_slip_max_us,
+        stream_slip_reanchor_count,
         rtcp_nack_sent,
         rtx_packets_received,
         rtx_packets_seen,

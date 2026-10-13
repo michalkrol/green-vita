@@ -27,7 +27,7 @@ pub(crate) struct RowExtras {
     pub(crate) decode_errors: u64,
 }
 
-const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,asm_avg_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,rtcp_rr_loss_fraction,rtcp_rr_jitter,rtcp_sr_ntp_timestamp,capture_to_arrival_us,capture_to_arrival_max_us,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,rtcp_nack_sent,rtx_packets_received,rtx_packets_seen,unknown_track_packets,rtx_crate_received,rtx_crate_bytes";
+const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,asm_avg_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,rtcp_rr_loss_fraction,rtcp_rr_jitter,rtcp_sr_ntp_timestamp,capture_to_arrival_us,capture_to_arrival_max_us,stream_slip_us,stream_slip_max_us,stream_slip_reanchor_count,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,rtcp_nack_sent,rtx_packets_received,rtx_packets_seen,unknown_track_packets,rtx_crate_received,rtx_crate_bytes";
 
 pub(crate) struct MetricsLog {
     /// Rows are formatted on the RTC pump thread (cheap) and handed to the
@@ -88,66 +88,65 @@ impl MetricsLog {
         let t_s = self.started_at.elapsed().as_secs();
 
         // Fixed-size array so the column count is compiler-enforced and can never
-        // drift out of sync with HEADER (52 columns).  Order MUST match HEADER.
-        let cols: [u64; 52] = [
-            t_s,
-            s.rtp_assembly_sum_us,
-            s.rtp_assembly_count,
-            s.rtp_assembly_max_us,
-            s.asm_avg_us,
-            s.decode_us,
-            s.pipeline_age_us,
-            s.decoded,
-            s.skipped,
-            s.rate_limited,
-            s.presented,
-            s.replaced,
-            s.queue_full,
-            s.resyncs,
-            s.resets,
-            s.hw_buffered,
-            s.pipeline_age_max_us,
-            s.stream_lag_us,
-            s.stream_lag_max_us,
-            s.rtp_hold_saved,
-            s.rtp_hold_expired,
-            s.rtp_gaps,
-            s.rtp_abandons,
-            s.rtp_wait_drops,
-            s.rtp_invalid,
-            s.dec_queue_full,
-            s.flushes,
-            s.twcc_sent,
-            s.twcc_samples,
-            s.rtp_ext_any,
-            s.twcc_stride,
-            s.video_metadata_sent,
-            s.video_bandwidth_kbps,
-            s.display_pickup_us,
-            s.display_pickup_max_us,
-            s.rtcp_rr_loss_fraction,
-            s.rtcp_rr_jitter,
-            s.rtcp_sr_ntp_timestamp,
-            s.capture_to_arrival_us,
-            s.capture_to_arrival_max_us,
-            e.src_fps,
-            u64::from(e.enc_width),
-            u64::from(e.enc_height),
-            u64::from(e.waiting_keyframe),
-            e.drops,
-            e.decode_errors,
-            s.rtcp_nack_sent,
-            s.rtx_packets_received,
-            s.rtx_packets_seen,
-            s.unknown_track_packets,
-            s.rtx_crate_received,
-            s.rtx_crate_bytes,
+        // drift out of sync with HEADER (55 columns).  Order MUST match HEADER.
+        let cols: [String; 55] = [
+            t_s.to_string(),
+            s.rtp_assembly_sum_us.to_string(),
+            s.rtp_assembly_count.to_string(),
+            s.rtp_assembly_max_us.to_string(),
+            s.asm_avg_us.to_string(),
+            s.decode_us.to_string(),
+            s.pipeline_age_us.to_string(),
+            s.decoded.to_string(),
+            s.skipped.to_string(),
+            s.rate_limited.to_string(),
+            s.presented.to_string(),
+            s.replaced.to_string(),
+            s.queue_full.to_string(),
+            s.resyncs.to_string(),
+            s.resets.to_string(),
+            s.hw_buffered.to_string(),
+            s.pipeline_age_max_us.to_string(),
+            s.stream_lag_us.to_string(),
+            s.stream_lag_max_us.to_string(),
+            s.rtp_hold_saved.to_string(),
+            s.rtp_hold_expired.to_string(),
+            s.rtp_gaps.to_string(),
+            s.rtp_abandons.to_string(),
+            s.rtp_wait_drops.to_string(),
+            s.rtp_invalid.to_string(),
+            s.dec_queue_full.to_string(),
+            s.flushes.to_string(),
+            s.twcc_sent.to_string(),
+            s.twcc_samples.to_string(),
+            s.rtp_ext_any.to_string(),
+            s.twcc_stride.to_string(),
+            s.video_metadata_sent.to_string(),
+            s.video_bandwidth_kbps.to_string(),
+            s.display_pickup_us.to_string(),
+            s.display_pickup_max_us.to_string(),
+            s.rtcp_rr_loss_fraction.to_string(),
+            s.rtcp_rr_jitter.to_string(),
+            s.rtcp_sr_ntp_timestamp.to_string(),
+            s.capture_to_arrival_us.to_string(),
+            s.capture_to_arrival_max_us.to_string(),
+            s.stream_slip_us.to_string(),
+            s.stream_slip_max_us.to_string(),
+            s.stream_slip_reanchor_count.to_string(),
+            e.src_fps.to_string(),
+            u64::from(e.enc_width).to_string(),
+            u64::from(e.enc_height).to_string(),
+            u64::from(e.waiting_keyframe).to_string(),
+            e.drops.to_string(),
+            e.decode_errors.to_string(),
+            s.rtcp_nack_sent.to_string(),
+            s.rtx_packets_received.to_string(),
+            s.rtx_packets_seen.to_string(),
+            s.unknown_track_packets.to_string(),
+            s.rtx_crate_received.to_string(),
+            s.rtx_crate_bytes.to_string(),
         ];
-        let row = cols
-            .iter()
-            .map(|value| value.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
+        let row = cols.join(",");
         // Unbounded channel: never blocks the pump thread.  If the writer thread
         // has died the send fails and the row is simply dropped.
         let _ = self.rows_tx.send(row);

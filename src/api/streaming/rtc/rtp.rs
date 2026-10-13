@@ -104,6 +104,22 @@ pub(crate) struct VideoRtp {
     /// Best (smallest) raw slip observed since the current lag anchor, in
     /// microseconds.  `u64::MAX` means "no sample yet in this window".
     lag_baseline_us: u64,
+    /// Session-fixed anchor for absolute slip metric.  Set on the first video AU
+    /// of the stream session and only re-anchored on a genuine timeline
+    /// discontinuity (backward/forward jump exceeding the reset thresholds).
+    /// Never re-anchors on a time window rollover.
+    slip_anchor: Option<(Instant, u32)>,
+    /// Signed baseline slip (microseconds) at the current slip anchor.  Used to
+    /// compute the absolute slip relative to the session start.
+    slip_baseline_us: i64,
+    /// Largest magnitude of slip seen in the current 1-second logging window.
+    /// Reset to 0 each second via `swap(0)` in `drain_metrics()`.
+    slip_max_magnitude_us: u64,
+    /// Count of discontinuity-induced re-anchors of the slip metric.  Incremented
+    /// each time the slip anchor is reset due to a timeline jump.  Allows
+    /// post-hoc detection of discontinuities that could masquerade as latency
+    /// accumulation.
+    slip_reanchor_count: u64,
     total_bytes: u64,
     twcc_annotations: Vec<(u16, Instant)>,
     /// Sliding-window bitrate tracker: (bytes_snapshot, timestamp) pairs sampled
@@ -246,6 +262,10 @@ impl VideoRtp {
             waiting_for_keyframe: false,
             stream_clock_anchor: None,
             lag_baseline_us: u64::MAX,
+            slip_anchor: None,
+            slip_baseline_us: 0,
+            slip_max_magnitude_us: 0,
+            slip_reanchor_count: 0,
             total_bytes: 0,
             twcc_annotations: Vec::with_capacity(TWCC_MAX_ANNOTATIONS),
             bitrate_sample_bytes: 0,
@@ -407,6 +427,7 @@ impl VideoRtp {
         };
         let completed = self.pending.take().expect("assembled pending video frame");
         self.update_stream_lag(completed.timestamp, completed.first_packet_at);
+        self.update_stream_slip(completed.timestamp, completed.first_packet_at);
         self.update_capture_to_arrival(completed.timestamp, completed.first_packet_at);
         // Record both average and worst-case RTP assembly time for the stream HUD.
         let assembly_us = completed.first_packet_at.elapsed().as_micros() as u64;
@@ -706,6 +727,34 @@ impl VideoRtp {
             .fetch_max(lag_us, Ordering::Relaxed);
     }
 
+    /// Absolute stream slip: divergence between real elapsed time and RTP-timestamp
+    /// elapsed time, measured against a SESSION-FIXED anchor that is never
+    /// re-based on a window rollover.  Only re-anchors on a genuine timeline
+    /// discontinuity (reusing the same guards as `lag_sample`), and counts those
+    /// re-anchors so a discontinuity cannot masquerade as accumulated latency.
+    ///
+    /// The returned value is SIGNED (i64):
+    ///   - positive  = console clock running slow (delay accumulating)
+    ///   - negative  = console clock running fast (ahead of schedule)
+    /// Only the TREND matters; we do not clamp to zero or take absolute value.
+    fn update_stream_slip(&mut self, au_timestamp: u32, au_first_packet_at: Instant) {
+        let slip_us = slip_sample(
+            &mut self.slip_anchor,
+            &mut self.slip_baseline_us,
+            &mut self.slip_max_magnitude_us,
+            &mut self.slip_reanchor_count,
+            au_timestamp,
+            au_first_packet_at,
+        );
+        crate::streaming::video::metrics::METRICS
+            .stream_slip_us
+            .store(slip_us, Ordering::Relaxed);
+        // Track max magnitude in the current window (reset each second via swap(0))
+        crate::streaming::video::metrics::METRICS
+            .stream_slip_max_us
+            .fetch_max(slip_us.unsigned_abs(), Ordering::Relaxed);
+    }
+
     /// True end-to-end capture-to-arrival latency via RTCP Sender Report anchor.
     ///
     /// The console's RTCP Sender Report pairs an NTP wall-clock timestamp with an
@@ -992,6 +1041,68 @@ fn schedule_slip_us(
         / u64::from(VIDEO_RTP_CLOCK_RATE);
     let actual_us = au_at.saturating_duration_since(anchor_at).as_micros() as u64;
     actual_us.saturating_sub(expected_us)
+}
+
+/// Signed absolute slip relative to a session-fixed anchor.
+///
+/// Computes: (au_at - anchor_at).as_micros() - rtp_span_us(anchor_ts, au_ts)
+/// Result is SIGNED (i64):
+///   - positive  = real time elapsed more than RTP time (console clock slow, delay accumulating)
+///   - negative  = real time elapsed less than RTP time (console clock fast)
+///
+/// The anchor is set on the first video AU and ONLY re-anchored on a genuine
+/// timeline discontinuity (reusing the LAG_RESET_BACKWARD_US / LAG_RESET_FORWARD_US
+/// guards from lag_sample).  It NEVER re-anchors on a time window rollover.
+///
+/// Returns the current slip (signed i64) and updates max_magnitude_us and
+/// reanchor_count as side effects.
+fn slip_sample(
+    anchor: &mut Option<(Instant, u32)>,
+    baseline_us: &mut i64,
+    max_magnitude_us: &mut u64,
+    reanchor_count: &mut u64,
+    au_timestamp: u32,
+    au_at: Instant,
+) -> i64 {
+    let Some((anchor_at, anchor_timestamp)) = *anchor else {
+        // First video AU of the session: establish the session-fixed anchor.
+        *anchor = Some((au_at, au_timestamp));
+        *baseline_us = 0;
+        *max_magnitude_us = 0;
+        return 0;
+    };
+
+    let elapsed = au_at.saturating_duration_since(anchor_at);
+    let actual_us = elapsed.as_micros() as i64;
+    let expected_us = rtp_span_us(anchor_timestamp, au_timestamp) as i64;
+
+    // Timeline discontinuity detection (same guards as lag_sample):
+    // - Backward jump: RTP timeline went backwards (encoder rebuild, new SSRC)
+    // - Forward jump:  RTP timeline jumped ahead implausibly
+    // In either case, re-anchor the slip metric and count the event.
+    if expected_us > actual_us.saturating_add(LAG_RESET_BACKWARD_US as i64)
+        || actual_us > expected_us.saturating_add(LAG_RESET_FORWARD_US as i64)
+    {
+        *anchor = Some((au_at, au_timestamp));
+        *baseline_us = 0;
+        *max_magnitude_us = 0;
+        *reanchor_count = reanchor_count.saturating_add(1);
+        return 0;
+    }
+
+    // Absolute slip: signed difference between real and RTP elapsed time.
+    let slip_us = actual_us - expected_us;
+
+    // Track the maximum magnitude seen in the current logging window.
+    let magnitude = slip_us.unsigned_abs();
+    if magnitude > *max_magnitude_us {
+        *max_magnitude_us = magnitude;
+    }
+
+    // Return slip relative to the session baseline (which stays at 0 unless
+    // a discontinuity re-anchors).  This makes the metric an absolute measure
+    // of cumulative clock drift since session start.
+    slip_us - *baseline_us
 }
 
 struct AccessUnitInfo {
