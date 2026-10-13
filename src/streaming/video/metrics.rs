@@ -55,6 +55,10 @@ pub(crate) struct VideoMetrics {
     pub(crate) rtcp_nack_sent: AtomicU64,
     // Number of RTX packets received and successfully unwrapped
     pub(crate) rtx_packets_received: AtomicU64,
+    // Number of raw packets observed at receive path with negotiated RTX payload type
+    // (before unwrapping) — distinguishes "retransmissions never arrive" from
+    // "they arrive but handler mishandles them".
+    pub(crate) rtx_packets_seen: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -101,6 +105,7 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     capture_to_arrival_max_us: AtomicU64::new(0),
     rtcp_nack_sent: AtomicU64::new(0),
     rtx_packets_received: AtomicU64::new(0),
+    rtx_packets_seen: AtomicU64::new(0),
 };
 
 /// One drained sample of every metric, taken once per second.
@@ -147,6 +152,7 @@ pub(crate) struct MetricsSnapshot {
     // Loss recovery metrics (Stage 3)
     pub(crate) rtcp_nack_sent: u64,
     pub(crate) rtx_packets_received: u64,
+    pub(crate) rtx_packets_seen: u64,
 }
 
 /// Drains all per-second metric atomics exactly once and returns a snapshot.
@@ -195,6 +201,7 @@ pub fn drain_metrics() -> MetricsSnapshot {
     // Loss recovery metrics (Stage 3)
     let rtcp_nack_sent = METRICS.rtcp_nack_sent.swap(0, Ordering::Relaxed);
     let rtx_packets_received = METRICS.rtx_packets_received.swap(0, Ordering::Relaxed);
+    let rtx_packets_seen = METRICS.rtx_packets_seen.swap(0, Ordering::Relaxed);
 
     MetricsSnapshot {
         rtp_assembly_sum_us,
@@ -238,6 +245,7 @@ pub fn drain_metrics() -> MetricsSnapshot {
         capture_to_arrival_max_us,
         rtcp_nack_sent,
         rtx_packets_received,
+        rtx_packets_seen,
     }
 }
 

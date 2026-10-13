@@ -161,17 +161,8 @@ impl VideoReceiver {
             crate::streaming::video::metrics::METRICS
                 .rtp_gaps
                 .fetch_add(sample_stats.nack_requests.len() as u64, Ordering::Relaxed);
-            // Count sequence numbers requested for retransmission (each tuple is a range).
-            // This approximates NACK feedback sent since the NackGeneratorInterceptor
-            // generates NACKs for the same gaps we detect at assembly timeout.
-            let nack_seqs: u64 = sample_stats
-                .nack_requests
-                .iter()
-                .map(|(start, end)| end.wrapping_sub(*start).wrapping_add(1) as u64)
-                .sum();
-            crate::streaming::video::metrics::METRICS
-                .rtcp_nack_sent
-                .fetch_add(nack_seqs, Ordering::Relaxed);
+            // Note: rtcp_nack_sent is now incremented in send_nacks() when actual
+            // NACK feedback packets are emitted, not from local gap detection.
         }
         self.stats.dropped = self
             .stats
@@ -244,6 +235,31 @@ impl VideoReceiver {
             };
             let _ = receiver.write_rtcp(vec![Box::new(pli)]);
         }
+    }
+
+    /// Generates and sends NACK feedback for missing RTP sequences detected during
+    /// access-unit assembly. Called once per pump tick.
+    pub(crate) fn send_nacks(&mut self, peer: &mut RTCPeerConnection, now: Instant) {
+        let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else {
+            return;
+        };
+        let Some(mut receiver) = peer.rtp_receiver(receiver_id) else {
+            return;
+        };
+        let nack_packets = self.rtp.generate_nack_packets(ssrc, now);
+        if nack_packets.is_empty() {
+            return;
+        }
+        // Count actual NACK feedback packets emitted (each may carry multiple sequence numbers).
+        let nack_count = nack_packets.len() as u64;
+        crate::streaming::video::metrics::METRICS
+            .rtcp_nack_sent
+            .fetch_add(nack_count, Ordering::Relaxed);
+        let rtcp_packets: Vec<Box<dyn rtcp::Packet>> = nack_packets
+            .into_iter()
+            .map(|p| Box::new(p) as Box<dyn rtcp::Packet>)
+            .collect();
+        let _ = receiver.write_rtcp(rtcp_packets);
     }
 
     /// Sends Receiver Estimated Max Bitrate to keep the console's estimate fresh.

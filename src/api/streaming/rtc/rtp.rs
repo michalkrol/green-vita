@@ -110,6 +110,11 @@ pub(crate) struct VideoRtp {
     /// every time current_bitrate_bps() is called.  Used for TWCC delay modulation.
     bitrate_sample_bytes: u64,
     bitrate_sample_at: Instant,
+    /// Missing sequence numbers captured at assembly timeout, waiting to be sent as NACKs.
+    /// Drained by `take_nack_sequences()`.
+    pending_nack_sequences: Vec<u16>,
+    /// Rate-limiting: minimum interval between NACK batches.
+    last_nack_at: Option<Instant>,
 }
 
 struct PendingVideoFrame {
@@ -151,6 +156,34 @@ impl PendingVideoFrame {
             .iter()
             .find(|packet| packet.header.marker)
             .map(|packet| packet.header.sequence_number)
+    }
+
+    /// Returns all missing sequence numbers between the first packet and the marker.
+    /// Assumes packets have been sorted by sequence number (as done in assemble()).
+    fn missing_sequences(&self) -> Vec<u16> {
+        let Some(marker_sequence) = self.marker_sequence() else {
+            return Vec::new();
+        };
+        let mut seqs: Vec<u16> = self.packets.iter().map(|p| p.header.sequence_number).collect();
+        seqs.sort_unstable();
+        let Some(first) = seqs.first().copied() else {
+            return Vec::new();
+        };
+        let mut missing = Vec::new();
+        let mut expected = first;
+        for &seq in &seqs {
+            while expected != seq {
+                missing.push(expected);
+                expected = expected.wrapping_add(1);
+            }
+            expected = expected.wrapping_add(1);
+        }
+        // Also check up to marker_sequence
+        while expected != marker_sequence.wrapping_add(1) {
+            missing.push(expected);
+            expected = expected.wrapping_add(1);
+        }
+        missing
     }
 
     fn assemble(
@@ -217,6 +250,11 @@ impl VideoRtp {
             twcc_annotations: Vec::with_capacity(TWCC_MAX_ANNOTATIONS),
             bitrate_sample_bytes: 0,
             bitrate_sample_at: Instant::now(),
+            // Missing sequence numbers captured at assembly timeout, waiting to be sent as NACKs.
+            // Drained by `take_nack_sequences()`.
+            pending_nack_sequences: Vec::new(),
+            // Rate-limiting: minimum interval between NACK batches.
+            last_nack_at: None,
         }
     }
 
@@ -261,6 +299,10 @@ impl VideoRtp {
         // and feed the payload into the normal reassembly path. RTX packets must
         // not disturb the main stream's sequence accounting, gap detection, or metrics.
         if is_negotiated_rtx_pt(packet.header.payload_type) {
+            // Count raw RTX packets seen at receive path (before unwrapping) for metrics.
+            crate::streaming::video::metrics::METRICS
+                .rtx_packets_seen
+                .fetch_add(1, Ordering::Relaxed);
             if packet.payload.len() >= 2 {
                 let original_seq = u16::from_be_bytes([packet.payload[0], packet.payload[1]]);
                 let inner_payload = &packet.payload[2..];
@@ -336,14 +378,11 @@ impl VideoRtp {
                     && pending.marker_sequence().is_some()
                     && pending.first_packet_at.elapsed() > AU_ASSEMBLY_TIMEOUT
                 {
-                    // Add missing sequence ranges to NACK request so the console
-                    // can retransmit them (helps recovery when gaps are real losses
-                    // rather than encoder skips).
-                    let marker_seq = pending.marker_sequence();
-                    if let Some(marker) = marker_seq {
-                        // Report the full packet range for NACK diagnostics.
-                        // NACKs are tracked via rtp_gaps metric in media.rs.
-                        stats.nack_requests.push((marker, marker));
+                    // Capture missing sequence numbers for NACK generation.
+                    // This replaces the old single-marker approach with actual gap data.
+                    let missing = pending.missing_sequences();
+                    if !missing.is_empty() {
+                        self.pending_nack_sequences.extend(missing);
                     }
                     self.pending = None;
                     self.next_sequence = None;
@@ -569,6 +608,55 @@ impl VideoRtp {
             stats.dropped = stats.dropped.saturating_add(1);
         }
         stats
+    }
+
+    /// Drains pending NACK sequences and returns them for transmission.
+    /// Called once per pump tick to generate NACK feedback packets.
+    pub(crate) fn take_nack_sequences(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.pending_nack_sequences)
+    }
+
+    /// Generates RTCP TransportLayerNack packets from missing sequence numbers.
+    /// Batches multiple sequence numbers per packet using bitmask coverage (RFC 4585).
+    /// Rate-limits to at most one NACK packet per `NACK_MIN_INTERVAL`.
+    pub(crate) fn generate_nack_packets(
+        &mut self,
+        media_ssrc: u32,
+        now: Instant,
+    ) -> Vec<rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack> {
+        const NACK_MIN_INTERVAL: Duration = Duration::from_millis(50);
+        const MAX_NACKS_PER_PACKET: usize = 20; // Limit sequences per packet
+        const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
+
+        if self.last_nack_at.is_some_and(|last| now.duration_since(last) < NACK_MIN_INTERVAL) {
+            return Vec::new();
+        }
+
+        let sequences = self.take_nack_sequences();
+        if sequences.is_empty() {
+            return Vec::new();
+        }
+
+        // Sort and deduplicate
+        let mut seqs = sequences;
+        seqs.sort_unstable();
+        seqs.dedup();
+
+        // Limit total sequences per batch
+        if seqs.len() > MAX_NACKS_PER_PACKET {
+            seqs.truncate(MAX_NACKS_PER_PACKET);
+        }
+
+        // Use the rtcp crate's helper to convert sequences to NackPairs
+        let nack_pairs = rtcp::transport_feedbacks::transport_layer_nack::nack_pairs_from_sequence_numbers(&seqs);
+
+        self.last_nack_at = Some(now);
+
+        vec![rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack {
+            sender_ssrc: LOCAL_RTCP_SENDER_SSRC,
+            media_ssrc,
+            nacks: nack_pairs,
+        }]
     }
 
     fn record_damage(&mut self, worker: &VideoDecodeWorker) {
@@ -1079,5 +1167,137 @@ mod tests {
             lag_sample(&mut anchor, &mut baseline, 3_000, t0 + Duration::from_millis(73)),
             0
         );
+    }
+
+    #[test]
+    fn missing_sequences_detects_gaps() {
+        use rtc::rtp::Packet;
+        use rtc::rtp::header::Header;
+        use bytes::Bytes;
+
+        let mut frame = PendingVideoFrame::new(Packet {
+            header: Header {
+                sequence_number: 100,
+                timestamp: 90000,
+                marker: false,
+                ..Default::default()
+            },
+            payload: Bytes::new(),
+        });
+        frame.insert(Packet {
+            header: Header {
+                sequence_number: 101,
+                timestamp: 90000,
+                marker: false,
+                ..Default::default()
+            },
+            payload: Bytes::new(),
+        });
+        frame.insert(Packet {
+            header: Header {
+                sequence_number: 103, // gap at 102
+                timestamp: 90000,
+                marker: true,
+                ..Default::default()
+            },
+            payload: Bytes::new(),
+        });
+        frame.insert(Packet {
+            header: Header {
+                sequence_number: 104,
+                timestamp: 90000,
+                marker: false,
+                ..Default::default()
+            },
+            payload: Bytes::new(),
+        });
+        frame.insert(Packet {
+            header: Header {
+                sequence_number: 106, // gap at 105
+                timestamp: 90000,
+                marker: false,
+                ..Default::default()
+            },
+            payload: Bytes::new(),
+        });
+
+        let missing = frame.missing_sequences();
+        assert_eq!(missing, vec![102, 105]);
+    }
+
+    #[test]
+    fn missing_sequences_handles_wraparound() {
+        use rtc::rtp::Packet;
+        use rtc::rtp::header::Header;
+        use bytes::Bytes;
+
+        let mut frame = PendingVideoFrame::new(Packet {
+            header: Header {
+                sequence_number: 65534,
+                timestamp: 90000,
+                marker: false,
+                ..Default::default()
+            },
+            payload: Bytes::new(),
+        });
+        frame.insert(Packet {
+            header: Header {
+                sequence_number: 65535,
+                timestamp: 90000,
+                marker: false,
+                ..Default::default()
+            },
+            payload: Bytes::new(),
+        });
+        frame.insert(Packet {
+            header: Header {
+                sequence_number: 0, // wrap
+                timestamp: 90000,
+                marker: true,
+                ..Default::default()
+            },
+            payload: Bytes::new(),
+        });
+        frame.insert(Packet {
+            header: Header {
+                sequence_number: 2, // gap at 1
+                timestamp: 90000,
+                marker: false,
+                ..Default::default()
+            },
+            payload: Bytes::new(),
+        });
+
+        let missing = frame.missing_sequences();
+        assert_eq!(missing, vec![1]);
+    }
+
+    #[test]
+    fn missing_sequences_no_marker_returns_empty() {
+        use rtc::rtp::Packet;
+        use rtc::rtp::header::Header;
+        use bytes::Bytes;
+
+        let mut frame = PendingVideoFrame::new(Packet {
+            header: Header {
+                sequence_number: 100,
+                timestamp: 90000,
+                marker: false,
+                ..Default::default()
+            },
+            payload: Bytes::new(),
+        });
+        frame.insert(Packet {
+            header: Header {
+                sequence_number: 101,
+                timestamp: 90000,
+                marker: false,
+                ..Default::default()
+            },
+            payload: Bytes::new(),
+        });
+        // No marker bit set
+        let missing = frame.missing_sequences();
+        assert!(missing.is_empty());
     }
 }

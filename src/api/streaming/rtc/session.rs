@@ -234,6 +234,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         // REMB+TWCC feedback: keeps the console's bandwidth estimate fresh.
         self.video.send_remb(&mut self.peer, now);
         self.video.send_twcc(&mut self.peer, now);
+        // NACK feedback: request retransmission of missing RTP packets.
+        self.video.send_nacks(&mut self.peer, now);
         self.maybe_flush_backlog(now);
         if let Some(status) = self.video.status(now) {
             let debug_state = self.backend.debug_state();
