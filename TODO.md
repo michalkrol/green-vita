@@ -163,14 +163,17 @@
   - Test Main profile (if Vita HW decoder supports CABAC)
   - Add SDP `max-qp` constraint (e.g., `max-qp=35`)
   - Add SDP `min-qp` constraint to prevent over-quantization
-- **Blocked**: the SDP constraint pass appends a second `a=fmtp` line for the
-  video payload type that hardcodes `profile-level-id=42e01f` (Constrained
-  Baseline) after the negotiated one, with two fmtp lines for a single payload
-  type being invalid SDP and the injected one likely winning. So selecting Main
-  or High is probably silently overridden back to Baseline - fix that first or
-  "Test Main profile" is a no-op. Main/High also require decode queue depth 3+
-  (B-frame reordering) and are unverified on the Vita's HW decoder. Note
-  Main/High add reordering latency, which trades against the item 1 goal.
+- **Status (2026-10-13)**: the duplicate-fmtp blocker was fixed by `a6545c1`
+  (the offer now carries a single fmtp line and preserves the negotiated profile).
+  `max-qp=35` is now merged in (both the merge and synthesised paths).
+  `min-qp` remains unimplemented (it limits how FINE the quantiser may go,
+  i.e. it saves bits rather than protecting dark gradients, so it is a bandwidth
+  knob, not a dark-scene one).
+- **Fresh device evidence**: our offer declares `profile-level-id=42e01f`
+  (Baseline, level 3.1) while the console's ANSWER declares
+  `profile-level-id=42e02a` — the SAME profile bits (Baseline) but level 4.2 —
+  and the answer contains no `b=` line, no `max-fr` and no `max-fs`, confirming
+  it discards our bandwidth and frame-rate hints while mirroring the profile.
 
 ### 3. RSSI-Based Adaptive Bitrate (Disabled - NetCtl Crash)
 - **Issue**: `sceNetCtlInit()` causes hard crash on some Vita units
