@@ -62,6 +62,11 @@ pub(crate) struct VideoMetrics {
     // Number of RTP packets received for unknown track_id (neither video nor audio).
     // Used to diagnose whether RTX packets (bearing separate SSRC) are delivered at all.
     pub(crate) unknown_track_packets: AtomicU64,
+    // RTX packets counted by the rtc crate's stats accumulator (before endpoint drops them).
+    // This proves the console actually retransmits even when our receive path doesn't see them.
+    pub(crate) rtx_crate_received: AtomicU64,
+    // RTX bytes counted by the rtc crate's stats accumulator.
+    pub(crate) rtx_crate_bytes: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -110,6 +115,8 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     rtx_packets_received: AtomicU64::new(0),
     rtx_packets_seen: AtomicU64::new(0),
     unknown_track_packets: AtomicU64::new(0),
+    rtx_crate_received: AtomicU64::new(0),
+    rtx_crate_bytes: AtomicU64::new(0),
 };
 
 /// One drained sample of every metric, taken once per second.
@@ -158,6 +165,9 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) rtx_packets_received: u64,
     pub(crate) rtx_packets_seen: u64,
     pub(crate) unknown_track_packets: u64,
+    // RTX metrics from crate stats accumulator (Task 1)
+    pub(crate) rtx_crate_received: u64,
+    pub(crate) rtx_crate_bytes: u64,
 }
 
 /// Drains all per-second metric atomics exactly once and returns a snapshot.
@@ -208,6 +218,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let rtx_packets_received = METRICS.rtx_packets_received.swap(0, Ordering::Relaxed);
     let rtx_packets_seen = METRICS.rtx_packets_seen.swap(0, Ordering::Relaxed);
     let unknown_track_packets = METRICS.unknown_track_packets.swap(0, Ordering::Relaxed);
+    let rtx_crate_received = METRICS.rtx_crate_received.swap(0, Ordering::Relaxed);
+    let rtx_crate_bytes = METRICS.rtx_crate_bytes.swap(0, Ordering::Relaxed);
 
     MetricsSnapshot {
         rtp_assembly_sum_us,
@@ -253,6 +265,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
         rtx_packets_received,
         rtx_packets_seen,
         unknown_track_packets,
+        rtx_crate_received,
+        rtx_crate_bytes,
     }
 }
 

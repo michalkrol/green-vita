@@ -178,7 +178,7 @@ fn h264_profile_level_id(video_fps: u32, video_h264_profile: H264Profile) -> &'s
 
 #[cfg(test)]
 mod tests {
-    use super::h264_profile_level_id;
+    use super::{h264_profile_level_id, register_vita_codecs};
     use crate::settings::H264Profile;
 
     #[test]
@@ -193,69 +193,64 @@ mod tests {
 
     #[test]
     fn register_vita_codecs_includes_generic_nack_and_rtx() {
-        use rtc::peer_connection::configuration::media_engine::MediaEngine;
-        use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+        use crate::api_xbox::streaming::rtc::peer::create;
+        use crate::settings::H264Profile;
 
-        let mut media_engine = MediaEngine::default();
-        register_vita_codecs(&mut media_engine, 60, H264Profile::Main).unwrap();
+        // Create a peer connection which will register the codecs internally
+        let (mut peer, _protocol) = create(60, H264Profile::Main).unwrap();
 
-        let video_codecs = media_engine.get_codecs_by_kind(RtpCodecKind::Video);
+        // Generate an offer to see what codecs are negotiated
+        let offer = peer.create_offer(None).unwrap();
+        let offer_sdp = offer.sdp;
 
-        // Should have 4 video codecs: H264@102, RTX@112, H264@103, RTX@113
-        assert_eq!(video_codecs.len(), 4, "Expected 4 video codecs (2 H264 + 2 RTX), got: {:?}", video_codecs.iter().map(|c| (c.payload_type, c.rtp_codec.mime_type.clone())).collect::<Vec<_>>());
-
+        // Verify the offer contains our expected codecs
         // Primary H.264 at PT 102
-        let h264_102 = video_codecs.iter().find(|c| c.payload_type == 102).expect("H264 PT 102");
-        assert_eq!(h264_102.rtp_codec.mime_type, "video/H264");
-        assert!(h264_102.rtp_codec.sdp_fmtp_line.contains("profile-level-id=4d0020"));
-        // Generic NACK (empty parameter) + PLI
-        let nack_fb: Vec<_> = h264_102.rtp_codec.rtcp_feedback.iter().filter(|fb| fb.typ == "nack").collect();
-        assert_eq!(nack_fb.len(), 2, "Expected 2 nack feedback entries (generic + pli)");
-        assert!(nack_fb.iter().any(|fb| fb.parameter.is_empty()), "Missing generic nack (empty parameter)");
-        assert!(nack_fb.iter().any(|fb| fb.parameter == "pli"), "Missing nack pli");
+        assert!(offer_sdp.contains("a=rtpmap:102 H264/90000"), "Missing H264 PT 102");
+        assert!(offer_sdp.contains("a=fmtp:102 profile-level-id=4d0020"), "Wrong profile-level-id for PT 102");
+        // Generic NACK + PLI for PT 102
+        assert!(offer_sdp.lines().any(|l| l.trim() == "a=rtcp-fb:102 nack"), "Missing generic nack for PT 102");
+        assert!(offer_sdp.lines().any(|l| l.trim() == "a=rtcp-fb:102 nack pli"), "Missing nack pli for PT 102");
 
         // RTX for primary at PT 112
-        let rtx_112 = video_codecs.iter().find(|c| c.payload_type == 112).expect("RTX PT 112");
-        assert_eq!(rtx_112.rtp_codec.mime_type, "video/rtx");
-        assert_eq!(rtx_112.rtp_codec.sdp_fmtp_line, "apt=102");
+        assert!(offer_sdp.contains("a=rtpmap:112 rtx/90000"), "Missing RTX PT 112");
+        assert!(offer_sdp.contains("a=fmtp:112 apt=102"), "Wrong apt for RTX PT 112");
 
         // Fallback H.264 at PT 103
-        let h264_103 = video_codecs.iter().find(|c| c.payload_type == 103).expect("H264 PT 103");
-        assert_eq!(h264_103.rtp_codec.mime_type, "video/H264");
-        assert!(h264_103.rtp_codec.sdp_fmtp_line.contains("profile-level-id=42e01f"));
-        let nack_fb: Vec<_> = h264_103.rtp_codec.rtcp_feedback.iter().filter(|fb| fb.typ == "nack").collect();
-        assert_eq!(nack_fb.len(), 2, "Expected 2 nack feedback entries (generic + pli)");
-        assert!(nack_fb.iter().any(|fb| fb.parameter.is_empty()), "Missing generic nack (empty parameter)");
-        assert!(nack_fb.iter().any(|fb| fb.parameter == "pli"), "Missing nack pli");
+        assert!(offer_sdp.contains("a=rtpmap:103 H264/90000"), "Missing H264 PT 103");
+        assert!(offer_sdp.contains("a=fmtp:103 profile-level-id=42e01f"), "Wrong profile-level-id for PT 103");
+        // Generic NACK + PLI for PT 103
+        assert!(offer_sdp.lines().any(|l| l.trim() == "a=rtcp-fb:103 nack"), "Missing generic nack for PT 103");
+        assert!(offer_sdp.lines().any(|l| l.trim() == "a=rtcp-fb:103 nack pli"), "Missing nack pli for PT 103");
 
         // RTX for fallback at PT 113
-        let rtx_113 = video_codecs.iter().find(|c| c.payload_type == 113).expect("RTX PT 113");
-        assert_eq!(rtx_113.rtp_codec.mime_type, "video/rtx");
-        assert_eq!(rtx_113.rtp_codec.sdp_fmtp_line, "apt=103");
+        assert!(offer_sdp.contains("a=rtpmap:113 rtx/90000"), "Missing RTX PT 113");
+        assert!(offer_sdp.contains("a=fmtp:113 apt=103"), "Wrong apt for RTX PT 113");
 
         // Audio codec at PT 111
-        let audio_codecs = media_engine.get_codecs_by_kind(RtpCodecKind::Audio);
-        let opus = audio_codecs.iter().find(|c| c.payload_type == 111).expect("Opus PT 111");
-        assert_eq!(opus.rtp_codec.mime_type, "audio/opus");
+        assert!(offer_sdp.contains("a=rtpmap:111 opus/48000/2"), "Missing Opus PT 111");
     }
 
     #[test]
     fn register_vita_codecs_baseline_only_has_one_rtx() {
-        use rtc::peer_connection::configuration::media_engine::MediaEngine;
-        use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+        use crate::api_xbox::streaming::rtc::peer::create;
+        use crate::settings::H264Profile;
 
-        let mut media_engine = MediaEngine::default();
-        register_vita_codecs(&mut media_engine, 60, H264Profile::Baseline).unwrap();
+        let (mut peer, _protocol) = create(60, H264Profile::Baseline).unwrap();
 
-        let video_codecs = media_engine.get_codecs_by_kind(RtpCodecKind::Video);
+        let offer = peer.create_offer(None).unwrap();
+        let offer_sdp = offer.sdp;
 
-        // Should have 2 video codecs: H264@102, RTX@112 (no fallback since Baseline is primary)
-        assert_eq!(video_codecs.len(), 2, "Expected 2 video codecs for Baseline-only, got: {:?}", video_codecs.iter().map(|c| (c.payload_type, c.rtp_codec.mime_type.clone())).collect::<Vec<_>>());
+        // Should have H264@102, RTX@112 (no fallback since Baseline is primary)
+        assert!(offer_sdp.contains("a=rtpmap:102 H264/90000"), "Missing H264 PT 102");
+        assert!(offer_sdp.contains("a=fmtp:102 profile-level-id=42e020"), "Wrong profile-level-id for PT 102");
+        assert!(offer_sdp.lines().any(|l| l.trim() == "a=rtcp-fb:102 nack"), "Missing generic nack for PT 102");
+        assert!(offer_sdp.lines().any(|l| l.trim() == "a=rtcp-fb:102 nack pli"), "Missing nack pli for PT 102");
 
-        let h264_102 = video_codecs.iter().find(|c| c.payload_type == 102).expect("H264 PT 102");
-        let rtx_112 = video_codecs.iter().find(|c| c.payload_type == 112).expect("RTX PT 112");
-        assert_eq!(h264_102.rtp_codec.mime_type, "video/H264");
-        assert_eq!(rtx_112.rtp_codec.mime_type, "video/rtx");
-        assert_eq!(rtx_112.rtp_codec.sdp_fmtp_line, "apt=102");
+        assert!(offer_sdp.contains("a=rtpmap:112 rtx/90000"), "Missing RTX PT 112");
+        assert!(offer_sdp.contains("a=fmtp:112 apt=102"), "Wrong apt for RTX PT 112");
+
+        // Should NOT have PT 103 or 113
+        assert!(!offer_sdp.contains("a=rtpmap:103 H264/90000"), "Unexpected fallback H264 PT 103 for Baseline-only");
+        assert!(!offer_sdp.contains("a=rtpmap:113 rtx/90000"), "Unexpected fallback RTX PT 113 for Baseline-only");
     }
 }

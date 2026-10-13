@@ -27,7 +27,7 @@ pub(crate) struct RowExtras {
     pub(crate) decode_errors: u64,
 }
 
-const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,asm_avg_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,rtcp_rr_loss_fraction,rtcp_rr_jitter,rtcp_sr_ntp_timestamp,capture_to_arrival_us,capture_to_arrival_max_us,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,rtcp_nack_sent,rtx_packets_received,rtx_packets_seen,unknown_track_packets";
+const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,asm_avg_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,rtcp_rr_loss_fraction,rtcp_rr_jitter,rtcp_sr_ntp_timestamp,capture_to_arrival_us,capture_to_arrival_max_us,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,rtcp_nack_sent,rtx_packets_received,rtx_packets_seen,unknown_track_packets,rtx_crate_received,rtx_crate_bytes";
 
 pub(crate) struct MetricsLog {
     /// Rows are formatted on the RTC pump thread (cheap) and handed to the
@@ -88,8 +88,8 @@ impl MetricsLog {
         let t_s = self.started_at.elapsed().as_secs();
 
         // Fixed-size array so the column count is compiler-enforced and can never
-        // drift out of sync with HEADER (50 columns).  Order MUST match HEADER.
-        let cols: [u64; 50] = [
+        // drift out of sync with HEADER (52 columns).  Order MUST match HEADER.
+        let cols: [u64; 52] = [
             t_s,
             s.rtp_assembly_sum_us,
             s.rtp_assembly_count,
@@ -140,6 +140,8 @@ impl MetricsLog {
             s.rtx_packets_received,
             s.rtx_packets_seen,
             s.unknown_track_packets,
+            s.rtx_crate_received,
+            s.rtx_crate_bytes,
         ];
         let row = cols
             .iter()

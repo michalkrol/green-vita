@@ -2,6 +2,7 @@ use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver, set_negoti
 use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
+use crate::streaming::video::metrics::METRICS;
 use anyhow::{Context, Result};
 use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use rtc::peer_connection::event::{RTCDataChannelEvent, RTCPeerConnectionEvent, RTCTrackEvent};
@@ -9,6 +10,7 @@ use rtc::peer_connection::message::RTCMessage;
 use rtc::peer_connection::sdp::RTCSessionDescription;
 use rtc::peer_connection::state::RTCPeerConnectionState;
 use rtc::peer_connection::transport::RTCIceCandidateInit;
+use rtc::statistics::StatsSelector;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::sansio::Protocol;
 use std::sync::Arc;
@@ -116,6 +118,8 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     /// Counter for RTP packets whose track_id matches neither video nor audio.
     /// Logged for first few occurrences to diagnose RTX SSRC delivery.
     unknown_track_packets: u32,
+    /// Last time we sampled crate RTX stats via get_stats().
+    last_stats_sample: Option<Instant>,
     pub status: String,
 }
 
@@ -161,6 +165,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             periodic_keyframe_interval,
             last_periodic_keyframe: None,
             unknown_track_packets: 0,
+            last_stats_sample: None,
             status: "Negotiating WebRTC connection".to_owned(),
         })
     }
@@ -255,6 +260,26 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             };
             if LOG_STATUS_TO_STDERR {
                 eprintln!("{}", self.status);
+            }
+        }
+
+        // Sample crate RTX stats once per second (Task 1: prove console retransmits).
+        // The stats accumulator counts RTX packets BEFORE the endpoint drops them.
+        if self.last_stats_sample.is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1)) {
+            self.last_stats_sample = Some(now);
+            let report = self.peer.get_stats(now, StatsSelector::None);
+            let mut total_rtx_pkts = 0u64;
+            let mut total_rtx_bytes = 0u64;
+            for stream in report.inbound_rtp_streams() {
+                // Only count video streams
+                if stream.received_rtp_stream_stats.rtp_stream_stats.kind == RtpCodecKind::Video {
+                    total_rtx_pkts = total_rtx_pkts.saturating_add(stream.retransmitted_packets_received);
+                    total_rtx_bytes = total_rtx_bytes.saturating_add(stream.retransmitted_bytes_received);
+                }
+            }
+            if total_rtx_pkts > 0 || total_rtx_bytes > 0 {
+                METRICS.rtx_crate_received.fetch_add(total_rtx_pkts, Ordering::Relaxed);
+                METRICS.rtx_crate_bytes.fetch_add(total_rtx_bytes, Ordering::Relaxed);
             }
         }
 

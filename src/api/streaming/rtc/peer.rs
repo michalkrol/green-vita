@@ -27,7 +27,11 @@ pub(crate) fn feedback_registry() -> Result<Registry<FeedbackChain>> {
     // Transport-wide CC, RR/SR, REMB responders, etc. remain disabled — they
     // proved inert or harmful for drift; only manual TWCC + REMB flow is used
     // (see media.rs).
-    let registry = Registry::new();
+    // Add the RTX SSRC rewrite interceptor so inbound RTX packets (which the
+    // crate's endpoint handler would drop) are rewritten to the primary SSRC
+    // and reach our receive path.
+    let registry = Registry::new()
+        .with(|inner| crate::api::streaming::rtc::rtx_interceptor::RtxSsrcRewrite::new(inner));
     Ok(registry)
 }
 
