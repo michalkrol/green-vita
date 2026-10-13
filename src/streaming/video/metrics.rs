@@ -38,6 +38,17 @@ pub(crate) struct VideoMetrics {
     pub(crate) rtcp_rr_loss_fraction: AtomicU64,  // integer percent (e.g., 5% = 5)
     pub(crate) rtcp_rr_jitter: AtomicU64,         // jitter in RTP timestamp units
     pub(crate) rtcp_sr_ntp_timestamp: AtomicU64,  // NTP timestamp from SenderReport
+
+    // RTCP Sender Report anchor (NTP wall-clock + RTP timestamp + local arrival)
+    // Used to derive true capture-to-arrival latency: arrival - (sr_local + (rtp - sr_rtp) * 1e6 / 90k)
+    pub(crate) sr_anchor_ntp: AtomicU64,          // NTP timestamp from SR (ms since 1900)
+    pub(crate) sr_anchor_rtp_ts: AtomicU64,       // RTP timestamp from SR
+    pub(crate) sr_anchor_local_us: AtomicU64,     // Local monotonic time when SR arrived (us since boot)
+
+    // True end-to-end capture-to-arrival latency (microseconds)
+    // Measures console capture queue + transport + assembly; NOT blind to pre-RTP-stamp queue
+    pub(crate) capture_to_arrival_us: AtomicU64,
+    pub(crate) capture_to_arrival_max_us: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -77,6 +88,11 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     rtcp_rr_loss_fraction: AtomicU64::new(0),
     rtcp_rr_jitter: AtomicU64::new(0),
     rtcp_sr_ntp_timestamp: AtomicU64::new(0),
+    sr_anchor_ntp: AtomicU64::new(0),
+    sr_anchor_rtp_ts: AtomicU64::new(0),
+    sr_anchor_local_us: AtomicU64::new(0),
+    capture_to_arrival_us: AtomicU64::new(0),
+    capture_to_arrival_max_us: AtomicU64::new(0),
 };
 
 /// One drained sample of every metric, taken once per second.
@@ -118,6 +134,8 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) rtcp_rr_loss_fraction: u64,
     pub(crate) rtcp_rr_jitter: u64,
     pub(crate) rtcp_sr_ntp_timestamp: u64,
+    pub(crate) capture_to_arrival_us: u64,
+    pub(crate) capture_to_arrival_max_us: u64,
 }
 
 /// Drains all per-second metric atomics exactly once and returns a snapshot.
@@ -161,6 +179,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let rtcp_rr_loss_fraction = METRICS.rtcp_rr_loss_fraction.load(Ordering::Relaxed);
     let rtcp_rr_jitter = METRICS.rtcp_rr_jitter.load(Ordering::Relaxed);
     let rtcp_sr_ntp_timestamp = METRICS.rtcp_sr_ntp_timestamp.load(Ordering::Relaxed);
+    let capture_to_arrival_us = METRICS.capture_to_arrival_us.load(Ordering::Relaxed);
+    let capture_to_arrival_max_us = METRICS.capture_to_arrival_max_us.swap(0, Ordering::Relaxed);
 
     MetricsSnapshot {
         rtp_assembly_sum_us,
@@ -200,6 +220,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
         rtcp_rr_loss_fraction,
         rtcp_rr_jitter,
         rtcp_sr_ntp_timestamp,
+        capture_to_arrival_us,
+        capture_to_arrival_max_us,
     }
 }
 

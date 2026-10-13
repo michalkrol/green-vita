@@ -435,15 +435,25 @@ impl VideoReceiver {
         use rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
         use rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
         use crate::streaming::video::metrics::METRICS;
+        use std::time::Instant;
+
+        let sr_arrival_us = Instant::now().elapsed().as_micros() as u64;
 
         for packet in rtcp_packets {
             // Sender Report from Xbox: contains NTP timestamp for RTT calculation
             if let Some(sr) = packet.as_any().downcast_ref::<SenderReport>() {
-                // sr.ntp_time = wall clock when report sent
-                // sr.rtp_time = corresponding RTP timestamp
-                // Can compute RTT if we track when we sent our RR
+                // sr.ntp_time = wall clock when report sent (ms since 1900)
+                // sr.rtp_time = corresponding RTP timestamp (90 kHz clock)
+                // Capture all three values as an anchor for capture-to-arrival latency
                 eprintln!("RTCP SR from Xbox: ssrc={} ntp={} rtp_ts={} pkt_cnt={} oct_cnt={}",
                     sr.ssrc, sr.ntp_time, sr.rtp_time, sr.packet_count, sr.octet_count);
+
+                // Store the SR anchor: NTP timestamp, RTP timestamp, and local arrival instant
+                METRICS.sr_anchor_ntp.store(sr.ntp_time, Ordering::Relaxed);
+                METRICS.sr_anchor_rtp_ts.store(sr.rtp_time as u64, Ordering::Relaxed);
+                METRICS.sr_anchor_local_us.store(sr_arrival_us, Ordering::Relaxed);
+                // Also keep the legacy single-field metric for compatibility
+                METRICS.rtcp_sr_ntp_timestamp.store(sr.ntp_time, Ordering::Relaxed);
             }
 
             // Receiver Report from Xbox: how Xbox is receiving our (non-existent) stream

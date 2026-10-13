@@ -151,6 +151,11 @@ Xbox's Google GCC (congestion controller)   You just report conditions
 - **`lag:`/`lagMax:` are transport-side only.** They measure RTP schedule slip
   and are structurally blind to the console's pre-RTP-stamp queue, so a flat
   `lag:` does **not** mean zero glass latency. Since 0.2.5 the value is also drift-free: it is the slip relative to the best-served access unit in the current 60 s window, re-anchored at each window boundary and on any RTP timeline jump, so it reports *growth* above the recent floor instead of accumulating a clock-rate bias over a long session.
+- **`cta:`/`ctaMax:` (capture-to-arrival) — NEW in 0.2.6.** True end-to-end latency from
+  console capture to Vita arrival. Derived from RTCP Sender Report (NTP wall-clock
+  paired with RTP timestamp) so it **CAN see the console's pre-RTP-stamp queue**.
+  If `cta` grows while `lag` stays flat → console-side accumulation. If both grow →
+  transport-side. Columns added to metrics.csv and `scripts/analyze_metrics.py`.
 - **The console ignores both `a=framerate` and `max-fr`** and picks its own
   output rate from content and activity. Measured `src_fps` averaged 70.2 for a
   racing game; another session stayed at 58–60 fps with the "Unlock video FPS"

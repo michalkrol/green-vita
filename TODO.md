@@ -143,6 +143,12 @@
     the LAST packet, marker-absent only). **0 firings in 49 min measured -
     effectively inert at current rates.**
   - Per-second metrics CSV + `scripts/analyze_metrics.py` (see Testing Notes).
+  - **Capture-to-arrival metric (2026-10-13, for 0.2.6)**: `capture_to_arrival_us`
+    and `capture_to_arrival_max_us` derived from RTCP Sender Report (NTP + RTP
+    timestamp pair) anchors the console's capture clock to local time. This metric
+    is **NOT blind to the console's pre-RTP-stamp queue** — if it grows while
+    `stream_lag_us` stays flat, accumulation is proven console-side. Added to CSV,
+    HUD (via `analyze_metrics.py` trends/verdict), and per-window table.
 - **Open defects found while measuring**:
   - `rtcp_rr_loss_fraction` is stored as percent but read back as
     `stored / 100.0` and compared against 5.0/2.0/1.0 => the loss-based REMB

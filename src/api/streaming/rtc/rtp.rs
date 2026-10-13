@@ -342,6 +342,7 @@ impl VideoRtp {
         };
         let completed = self.pending.take().expect("assembled pending video frame");
         self.update_stream_lag(completed.timestamp, completed.first_packet_at);
+        self.update_capture_to_arrival(completed.timestamp, completed.first_packet_at);
         // Record both average and worst-case RTP assembly time for the stream HUD.
         let assembly_us = completed.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS
@@ -463,6 +464,59 @@ impl VideoRtp {
         crate::streaming::video::metrics::METRICS
             .stream_lag_max_us
             .fetch_max(lag_us, Ordering::Relaxed);
+    }
+
+    /// True end-to-end capture-to-arrival latency via RTCP Sender Report anchor.
+    ///
+    /// The console's RTCP Sender Report pairs an NTP wall-clock timestamp with an
+    /// RTP media timestamp. When we receive an SR, we record (ntp_time, rtp_time,
+    /// local_arrival_us). For each completed frame with RTP timestamp `au_timestamp`,
+    /// we derive the console's capture time as:
+    ///   capture_local_us = sr_local_arrival_us + (au_timestamp - sr_rtp_ts) * 1_000_000 / 90_000
+    /// Then: capture_to_arrival_us = now_local_us - capture_local_us
+    ///
+    /// Uses wrapping_sub on u32 RTP timestamps and treats the difference as i32
+    /// to handle the ~13-hour RTP wrap. Only updates the metric when the value
+    /// falls in a sane window (-100ms .. 2s) to reject stale/bogus anchors.
+    fn update_capture_to_arrival(&mut self, au_timestamp: u32, au_first_packet_at: Instant) {
+        use crate::streaming::video::metrics::METRICS;
+        use std::sync::atomic::Ordering;
+
+        let sr_local_us = METRICS.sr_anchor_local_us.load(Ordering::Relaxed);
+        let sr_rtp_ts = METRICS.sr_anchor_rtp_ts.load(Ordering::Relaxed) as u32;
+
+        // No SR anchor seen yet — cannot compute capture time
+        if sr_local_us == 0 || sr_rtp_ts == 0 {
+            return;
+        }
+
+        let now_us = au_first_packet_at.elapsed().as_micros() as u64;
+
+        // RTP timestamp difference with wrapping, treated as signed i32
+        // (handles the ~13-hour wrap at 90 kHz)
+        let rtp_diff = au_timestamp.wrapping_sub(sr_rtp_ts) as i32;
+
+        // Convert RTP timestamp delta to microseconds (90 kHz clock)
+        // Use i64 to avoid overflow: i32 * 1_000_000 fits in i64
+        let rtp_delta_us = (rtp_diff as i64 * 1_000_000) / 90_000;
+
+        // Capture time in local clock domain
+        let capture_local_us = sr_local_us as i64 + rtp_delta_us;
+
+        // Capture-to-arrival latency
+        let cta_us = now_us as i64 - capture_local_us;
+
+        // Sanity check: accept roughly -100ms .. 2s, discard outliers
+        // A negative value means the frame arrived before its capture time (clock skew / stale anchor)
+        // A very large value means the anchor is stale or bogus
+        const CTA_MIN_US: i64 = -100_000;
+        const CTA_MAX_US: i64 = 2_000_000;
+
+        if cta_us >= CTA_MIN_US && cta_us <= CTA_MAX_US {
+            let cta_us_u64 = cta_us as u64;
+            METRICS.capture_to_arrival_us.store(cta_us_u64, Ordering::Relaxed);
+            METRICS.capture_to_arrival_max_us.fetch_max(cta_us_u64, Ordering::Relaxed);
+        }
     }
 
     /// Expire an access unit whose marker bit never arrived and after which no
