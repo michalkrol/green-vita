@@ -144,8 +144,10 @@ Xbox's Google GCC (congestion controller)   You just report conditions
 - **The H.264 profile setting now reaches the console.** The SDP constraint
   pass (commit a6545c1) merges `max-fr`/`max-fs` into the existing `a=fmtp`
   line and preserves the negotiated `profile-level-id`. The duplicate-fmtp
-  bug is fixed. Remaining caveat: Main/High still need decode queue depth 3+
-  (B-frame reordering) and are unverified on the Vita hardware decoder.
+  bug is fixed. Main profile works at decode queue depth 1 (verified 15.2 min,
+  `decode_errors 0`), so B-frame reordering is not a blocker; the earlier
+  caveat that Main/High need queue depth 3+ was based on an untested concern.
+  High profile remains unverified (console refuses it).
 - **`lag:`/`lagMax:` are transport-side only.** They measure RTP schedule slip
   and are structurally blind to the console's pre-RTP-stamp queue, so a flat
   `lag:` does **not** mean zero glass latency.

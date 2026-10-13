@@ -171,9 +171,18 @@
     dark/flat gradients need.
 - **Status**: Fixed in code (commit b9cbe82). **Hardware-verified 2026-10-13**:
   a 15.2-minute session (Main profile, level 4.2, 4000 kbps cap, decode queue
-  depth 3) produced **`decode_errors 0` for the entire session** — the Vita's
-  hardware decoder handles Main/CABAC cleanly. This was the last open unknown
-  about Main and it is now resolved in the affirmative.
+  depth 1) produced **`decode_errors 0` for the entire session** — the Vita's
+  hardware decoder handles Main/CABAC cleanly **even at the shallowest queue
+  depth**. This proves that a deeper queue is NOT a prerequisite for using
+  Main. The earlier belief that queue depth 3+ was mandatory came from the
+  concern that Main might carry B-frames requiring reordering; the measured
+  sessions have shown no B-frames. Note that decode queue depth remains an
+  independent latency/artefact trade-off knob (a deeper queue raises the
+  internal `pending_limit` in `src/streaming/video/worker.rs::submit_access_unit`,
+  so fewer oldest-access-unit drops occur when the queue fills, at the cost of
+  added latency) — but it is unrelated to whether Main works.
+  **User-observed outcome of this session: no latency accumulation, but minor
+  artefacts and perceived visual quality drops.**
   - Console answer SDP for the Main session:
     ```
     m=video 9 UDP/TLS/RTP/SAVPF 102 103
