@@ -25,7 +25,15 @@ const TWCC_MAX_ANNOTATIONS: usize = 200;
 /// dropping an incomplete AU.  The 16.67ms VSYNC window must fit assembly +
 /// decode (2.9ms) + blit (1.1ms) + swap (0.3ms) = ~4.9ms processing overhead.
 /// 15ms left only 1.67ms margin — guaranteed VSYNC miss.  12.5ms leaves 4.17ms.
-const AU_ASSEMBLY_TIMEOUT: Duration = Duration::from_micros(12_500);
+/// How long to hold an incomplete access unit before giving up on it.
+///
+/// Must exceed one RTT: a NACK for the missing packets is only sent once the
+/// marker has arrived, so the retransmission cannot possibly come back before
+/// one round trip.  At 12.5 ms (below the LAN RTT to the console) we always
+/// dropped the AU and asked for a keyframe before the repair could arrive,
+/// which is why loss recovery never worked and artefacts persisted until the
+/// next IDR.
+const AU_ASSEMBLY_TIMEOUT: Duration = Duration::from_millis(35);
 
 /// Stall expiry for an access unit whose marker bit never arrived: abandon it
 /// once no further packets have been seen for this long.  Measured from the
@@ -176,28 +184,47 @@ impl PendingVideoFrame {
 
     /// Returns all missing sequence numbers between the first packet and the marker.
     /// Assumes packets have been sorted by sequence number (as done in assemble()).
+    /// Sequences we still expect for the pending AU, computed wrap-aware.
+    ///
+    /// The previous implementation sorted raw `u16`s, so an access unit that
+    /// straddles the 65535 -> 0 boundary produced roughly 65,000 bogus entries,
+    /// and its post-marker loop could overrun the same way.  Everything here is
+    /// measured as a wrapping distance from the marker, exactly like `assemble`.
     fn missing_sequences(&self) -> Vec<u16> {
         let Some(marker_sequence) = self.marker_sequence() else {
             return Vec::new();
         };
-        let mut seqs: Vec<u16> = self.packets.iter().map(|p| p.header.sequence_number).collect();
-        seqs.sort_unstable();
-        let Some(first) = seqs.first().copied() else {
+        // Expected range starts at the sequence we still owe from the previous
+        // AU when that is known, otherwise at the lowest packet we received.
+        let lowest_received = self
+            .packets
+            .iter()
+            .map(|packet| packet.header.sequence_number)
+            .min_by_key(|sequence| marker_sequence.wrapping_sub(*sequence))
+            .unwrap_or(marker_sequence);
+        let first = self.next_sequence.unwrap_or(lowest_received);
+
+        let span = marker_sequence.wrapping_sub(first) as usize + 1;
+        // Implausible span (stale marker, or the range wrapped oddly): let the
+        // keyframe path handle it rather than NACKing tens of thousands of
+        // sequences that were never part of this AU.
+        if span > 512 {
             return Vec::new();
-        };
-        let mut missing = Vec::new();
-        let mut expected = first;
-        for &seq in &seqs {
-            while expected != seq {
-                missing.push(expected);
-                expected = expected.wrapping_add(1);
-            }
-            expected = expected.wrapping_add(1);
         }
-        // Also check up to marker_sequence
-        while expected != marker_sequence.wrapping_add(1) {
-            missing.push(expected);
-            expected = expected.wrapping_add(1);
+
+        let present: std::collections::HashSet<u16> = self
+            .packets
+            .iter()
+            .map(|packet| packet.header.sequence_number)
+            .collect();
+
+        let mut missing = Vec::new();
+        let mut sequence = first;
+        for _ in 0..span {
+            if !present.contains(&sequence) {
+                missing.push(sequence);
+            }
+            sequence = sequence.wrapping_add(1);
         }
         missing
     }
@@ -646,7 +673,11 @@ impl VideoRtp {
         now: Instant,
     ) -> Vec<rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack> {
         const NACK_MIN_INTERVAL: Duration = Duration::from_millis(50);
-        const MAX_NACKS_PER_PACKET: usize = 20; // Limit sequences per packet
+        // A single NACK packet can carry far more than 20 sequences: each pair is
+        // a 16-bit PID plus a 16-bit BLP, so ~100 pairs still fit comfortably in
+        // one RTCP packet.  The old limit of 20 silently discarded the rest of
+        // the gap forever, so retransmissions never covered whole losses.
+        const MAX_NACKS_PER_PACKET: usize = 128;
         const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
 
         if self.last_nack_at.is_some_and(|last| now.duration_since(last) < NACK_MIN_INTERVAL) {
@@ -663,9 +694,12 @@ impl VideoRtp {
         seqs.sort_unstable();
         seqs.dedup();
 
-        // Limit total sequences per batch
+        // Limit the batch, but keep the remainder queued so the next batch
+        // (one NACK_MIN_INTERVAL later) still asks for it.  Truncating and
+        // dropping the remainder loses those sequences for good.
         if seqs.len() > MAX_NACKS_PER_PACKET {
-            seqs.truncate(MAX_NACKS_PER_PACKET);
+            let remainder = seqs.split_off(MAX_NACKS_PER_PACKET);
+            self.pending_nack_sequences.extend(remainder);
         }
 
         // Use the rtcp crate's helper to convert sequences to NackPairs

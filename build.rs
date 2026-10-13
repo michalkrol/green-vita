@@ -1,6 +1,14 @@
 use std::process::Command;
 
 fn main() {
+    // Re-run when HEAD moves (commit or checkout) so the compiled-in hash is the
+    // commit the binary was actually built from.  Without this, cargo only
+    // re-runs the build script when a package file changes, so a build made
+    // right after a commit keeps the previous commit's hash and the settings
+    // screen reports the wrong build.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/logs/HEAD");
+
     // Get git commit hash (short)
     let git_sha = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
