@@ -25,6 +25,9 @@
     queue growth, so this cannot be used to argue glass latency was flat.
     Attribution: 4000 kbps very likely saturates the ~8 Mbps-usable 2.4 GHz
     airtime for high-motion content.
+- **Longest hardware-validated clean session: 15.2 min (Main/CABAC, 4000 kbps,
+  decode queue depth 1, no accumulation).** A session longer than 30 minutes
+  with active input is still the outstanding validation for this item.
   - **Experiment armed:** `FLUSH_TRIGGER_ENABLED = false` in `session.rs` disables
     the flush trigger entirely for the next run, so the console is never asked to
     rebuild its encoder. If artefacts stop but the steady drift continues, the
@@ -253,6 +256,54 @@
 - **High jitter/lag** → queue=1
 - **Normal** → user configured depth
 - **Benefit**: Less buffered latency during congestion
+
+### 8. No RTX payload type and no generic NACK (loss-induced artefacts)
+- Our SDP offer advertises only `a=rtcp-fb:<pt> ccm fir`, `goog-remb`,
+  `transport-cc` and `nack pli`. It offers NO generic `a=rtcp-fb:<pt> nack`
+  and NO RTX payload type (`a=rtpmap:<pt> rtx/90000` +
+  `a=fmtp:<pt> apt=<h264pt>`).
+- The console supports both, proven by its answer to a real Chrome client:
+  that answer lists `a=rtcp-fb:116 nack` alongside `nack pli`, plus RTX
+  payload types 103/107/109/115/117/40 each with an `apt=` pairing.
+- Consequence: lost or late RTP packets are never retransmitted, so the
+  damaged reference frames stay corrupt until the next IDR. This is the
+  mechanism behind the "PLI-clearable artefacts" observed on hardware - a
+  keyframe request hides them, which is why enabling periodic PLI appeared
+  to help.
+- Scope: needs NACK generation for missing sequence numbers plus RTX
+  depacketisation (RTX carries the original sequence number in the first
+  two payload bytes, so it can be unwrapped into the normal reassembly
+  path). This is real work, not a config change.
+- Note that the console mirrors whatever the client offers, so adding the
+  RTX PT and the `nack` feedback line is what makes the console willing to
+  retransmit at all.
+
+### 9. 30/60 fps switch: only untried lever is clientdevicecapabilities
+- The switch is inert through every path tried so far. It feeds the SDP
+  `a=framerate`, the SDP `max-fr` (via `constrain_h264_codec`) and the
+  control-channel `VideoPreference.fps` - all measured ignored.
+- It ALSO selects the `level_idc` byte of the `profile-level-id`
+  (`4d001f` = level 3.1 = 1280x720@30 for 30 fps; `4d0020` = level 3.2 =
+  1280x720@60 for 60 fps), and that is ignored too: the console answers
+  `4d002a` (level 4.2) regardless, and every session so far declared level
+  3.1 while the console sent 58-70 fps - which level 3.1 forbids. Our
+  declared level is in fact below what the console needs, another sign it
+  is disregarded.
+- The one untried lever: `/streaming/characteristics/clientdevicecapabilities`,
+  which `startup_messages` in
+  `src/api_xbox/streaming/control/channel.rs` deliberately sends as an empty
+  object `json!({})`, with a code comment saying the full form
+  (`supportsFps`/`maxWidth`/`maxBitrateKbps`) is legacy and "may push the
+  console into conservative pacing".
+- Why it is worth retrying now: the console has been proven
+  capability-driven - it accepted Main profile the moment we declared it
+  correctly, and it mirrors RTX/nack/FEC/extmaps from the client's offer.
+- Caveats: the exact expected payload shape is unrecorded (the code comment
+  is the only reference and there is no local clone of the reference clients
+  to check - fetch from GitHub first), the conservative-pacing risk is real,
+  and the payoff is bandwidth/smoothness (the ~10 frames/s the console sends
+  above the 60 Hz panel), not picture quality. If it backfires it is one
+  message and trivially reverted.
 
 ---
 
