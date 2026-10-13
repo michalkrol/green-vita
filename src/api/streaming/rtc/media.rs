@@ -7,8 +7,9 @@ use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
@@ -22,20 +23,23 @@ pub(crate) static REMB_BPS: AtomicU32 = AtomicU32::new(15_000_000);
 /// Arbitrary stable local RTCP sender SSRC (we transmit no RTP of our own).
 const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
 
-/// Negotiated RTX payload type -> primary H.264 payload type mapping from the
-/// answer SDP. Populated once when the remote answer is set.
-static NEGOTIATED_RTX_MAP: OnceLock<HashMap<u8, u8>> = OnceLock::new();
+/// Process start reference for monotonic timestamps used by RTCP SR anchoring
+/// and capture-to-arrival latency. Initialized once at first use.
+pub(crate) static PROCESS_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
-/// Gets the negotiated RTX payload type mapping. Returns an empty map if not
-/// yet initialized (before SDP answer is processed).
-pub(crate) fn negotiated_rtx_map() -> &'static HashMap<u8, u8> {
-    NEGOTIATED_RTX_MAP.get_or_init(HashMap::new)
+/// Negotiated RTX payload type -> primary H.264 payload type mapping from the
+/// answer SDP. Replaced on every answer (re-negotiation).
+static NEGOTIATED_RTX_MAP: LazyLock<RwLock<HashMap<u8, u8>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Gets the negotiated RTX payload type mapping.
+pub(crate) fn negotiated_rtx_map() -> HashMap<u8, u8> {
+    NEGOTIATED_RTX_MAP.read().unwrap().clone()
 }
 
 /// Sets the negotiated RTX payload type mapping from the answer SDP.
-/// Should be called once during session setup.
+/// Overwrites any existing mapping (re-negotiation support).
 pub(crate) fn set_negotiated_rtx_map(map: HashMap<u8, u8>) {
-    let _ = NEGOTIATED_RTX_MAP.set(map);
+    *NEGOTIATED_RTX_MAP.write().unwrap() = map;
 }
 
 /// Checks if a payload type is a negotiated RTX type.
@@ -140,6 +144,31 @@ impl VideoReceiver {
         receiver_id: RTCRtpReceiverId,
         ssrc: u32,
     ) {
+        // Guard against clobbering: if already opened for a different SSRC,
+        // log loudly and ignore. The primary video track should only open once.
+        if let Some(existing_ssrc) = self.ssrc {
+            if existing_ssrc != ssrc {
+                eprintln!(
+                    "VideoReceiver::open() called with different SSRC! existing={} new={} - IGNORING",
+                    existing_ssrc, ssrc
+                );
+                return;
+            }
+            // Same SSRC - allow re-open (idempotent), but log if track_id/receiver_id differ
+            if self.track_id.as_ref() != Some(&track_id) {
+                eprintln!(
+                    "VideoReceiver::open() track_id changed for same SSRC {}: {:?} -> {:?}",
+                    ssrc, self.track_id, track_id
+                );
+            }
+            if self.receiver_id != Some(receiver_id) {
+                eprintln!(
+                    "VideoReceiver::open() receiver_id changed for same SSRC {}: {:?} -> {:?}",
+                    ssrc, self.receiver_id, receiver_id
+                );
+            }
+            return;
+        }
         self.track_id = Some(track_id);
         self.receiver_id = Some(receiver_id);
         self.ssrc = Some(ssrc);
@@ -491,7 +520,8 @@ impl VideoReceiver {
         use crate::streaming::video::metrics::METRICS;
         use std::time::Instant;
 
-        let sr_arrival_us = Instant::now().elapsed().as_micros() as u64;
+        // Use process start reference for monotonic time, not Instant::now().elapsed() which is ~0
+        let sr_arrival_us = PROCESS_START.elapsed().as_micros() as u64;
 
         for packet in rtcp_packets {
             // Sender Report from Xbox: contains NTP timestamp for RTT calculation

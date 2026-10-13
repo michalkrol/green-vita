@@ -59,6 +59,9 @@ pub(crate) struct VideoMetrics {
     // (before unwrapping) — distinguishes "retransmissions never arrive" from
     // "they arrive but handler mishandles them".
     pub(crate) rtx_packets_seen: AtomicU64,
+    // Number of RTP packets received for unknown track_id (neither video nor audio).
+    // Used to diagnose whether RTX packets (bearing separate SSRC) are delivered at all.
+    pub(crate) unknown_track_packets: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -106,6 +109,7 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     rtcp_nack_sent: AtomicU64::new(0),
     rtx_packets_received: AtomicU64::new(0),
     rtx_packets_seen: AtomicU64::new(0),
+    unknown_track_packets: AtomicU64::new(0),
 };
 
 /// One drained sample of every metric, taken once per second.
@@ -153,6 +157,7 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) rtcp_nack_sent: u64,
     pub(crate) rtx_packets_received: u64,
     pub(crate) rtx_packets_seen: u64,
+    pub(crate) unknown_track_packets: u64,
 }
 
 /// Drains all per-second metric atomics exactly once and returns a snapshot.
@@ -202,6 +207,7 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let rtcp_nack_sent = METRICS.rtcp_nack_sent.swap(0, Ordering::Relaxed);
     let rtx_packets_received = METRICS.rtx_packets_received.swap(0, Ordering::Relaxed);
     let rtx_packets_seen = METRICS.rtx_packets_seen.swap(0, Ordering::Relaxed);
+    let unknown_track_packets = METRICS.unknown_track_packets.swap(0, Ordering::Relaxed);
 
     MetricsSnapshot {
         rtp_assembly_sum_us,
@@ -246,6 +252,7 @@ pub fn drain_metrics() -> MetricsSnapshot {
         rtcp_nack_sent,
         rtx_packets_received,
         rtx_packets_seen,
+        unknown_track_packets,
     }
 }
 

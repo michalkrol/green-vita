@@ -507,6 +507,78 @@ mod tests {
         assert!(with_fps.contains("a=fmtp:112 apt=102"), "RTX fmtp preserved");
         assert!(with_fps.contains("a=rtcp-fb:102 nack"), "NACK feedback preserved");
     }
+
+    #[test]
+    fn extracts_rtx_mapping_from_real_answer_sdp() {
+        // Real answer SDP from hardware session (CRLF line endings preserved).
+        // Contains: m=video 9 UDP/TLS/RTP/SAVPF 102 112
+        //           a=rtpmap:112 rtx/90000
+        //           a=fmtp:112 apt=102
+        //           a=ssrc-group:FID 868043629 4263802149
+        let real_answer = concat!(
+            "v=0\r\n",
+            "o=- 9008743018967891990 2 IN IP4 127.0.0.1\r\n",
+            "s=-\r\n",
+            "t=0 0\r\n",
+            "a=group:BUNDLE 0 1 2\r\n",
+            "a=extmap-allow-mixed\r\n",
+            "a=msid-semantic: WMS 0 1\r\n",
+            "m=video 9 UDP/TLS/RTP/SAVPF 102 112\r\n",
+            "c=IN IP4 0.0.0.0\r\n",
+            "a=rtcp:9 IN IP4 0.0.0.0\r\n",
+            "a=ice-ufrag:AUW6\r\n",
+            "a=ice-pwd:QZ8/E5Bo73HjU1HvjBV/Cdqb\r\n",
+            "a=ice-options:trickle renomination\r\n",
+            "a=fingerprint:sha-256 DA:84:7B:39:10:C4:C0:AE:F0:87:DD:42:83:C3:21:07:5B:D4:C6:25:1B:FB:65:22:44:24:17:88:B6:C0:A1:08\r\n",
+            "a=setup:passive\r\n",
+            "a=mid:0\r\n",
+            "a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\n",
+            "a=sendonly\r\n",
+            "a=msid:1 39ea3f26-954c-47d1-ac79-0eb6ce3b2a41\r\n",
+            "a=rtcp-mux\r\n",
+            "a=rtcp-rsize\r\n",
+            "a=rtpmap:102 H264/90000\r\n",
+            "a=rtcp-fb:102 goog-remb\r\n",
+            "a=rtcp-fb:102 transport-cc\r\n",
+            "a=rtcp-fb:102 ccm fir\r\n",
+            "a=rtcp-fb:102 nack\r\n",
+            "a=rtcp-fb:102 nack pli\r\n",
+            "a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e02a\r\n",
+            "a=rtpmap:112 rtx/90000\r\n",
+            "a=fmtp:112 apt=102\r\n",
+            "a=ssrc-group:FID 868043629 4263802149\r\n",
+            "a=ssrc:868043629 cname:xmzYc+Xm4zTiygSJ\r\n",
+            "a=ssrc:4263802149 cname:xmzYc+Xm4zTiygSJ\r\n",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+            "c=IN IP4 0.0.0.0\r\n",
+            "a=rtcp:9 IN IP4 0.0.0.0\r\n",
+            "a=ice-ufrag:AUW6\r\n",
+            "a=ice-pwd:QZ8/E5Bo73HjU1HvjBV/Cdqb\r\n",
+            "a=ice-options:trickle renomination\r\n",
+            "a=fingerprint:sha-256 DA:84:7B:39:10:C4:C0:AE:F0:87:DD:42:83:C3:21:07:5B:D4:C6:25:1B:FB:65:22:44:24:17:88:B6:C0:A1:08\r\n",
+            "a=setup:passive\r\n",
+            "a=mid:1\r\n",
+            "a=sendonly\r\n",
+            "a=msid:0 764a2bcf-546f-4b4c-a0d1-4a1ae0c7d9aa\r\n",
+            "a=rtcp-mux\r\n",
+            "a=rtcp-rsize\r\n",
+            "a=rtpmap:111 opus/48000/2\r\n",
+            "a=ssrc:1207321385 cname:xmzYc+Xm4zTiygSJ\r\n",
+            "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n",
+            "c=IN IP4 0.0.0.0\r\n",
+            "a=ice-ufrag:AUW6\r\n",
+            "a=ice-pwd:QZ8/E5Bo73HjU1HvjBV/Cdqb\r\n",
+            "a=ice-options:trickle renomination\r\n",
+            "a=fingerprint:sha-256 DA:84:7B:39:10:C4:C0:AE:F0:87:DD:42:83:C3:21:07:5B:D4:C6:25:1B:FB:65:22:44:24:17:88:B6:C0:A1:08\r\n",
+            "a=setup:passive\r\n",
+            "a=mid:2\r\n",
+            "a=sctp-port:5000\r\n",
+        );
+
+        let rtx_map = extract_negotiated_rtx_mapping(real_answer);
+        assert_eq!(rtx_map.len(), 1, "Expected exactly one RTX mapping, got {:?}", rtx_map);
+        assert_eq!(rtx_map.get(&112), Some(&102), "Expected 112 -> 102, got {:?}", rtx_map);
+    }
 }
 
 /// Merges H.264 codec constraints into the video payload type's *existing*

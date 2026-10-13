@@ -1,5 +1,5 @@
 use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker};
-use crate::api::streaming::rtc::media::is_negotiated_rtx_pt;
+use crate::api::streaming::rtc::media::{is_negotiated_rtx_pt, PROCESS_START};
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
@@ -730,7 +730,8 @@ impl VideoRtp {
             return;
         }
 
-        let now_us = au_first_packet_at.elapsed().as_micros() as u64;
+        // Use the SAME process-start reference clock as the SR anchor
+        let now_us = PROCESS_START.elapsed().as_micros() as u64;
 
         // RTP timestamp difference with wrapping, treated as signed i32
         // (handles the ~13-hour wrap at 90 kHz)
@@ -1030,7 +1031,7 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::{lag_sample, schedule_slip_us, LAG_WINDOW};
+    use super::{lag_sample, schedule_slip_us, LAG_WINDOW, PendingVideoFrame};
     use std::time::{Duration, Instant};
 
     #[test]

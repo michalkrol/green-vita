@@ -113,6 +113,9 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     /// Periodic keyframe PLI interval (200ms) — experimental, may force encoder catchup.
     periodic_keyframe_interval: Option<Duration>,
     last_periodic_keyframe: Option<Instant>,
+    /// Counter for RTP packets whose track_id matches neither video nor audio.
+    /// Logged for first few occurrences to diagnose RTX SSRC delivery.
+    unknown_track_packets: u32,
     pub status: String,
 }
 
@@ -157,6 +160,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             last_initial_video_keyframe_request: None,
             periodic_keyframe_interval,
             last_periodic_keyframe: None,
+            unknown_track_packets: 0,
             status: "Negotiating WebRTC connection".to_owned(),
         })
     }
@@ -177,10 +181,15 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         // Extract negotiated RTX payload types from the answer SDP before setting it.
         // The console may renumber payload types, so the answer is the source of truth.
         let rtx_map = crate::api_xbox::streaming::rtc::sdp::extract_negotiated_rtx_mapping(&answer_str);
-        if !rtx_map.is_empty() {
-            eprintln!("Negotiated RTX mapping: {:?}", rtx_map);
-            set_negotiated_rtx_map(rtx_map);
-        }
+        // Log unconditionally with diagnostics to catch parser misses.
+        let sdp_lines = answer_str.lines().count();
+        let rtx_rtpmap_count = answer_str.lines().filter(|l| l.trim_start().starts_with("a=rtpmap:") && l.to_ascii_lowercase().contains("rtx/")).count();
+        let apt_fmtp_count = answer_str.lines().filter(|l| l.trim_start().starts_with("a=fmtp:") && l.contains("apt=")).count();
+        eprintln!(
+            "SDP answer RTX parse: lines_scanned={} rtx_rtpmap_lines={} apt_fmtp_lines={} map={:?}",
+            sdp_lines, rtx_rtpmap_count, apt_fmtp_count, rtx_map
+        );
+        set_negotiated_rtx_map(rtx_map);
         let answer = RTCSessionDescription::answer(answer_str);
         self.peer
             .set_remote_description(answer?)
@@ -335,6 +344,20 @@ impl<B: RtcSessionBackend> RtcSession<B> {
                         self.video.receive(&mut self.peer, packet, &mut keyframe_requested);
                     } else if self.audio.handles(&track_id) {
                         self.audio.receive(packet);
+                    } else {
+                        // Packet for a track we don't handle (e.g., RTX SSRC).
+                        // Count in global metrics for CSV and log first few for diagnostics.
+                        crate::streaming::video::metrics::METRICS
+                            .unknown_track_packets
+                            .fetch_add(1, Ordering::Relaxed);
+                        let count = self.unknown_track_packets + 1;
+                        self.unknown_track_packets = count;
+                        if count <= 10 {
+                            eprintln!(
+                                "Unknown track packet: track_id={:?} ssrc={} pt={} (count={})",
+                                track_id, packet.header.ssrc, packet.header.payload_type, count
+                            );
+                        }
                     }
                 }
                 RTCMessage::DataChannelMessage(channel_id, data_message) => {
