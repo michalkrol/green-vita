@@ -329,6 +329,128 @@ mod tests {
         let at_30 = constrain_h264_codec(offer, 30);
         assert!(at_30.contains("max-fr=30"), "{at_30}");
     }
+
+    #[test]
+    fn preserves_rtx_payload_types_and_fmtp() {
+        let offer = concat!(
+            "v=0\r\n",
+            "m=video 9 UDP/TLS/RTP/SAVPF 102 112 103 113\r\n",
+            "a=rtpmap:102 H264/90000\r\n",
+            "a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4d0020\r\n",
+            "a=rtcp-fb:102 goog-remb\r\n",
+            "a=rtcp-fb:102 ccm fir\r\n",
+            "a=rtcp-fb:102 nack\r\n",
+            "a=rtcp-fb:102 nack pli\r\n",
+            "a=rtpmap:112 rtx/90000\r\n",
+            "a=fmtp:112 apt=102\r\n",
+            "a=rtpmap:103 H264/90000\r\n",
+            "a=fmtp:103 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n",
+            "a=rtcp-fb:103 goog-remb\r\n",
+            "a=rtcp-fb:103 ccm fir\r\n",
+            "a=rtcp-fb:103 nack\r\n",
+            "a=rtcp-fb:103 nack pli\r\n",
+            "a=rtpmap:113 rtx/90000\r\n",
+            "a=fmtp:113 apt=103\r\n",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+            "a=rtpmap:111 opus/48000/2\r\n",
+        );
+
+        let constrained = constrain_h264_codec(offer, 30);
+
+        // H264 PT 102 fmtp should be merged with constraints
+        let fmtp102 = constrained.lines().find(|l| l.starts_with("a=fmtp:102 ")).expect("fmtp 102");
+        assert!(fmtp102.contains("profile-level-id=4d0020"), "Negotiated profile preserved: {fmtp102}");
+        assert!(fmtp102.contains("max-fr=30"), "max-fr added: {fmtp102}");
+        assert!(fmtp102.contains("max-fs=8160"), "max-fs added: {fmtp102}");
+        assert!(fmtp102.contains("max-qp=35"), "max-qp added: {fmtp102}");
+        assert_eq!(constrained.matches("a=fmtp:102 ").count(), 1, "No duplicate fmtp 102");
+
+        // RTX PT 112 should be untouched
+        assert!(constrained.contains("a=rtpmap:112 rtx/90000"), "RTX rtpmap 112 preserved");
+        assert!(constrained.contains("a=fmtp:112 apt=102"), "RTX fmtp 112 preserved");
+        assert_eq!(constrained.matches("a=fmtp:112 ").count(), 1, "Exactly one fmtp 112");
+
+        // H264 PT 103 fmtp should be untouched (fallback)
+        assert!(constrained.contains("a=fmtp:103 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"), "Fallback H264 103 untouched");
+
+        // RTX PT 113 should be untouched
+        assert!(constrained.contains("a=rtpmap:113 rtx/90000"), "RTX rtpmap 113 preserved");
+        assert!(constrained.contains("a=fmtp:113 apt=103"), "RTX fmtp 113 preserved");
+        assert_eq!(constrained.matches("a=fmtp:113 ").count(), 1, "Exactly one fmtp 113");
+
+        // Generic NACK feedback lines should be preserved
+        assert!(constrained.contains("a=rtcp-fb:102 nack"), "Generic NACK for 102 preserved");
+        assert!(constrained.contains("a=rtcp-fb:102 nack pli"), "NACK PLI for 102 preserved");
+        assert!(constrained.contains("a=rtcp-fb:103 nack"), "Generic NACK for 103 preserved");
+        assert!(constrained.contains("a=rtcp-fb:103 nack pli"), "NACK PLI for 103 preserved");
+    }
+
+    #[test]
+    fn preserves_rtx_and_nack_through_cap_video_bitrate() {
+        let offer = concat!(
+            "v=0\r\n",
+            "m=video 9 UDP/TLS/RTP/SAVPF 102 112\r\n",
+            "a=rtpmap:102 H264/90000\r\n",
+            "a=fmtp:102 profile-level-id=4d0020\r\n",
+            "a=rtcp-fb:102 nack\r\n",
+            "a=rtpmap:112 rtx/90000\r\n",
+            "a=fmtp:112 apt=102\r\n",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+            "a=rtpmap:111 opus/48000/2\r\n",
+        );
+
+        let capped = cap_video_bitrate(offer, 5000);
+        assert!(capped.contains("b=AS:5000"), "Bitrate cap injected");
+        assert!(capped.contains("b=TIAS:5000000"), "TIAS cap injected");
+        assert!(capped.contains("a=rtpmap:112 rtx/90000"), "RTX preserved through cap_video_bitrate");
+        assert!(capped.contains("a=fmtp:112 apt=102"), "RTX fmtp preserved");
+        assert!(capped.contains("a=rtcp-fb:102 nack"), "NACK feedback preserved");
+    }
+
+    #[test]
+    fn preserves_rtx_and_nack_through_enable_transport_cc() {
+        let offer = concat!(
+            "v=0\r\n",
+            "m=video 9 UDP/TLS/RTP/SAVPF 102 112\r\n",
+            "a=rtpmap:102 H264/90000\r\n",
+            "a=fmtp:102 profile-level-id=4d0020\r\n",
+            "a=rtcp-fb:102 nack\r\n",
+            "a=rtcp-fb:102 nack pli\r\n",
+            "a=rtpmap:112 rtx/90000\r\n",
+            "a=fmtp:112 apt=102\r\n",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+            "a=rtpmap:111 opus/48000/2\r\n",
+        );
+
+        let with_twcc = enable_transport_cc(offer);
+        assert!(with_twcc.contains("a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"), "TWCC extmap injected");
+        assert!(with_twcc.contains("a=rtcp-fb:102 transport-cc"), "transport-cc feedback injected for H264 PT");
+        assert!(with_twcc.contains("a=rtpmap:112 rtx/90000"), "RTX preserved through enable_transport_cc");
+        assert!(with_twcc.contains("a=fmtp:112 apt=102"), "RTX fmtp preserved");
+        assert!(with_twcc.contains("a=rtcp-fb:102 nack"), "Generic NACK preserved");
+        assert!(with_twcc.contains("a=rtcp-fb:102 nack pli"), "NACK PLI preserved");
+    }
+
+    #[test]
+    fn preserves_rtx_and_nack_through_request_video_fps() {
+        let offer = concat!(
+            "v=0\r\n",
+            "m=video 9 UDP/TLS/RTP/SAVPF 102 112\r\n",
+            "a=rtpmap:102 H264/90000\r\n",
+            "a=fmtp:102 profile-level-id=4d0020\r\n",
+            "a=rtcp-fb:102 nack\r\n",
+            "a=rtpmap:112 rtx/90000\r\n",
+            "a=fmtp:112 apt=102\r\n",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+            "a=rtpmap:111 opus/48000/2\r\n",
+        );
+
+        let with_fps = request_video_fps(offer, 60);
+        assert!(with_fps.contains("a=framerate:60"), "Framerate injected");
+        assert!(with_fps.contains("a=rtpmap:112 rtx/90000"), "RTX preserved through request_video_fps");
+        assert!(with_fps.contains("a=fmtp:112 apt=102"), "RTX fmtp preserved");
+        assert!(with_fps.contains("a=rtcp-fb:102 nack"), "NACK feedback preserved");
+    }
 }
 
 /// Merges H.264 codec constraints into the video payload type's *existing*

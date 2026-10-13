@@ -8,7 +8,7 @@ use crate::api_xbox::streaming::rtc::{AUDIO_PAYLOAD_TYPE, STUN_SERVER};
 use crate::settings::H264Profile;
 use anyhow::{Context, Result};
 use rtc::peer_connection::configuration::media_engine::{
-    MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine,
+    MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_RTX, MediaEngine,
 };
 use rtc::peer_connection::transport::RTCIceServer;
 use rtc::rtp_transceiver::rtp_sender::{
@@ -73,10 +73,26 @@ fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32, video_h2
                 rtcp_feedback: vec![
                     RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
                     RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
-                    RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
+                    RTCPFeedback { typ: "nack".to_owned(), parameter: "".to_owned() },      // generic NACK (RFC 4585)
+                    RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },    // PLI
                 ],
             },
             payload_type: 102,
+        },
+        RtpCodecKind::Video,
+    )?;
+
+    // RTX for primary H.264 (PT 102) at PT 112
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: MIME_TYPE_RTX.to_owned(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: "apt=102".to_owned(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 112,
         },
         RtpCodecKind::Video,
     )?;
@@ -94,10 +110,26 @@ fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32, video_h2
                     rtcp_feedback: vec![
                         RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
                         RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
-                        RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
+                        RTCPFeedback { typ: "nack".to_owned(), parameter: "".to_owned() },      // generic NACK (RFC 4585)
+                        RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },    // PLI
                     ],
                 },
                 payload_type: 103,
+            },
+            RtpCodecKind::Video,
+        )?;
+
+        // RTX for fallback H.264 (PT 103) at PT 113
+        media_engine.register_codec(
+            RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_RTX.to_owned(),
+                    clock_rate: 90_000,
+                    channels: 0,
+                    sdp_fmtp_line: "apt=103".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                payload_type: 113,
             },
             RtpCodecKind::Video,
         )?;
@@ -157,5 +189,73 @@ mod tests {
         assert_eq!(h264_profile_level_id(60, H264Profile::Main), "4d0020");
         assert_eq!(h264_profile_level_id(30, H264Profile::High), "64001f");
         assert_eq!(h264_profile_level_id(60, H264Profile::High), "640020");
+    }
+
+    #[test]
+    fn register_vita_codecs_includes_generic_nack_and_rtx() {
+        use rtc::peer_connection::configuration::media_engine::MediaEngine;
+        use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+
+        let mut media_engine = MediaEngine::default();
+        register_vita_codecs(&mut media_engine, 60, H264Profile::Main).unwrap();
+
+        let video_codecs = media_engine.get_codecs_by_kind(RtpCodecKind::Video);
+
+        // Should have 4 video codecs: H264@102, RTX@112, H264@103, RTX@113
+        assert_eq!(video_codecs.len(), 4, "Expected 4 video codecs (2 H264 + 2 RTX), got: {:?}", video_codecs.iter().map(|c| (c.payload_type, c.rtp_codec.mime_type.clone())).collect::<Vec<_>>());
+
+        // Primary H.264 at PT 102
+        let h264_102 = video_codecs.iter().find(|c| c.payload_type == 102).expect("H264 PT 102");
+        assert_eq!(h264_102.rtp_codec.mime_type, "video/H264");
+        assert!(h264_102.rtp_codec.sdp_fmtp_line.contains("profile-level-id=4d0020"));
+        // Generic NACK (empty parameter) + PLI
+        let nack_fb: Vec<_> = h264_102.rtp_codec.rtcp_feedback.iter().filter(|fb| fb.typ == "nack").collect();
+        assert_eq!(nack_fb.len(), 2, "Expected 2 nack feedback entries (generic + pli)");
+        assert!(nack_fb.iter().any(|fb| fb.parameter.is_empty()), "Missing generic nack (empty parameter)");
+        assert!(nack_fb.iter().any(|fb| fb.parameter == "pli"), "Missing nack pli");
+
+        // RTX for primary at PT 112
+        let rtx_112 = video_codecs.iter().find(|c| c.payload_type == 112).expect("RTX PT 112");
+        assert_eq!(rtx_112.rtp_codec.mime_type, "video/rtx");
+        assert_eq!(rtx_112.rtp_codec.sdp_fmtp_line, "apt=102");
+
+        // Fallback H.264 at PT 103
+        let h264_103 = video_codecs.iter().find(|c| c.payload_type == 103).expect("H264 PT 103");
+        assert_eq!(h264_103.rtp_codec.mime_type, "video/H264");
+        assert!(h264_103.rtp_codec.sdp_fmtp_line.contains("profile-level-id=42e01f"));
+        let nack_fb: Vec<_> = h264_103.rtp_codec.rtcp_feedback.iter().filter(|fb| fb.typ == "nack").collect();
+        assert_eq!(nack_fb.len(), 2, "Expected 2 nack feedback entries (generic + pli)");
+        assert!(nack_fb.iter().any(|fb| fb.parameter.is_empty()), "Missing generic nack (empty parameter)");
+        assert!(nack_fb.iter().any(|fb| fb.parameter == "pli"), "Missing nack pli");
+
+        // RTX for fallback at PT 113
+        let rtx_113 = video_codecs.iter().find(|c| c.payload_type == 113).expect("RTX PT 113");
+        assert_eq!(rtx_113.rtp_codec.mime_type, "video/rtx");
+        assert_eq!(rtx_113.rtp_codec.sdp_fmtp_line, "apt=103");
+
+        // Audio codec at PT 111
+        let audio_codecs = media_engine.get_codecs_by_kind(RtpCodecKind::Audio);
+        let opus = audio_codecs.iter().find(|c| c.payload_type == 111).expect("Opus PT 111");
+        assert_eq!(opus.rtp_codec.mime_type, "audio/opus");
+    }
+
+    #[test]
+    fn register_vita_codecs_baseline_only_has_one_rtx() {
+        use rtc::peer_connection::configuration::media_engine::MediaEngine;
+        use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+
+        let mut media_engine = MediaEngine::default();
+        register_vita_codecs(&mut media_engine, 60, H264Profile::Baseline).unwrap();
+
+        let video_codecs = media_engine.get_codecs_by_kind(RtpCodecKind::Video);
+
+        // Should have 2 video codecs: H264@102, RTX@112 (no fallback since Baseline is primary)
+        assert_eq!(video_codecs.len(), 2, "Expected 2 video codecs for Baseline-only, got: {:?}", video_codecs.iter().map(|c| (c.payload_type, c.rtp_codec.mime_type.clone())).collect::<Vec<_>>());
+
+        let h264_102 = video_codecs.iter().find(|c| c.payload_type == 102).expect("H264 PT 102");
+        let rtx_112 = video_codecs.iter().find(|c| c.payload_type == 112).expect("RTX PT 112");
+        assert_eq!(h264_102.rtp_codec.mime_type, "video/H264");
+        assert_eq!(rtx_112.rtp_codec.mime_type, "video/rtx");
+        assert_eq!(rtx_112.rtp_codec.sdp_fmtp_line, "apt=102");
     }
 }

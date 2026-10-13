@@ -275,25 +275,28 @@
 - **Benefit**: Less buffered latency during congestion
 
 ### 8. No RTX payload type and no generic NACK (loss-induced artefacts)
-- Our SDP offer advertises only `a=rtcp-fb:<pt> ccm fir`, `goog-remb`,
-  `transport-cc` and `nack pli`. It offers NO generic `a=rtcp-fb:<pt> nack`
-  and NO RTX payload type (`a=rtpmap:<pt> rtx/90000` +
-  `a=fmtp:<pt> apt=<h264pt>`).
-- The console supports both, proven by its answer to a real Chrome client:
-  that answer lists `a=rtcp-fb:116 nack` alongside `nack pli`, plus RTX
-  payload types 103/107/109/115/117/40 each with an `apt=` pairing.
-- Consequence: lost or late RTP packets are never retransmitted, so the
-  damaged reference frames stay corrupt until the next IDR. This is the
-  mechanism behind the "PLI-clearable artefacts" observed on hardware - a
-  keyframe request hides them, which is why enabling periodic PLI appeared
-  to help.
-- Scope: needs NACK generation for missing sequence numbers plus RTX
-  depacketisation (RTX carries the original sequence number in the first
-  two payload bytes, so it can be unwrapped into the normal reassembly
-  path). This is real work, not a config change.
-- Note that the console mirrors whatever the client offers, so adding the
-  RTX PT and the `nack` feedback line is what makes the console willing to
-  retransmit at all.
+- **Measured evidence (Chrome xHome, LAN, inbound shaped to 1.5 Mbit/s via dnctl/pf):**
+  - 1280x720@60 stream, 32715 packets, 1532 lost (~4.7% loss)
+  - nackCount 499, retransmittedPacketsReceived 1809 (1,426,756 bytes ≈ 5.5% of stream recovered)
+  - pliCount 38, firCount 0 (PLI is last resort)
+  - freezeCount 10, totalFreezesDuration 12.135 s (Chrome HOLDS last good frame)
+  - framesDecoded 19146, framesDropped 98, jitter 0.009
+  - framesAssembledFromMultiplePackets 6350, totalAssemblyTime 93.99 s
+  - Subjective: video looked very bad at 0.6-1 Mbps but NO artefacts; after 1-2 min loading, latency/freezes then caught up in 10-15 s to very low latency; gameplay smooth with lower latency than Vita has ever achieved.
+- **Conclusions:**
+  1. Console DOES honour NACK + RTX retransmission — 1809 packets retransmitted and received.
+  2. Chrome HOLDS the last good frame instead of rendering corruption (10 freezes, 12.1 s total); our client presents damaged frames → persistent macroblocking until next IDR.
+  3. Keyframe requests are a last resort for Chrome (38 PLIs vs 499 NACKs); our only recovery tool is the keyframe request, and an IDR at low bitrate is enormous — which is why periodic PLI measurably made things worse.
+- **Raw evidence location:** `/Users/mk/git/vita-xbox/chrome-dumps/October 13 1307/`
+- **Implementation plan:**
+  1. **Advertise the capability.** Add RTX payload type (`a=rtpmap:<rtx-pt> rtx/90000` + `a=fmtp:<rtx-pt> apt=<h264-pt>`) and generic `a=rtcp-fb:<h264-pt> nack` (in addition to existing `nack pli`) to the video section of the SDP offer. Relevant code: `src/api_xbox/streaming/rtc/peer.rs::register_vita_codecs` (registers selected H.264 profile at PT 102 + Constrained Baseline fallback at PT 103) and/or offer post-processing in `src/api_xbox/streaming/rtc/sdp.rs` (already rewrites fmtp/rtcp-fb lines — see `constrain_h264_codec`, `cap_video_bitrate`, `enable_transport_cc`). Prerequisite: console's negotiation is capability-driven; it only retransmits if client offers RTX and nack.
+  2. **Generate NACKs for missing sequence numbers.** We already detect gaps (`rtp_gaps` assembly-timeout counter and sequence tracking in `src/api/streaming/rtc/rtp.rs`); missing is the RTCP feedback packet itself (PT=205, FMT=1, carrying list of missing sequence numbers and bitmasks). Send through same path as keyframe request — `src/api/streaming/rtc/media.rs::request_keyframe` shows the pattern (`peer.rtp_receiver(id)` then `receiver.write_rtcp(vec![Box::new(packet)])`). Batch and rate-limit: Chrome sent 499 NACKs covering 1809 packets (~few NACKs/sec at 4.7% loss), each NACK should carry multiple sequence numbers.
+  3. **Handle incoming RTX.** Retransmitted packet arrives on RTX payload type with RTX SSRC; first two payload bytes are ORIGINAL sequence number. Unwrap those two bytes, rewrite sequence number to original, feed payload into existing reassembly path so frame assembles as if packet arrived normally. RTX SSRC/PT must be accepted by depacketiser rather than discarded.
+  4. **Hold last good frame on unrecoverable damage (secondary, makes picture clean).** Chrome's freeze behaviour: on unrecoverable damage, HOLD last good frame instead of presenting damaged one, until IDR arrives. Relevant machinery: `VideoRtp::waiting_for_keyframe`, `record_damage` / `damage_score` / `LOW_FPS_DAMAGE_LIMIT` (8) and `HIGH_FPS_DAMAGE_LIMIT` (3) in `src/api/streaming/rtc/rtp.rs`, `worker.begin_resync()`, presentation path in `src/shell/surface.rs`. **CAVEAT:** our damage detection only fires on incomplete current access unit; a frame that arrives COMPLETE but references a lost earlier frame is NOT detected at all — a whole missing AU (jump of >1 frame interval in RTP timestamp) currently goes unnoticed. Detecting that is part of this item.
+- **Acceptance criteria:**
+  - At ~1 Mbps with several percent loss, metrics CSV must show NACKs sent and RTX packets received → two new CSV counters needed for verification (`rtcp_nack_sent`, `rtx_packets_received` or similar). CSV HEADER in `src/streaming/video/metrics_log.rs`; analyser in parent repo's `scripts/analyze_metrics.py`.
+  - Console's retransmissions must actually arrive — verifiable on hardware by watching those counters climb.
+  - Subjective: artefacts should stop persisting for seconds at low bitrate; picture should hold/freeze instead of showing macroblocking.
 
 ### 9. 30/60 fps switch: only untried lever is clientdevicecapabilities
 - The switch is inert through every path tried so far. It feeds the SDP
