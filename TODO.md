@@ -172,9 +172,37 @@
 - **Status**: Fixed in code. First session on this build is the hardware test.
   Watch `decode_errors` and `enc_width`/`enc_height` in the metrics CSV to
   verify Vita HW decoder handles Main (CABAC) without errors.
-- **Note**: Console does NOT support High (no High PT in Chrome answer).
-  Main is the ceiling. High entries (`64001f`/`640020`) kept as-is for parity
-  with Chrome's offer but will not be negotiated.
+- **Console H.264 capability set (measured)**: exactly Baseline (`4200`),
+  Constrained Baseline (`42e0`), Main (`4d00`). **High (`6400`) and High 4:4:4
+  (`f400`) are NOT supported**.
+- **Evidence A** (Chrome capture, `chrome-dumps/webrtc_internals_dump.txt`,
+  `PeerConnections['23-2'].updateLog[11]` = Chrome offer, `updateLog[27]` = console
+  answer): Chrome offered H.264 at PTs 39 (`4d001f`, pm=0), 41/43 (`f4001f`),
+  102/104 (`42001f`), 108/114 (`42e01f`), 116 (`4d001f`, pm=1) and 118/120
+  (`64001f`). Console answered only 39, 102, 104, 108, 114, 116 — omitting 41,
+  43, 118, 120. It answered Main as `4d002a` (matches on profile_idc + constraint
+  flags, ignores level, raises level to encoder needs).
+- **Evidence B** (real Vita session, High selected in settings): our offer had PT
+  102 (`profile-level-id=64001f`, High) + PT 103 (`42e01f`, Constrained Baseline
+  fallback). Console answered **only PT 103** with `profile-level-id=42e02a` — it
+  refused the High payload type and accepted the Baseline fallback. The fallback
+  is why nothing failed loudly; "no decode errors" is NOT evidence High was
+  negotiated.
+- **Evidence C** (why Main also silently downgraded before b9cbe82): our offer
+  declared `4de01f` (constraint_set0=1 = Baseline-compatible), so that PT matched
+  the console's Baseline capability and the console answered Baseline at the SAME
+  PT number (102) with `42e02a`. Fixed to `4d001f` in commit b9cbe82.
+- **Verification method** (a profile downgrade is silent): the ONLY way to confirm
+  what was actually negotiated is the answer SDP dumped to the device at
+  `ux0:data/xcloud-rust/last-answer.sdp` (pull over FTP).
+  - `profile-level-id=4d002a` = Main accepted
+  - `profile-level-id=42e02a` = Constrained Baseline (a downgrade)
+  - `profile-level-id=64002a` = High accepted (never observed)
+- **Our fmtp extras** (`max-fr`, `max-fs`, `max-qp`) are NOT the cause of these
+  refusals — Chrome's clean High PT (none of those params) was refused too.
+- **Note**: Main is the ceiling. High entries (`64001f`/`640020`) kept as-is for
+  parity with Chrome's offer but will not be negotiated. CABAC support on the
+  Vita HW decoder is still unverified — watch `decode_errors` in metrics CSV.
 
 ### 3. RSSI-Based Adaptive Bitrate (Disabled - NetCtl Crash)
 - **Issue**: `sceNetCtlInit()` causes hard crash on some Vita units
