@@ -2,6 +2,8 @@ use crate::App;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::draw_hold_progress_ring;
 use crate::i18n::I18n;
+use crate::api_xbox::streaming::control::input::{PROBE_COUNTER, PROBE_PRESS_US, SESSION_START};
+use std::time::Instant;
 
 /// Fullscreen video view with debug overlays.
 pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
@@ -47,7 +49,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
             let bits = parts.join("  ");
 
             if !bits.is_empty() {
-egui::Area::new(egui::Id::new("fps_overlay"))
+                egui::Area::new(egui::Id::new("fps_overlay"))
                     .order(egui::Order::Foreground)
                     .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
                     .show(ctx, |ui| {
@@ -60,6 +62,82 @@ egui::Area::new(egui::Id::new("fps_overlay"))
                         });
                     });
             }
+        }
+
+        // Latency probe overlay - shows a white square and timer when the
+        // probe button (Menu) is pressed, allowing end-to-end latency measurement
+        // via camera flash + stopwatch. The overlay is composited onto presented
+        // video frames, so if the video stalls the counter cannot update and would
+        // under-read. That is acceptable (and itself a signal).
+        if app.settings.latency_probe && !streaming.status.is_empty() {
+            let press_us = PROBE_PRESS_US.load(std::sync::atomic::Ordering::Relaxed);
+            let counter = PROBE_COUNTER.load(std::sync::atomic::Ordering::Relaxed);
+            let mut display_text = String::new();
+            let mut square_color = egui::Color32::from_rgb(64, 64, 64);  // dark by default
+            let mut frozen = false;
+
+            if press_us > 0 {
+                let now_us = Instant::now().duration_since(*SESSION_START.get().expect("SESSION_START should be initialized")).as_micros() as u64;
+                let elapsed_us = now_us.saturating_sub(press_us);
+                let elapsed_ms = elapsed_us.saturating_div(1000);
+
+                // Square turns white for first ~150ms after press
+                if elapsed_us < 150_000 {
+                    square_color = egui::Color32::WHITE;
+                }
+
+                // Freeze display at >= 2000ms; show frozen value
+                if elapsed_ms >= 2000 {
+                    display_text = format!("{} ms (frozen)", 2000);
+                    frozen = true;
+                } else {
+                    display_text = format!("{} ms", elapsed_ms);
+                }
+            } else {
+                display_text = "--- ms".to_owned();
+            }
+
+            // Small line showing the probe counter and the button being used
+            let counter_text = if counter > 0 {
+                format!("Probe #{}  Menu button", counter)
+            } else {
+                "Menu button".to_owned()
+            };
+
+            egui::Area::new(egui::Id::new("latency_probe_overlay"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::TOP_LEFT, egui::vec2(20.0, 20.0))
+                .show(ctx, |ui| {
+                    // Large filled square (approx 120x120 logical px)
+                    // Bright white for first ~150ms after probe press, dark otherwise
+                    let rect_size = egui::vec2(120.0, 120.0);
+                    let rect_pos = egui::pos2(20.0, 20.0);
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(rect_pos, rect_size),
+                        8.0,
+                        square_color,
+                    );
+
+                    // Large text readout (48 pt) of microseconds-since-press formatted as milliseconds
+                    let text_pos = egui::pos2(30.0, 50.0);
+                    ui.painter().text(
+                        text_pos,
+                        egui::Align2::CENTER_TOP,
+                        egui::RichText::new(&display_text)
+                            .size(48.0),
+                        egui::Color32::WHITE,
+                    );
+
+                    // Small line showing the probe counter and the button being used
+                    let counter_pos = egui::pos2(30.0, 100.0);
+                    ui.painter().text(
+                        counter_pos,
+                        egui::Align2::CENTER_TOP,
+                        egui::RichText::new(&counter_text)
+                            .size(16.0),
+                        egui::Color32::LIGHT_GRAY,
+                    );
+                });
         }
 
         // Full debug overlay (left side, 2 columns, semi-transparent bg, non-zero hidden)
@@ -119,90 +197,4 @@ egui::Area::new(egui::Id::new("fps_overlay"))
             .show(ctx, |ui| {
                 draw_hold_progress_ring(ui, progress);
             });
-    }
-}
-
-/// Extract the value of `key` from the whitespace-separated status line.
-///
-/// Token-based so a shorter key cannot match inside a longer one: `st:` (TWCC
-/// stride) must not match the `rst:` token, which previously made the `Strd:`
-/// row display the reset count.
-fn extract_field(status: &str, key: &str) -> String {
-    status
-        .split_whitespace()
-        .find_map(|token| token.strip_prefix(key))
-        .map(str::to_owned)
-        .unwrap_or_default()
-}
-
-/// Converts a raw microsecond HUD value to a millisecond string for display.
-/// Falls back to the original text when the value is not a plain integer.
-fn us_to_ms(value: &str) -> String {
-    value
-        .parse::<u64>()
-        .map(|us| (us / 1000).to_string())
-        .unwrap_or_else(|_| value.to_owned())
-}
-
-/// Build curated debug rows (2 columns, fixed positions, permanently exclude always-zero fields).
-fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(String, Option<String>)> {
-    let f = |key: &str| extract_field(status, key);
-    let dp = f("d/p:");
-    let da = f("d/a:");
-    let repl = f("repl:");
-    let skip = f("skip:");
-    let hwb = f("hwb:");
-    let lag = f("lag:");
-    let bw = f("bw:");
-    let lagmax = f("lagMax:");
-    let fl = f("fl:");
-    let rs = f("rs:");
-    let rst = f("rst:");
-    let hold = f("hold:");
-    let drop = f("drop:");
-    let tw_s = f("tw:");
-    let st = f("st:");
-    let pick = f("pick:");
-
-use crate::settings::H264Profile;
-    let profile_label = match settings.video_h264_profile {
-        H264Profile::Baseline => "Base",
-        H264Profile::Main => "Main",
-        H264Profile::High => "High",
-    };
-
-    vec![
-        (format!("Dec/Pres:{}", dp),   Some(format!("Dec/Pip:{}us", da))),
-        (format!("Repl:{}", repl),      Some(format!("Skip:{}", skip))),
-        (format!("HWbuf:{}", hwb),      Some(format!("Lag:{}ms", us_to_ms(&lag)))),
-        (format!("BW:{}kbps", bw),      Some(format!("LagMx:{}ms", us_to_ms(&lagmax)))),
-        (format!("Resync:{}", rs),      Some(format!("Flush:{}", fl))),
-        (format!("TWCC:{}", tw_s),      Some(format!("Strd:{}", st))),
-        (format!("Pick:{}us", pick),    Some(format!("Prof:{}", profile_label))),
-        (format!("Drop:{}", drop),      Some(format!("Hold:{}", hold))),
-        (format!("Rst:{}", rst),        None),
-    ]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::extract_field;
-
-    #[test]
-    fn extracts_adjacent_and_similar_field_names() {
-        let status = "d/p:60/58 rs:3 rst:7 wk:0 ab:0 hold:0/1/0 tw:10/20/30 st:42 md:0";
-        assert_eq!(extract_field(status, "rs:"), "3");
-        assert_eq!(extract_field(status, "rst:"), "7");
-        assert_eq!(extract_field(status, "st:"), "42");
-        assert_eq!(extract_field(status, "hold:"), "0/1/0");
-        assert_eq!(extract_field(status, "missing:"), "");
-    }
-
-    #[test]
-    fn extracts_fields_across_the_two_summary_lines() {
-        let status = "d/p:60/58 lag:12345 lagMax:67890 bw:2500\nrs:3 rst:7 st:42";
-        assert_eq!(extract_field(status, "lag:"), "12345");
-        assert_eq!(extract_field(status, "lagMax:"), "67890");
-        assert_eq!(extract_field(status, "bw:"), "2500");
-    }
 }

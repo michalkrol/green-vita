@@ -35,6 +35,7 @@ pub enum Command {
     SetTwccDelayInjection(bool),
     SetTwccDelayRampMax(u8),
     SetPeriodicKeyframe(bool),
+    SetLatencyProbe(bool),
 }
 
 #[derive(Clone)]
@@ -58,6 +59,7 @@ enum SettingsRow {
     RembIntervalMs(u32),
     TwccDelayInjection(bool),
     TwccDelayRampMax(u8),
+    LatencyProbe(bool),
     Version,
     Back,
 }
@@ -414,7 +416,18 @@ row_index += 1;
                         );
                     }
                     row_index += 1;
-                }
+
+                    if checkbox_row(
+                        ui,
+                        selected_index == row_index,
+                        app.settings.latency_probe,
+                        i18n.text("settings-latency-probe"),
+                    ) {
+                        commands.push(Command::SetLatencyProbe(!app.settings.latency_probe).into());
+                    }
+                    row_index += 1;
+
+                    if checkbox_row(
 
                 if checkbox_row(
                     ui,
@@ -710,6 +723,9 @@ impl App {
             SettingsRow::StreamFpsOverlay(enabled) => {
                 return self.handle_settings_command(Command::SetShowFpsOverlay(!enabled));
             }
+            SettingsRow::LatencyProbe(enabled) => {
+                return self.handle_settings_command(Command::SetLatencyProbe(!enabled));
+            }
 SettingsRow::SwapShouldersTriggers(enabled) => {
                 return self.handle_settings_command(Command::SetSwapShouldersTriggers(!enabled));
             }
@@ -896,6 +912,7 @@ Command::SetHardBandwidthCap(enabled) => {
             Command::SetUnlockVideoFps(enabled) => { self.settings.unlock_video_fps = enabled; self.settings.save(); }
             Command::SetShowStreamDebugInfo(enabled) => { self.settings.show_stream_debug_info = enabled; self.settings.save(); }
             Command::SetShowFpsOverlay(enabled) => { self.settings.show_fps_overlay = enabled; self.settings.save(); }
+            Command::SetLatencyProbe(enabled) => { self.settings.latency_probe = enabled; self.settings.save(); }
             Command::SetVideoBitrateCap(kbps) => {
                 self.settings.video_bitrate_kbps = kbps.min(15_000);
                 self.settings.save();

@@ -167,6 +167,15 @@ pub struct Settings {
     pub custom_twcc_delay_injection: bool,
     pub custom_twcc_delay_ramp_max: u8,
     pub custom_periodic_keyframe_enabled: bool,
+    /// When enabled, shows a latency probe overlay on the streaming screen.
+    /// When the probe button (Menu) is pressed, a white square appears for
+    /// ~150ms and a timer counts up in milliseconds (freezing at ~2000ms).
+    /// The frozen value at the moment of game reaction is the end-to-end loop
+    /// latency (input -> console -> game -> encode -> transmit -> decode -> present).
+    /// Note: the overlay is composited onto presented video frames, so if the
+    /// video stalls the counter cannot update and would under-read. That is
+    /// acceptable (and itself a signal), but say so in the comment.
+    pub latency_probe: bool,
     /// When enabled, sends RTCP REMB at 100ms at the user's configured bitrate
     /// cap to force the Xbox encoder to stay within the bandwidth ceiling.
     /// When disabled, REMB stays at 15 Mbps (no client-side cap).
@@ -216,6 +225,7 @@ impl Default for Settings {
             unlock_video_fps: false,
             show_stream_debug_info: false,
             show_fps_overlay: false,
+            latency_probe: false,
             home_console_ip: None,
             video_bitrate_kbps: 2_000,
             video_h264_profile: H264Profile::default(),

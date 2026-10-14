@@ -85,6 +85,29 @@ pub(crate) fn uptime_ms() -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
 
+/// Probe press tracking for latency measurement.
+///
+/// - `probe_press_us`: atomic microsecond timestamp of the most recent probe press
+///   (relative to process start, 0 if not currently pressed).
+/// - `probe_counter`: monotonically increasing counter incremented on each probe press.
+/// - `probe_log`: capped log file writer recording each press timestamp (capped at ~200 lines).
+static PROBE_PRESS_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PROBE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Writes a probe press timestamp to the capped log at `ux0:data/xcloud-rust/latency-probe.log`.
+/// Cap at ~200 lines; never panics or blocks on IO error.
+fn probe_log_press(us_since_start: u64) {
+    // Cap at ~200 lines total
+    let current = PROBE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if current >= 200 {
+        return;
+    }
+    let _ = crate::fs_utils::write_file_truncating(
+        "ux0:data/xcloud-rust/latency-probe.log",
+        format!("{}\n", us_since_start),
+    );
+}
+
 fn uptime_ms_u32_since(at: Instant) -> u32 {
     let start = SESSION_START.get_or_init(Instant::now);
     at.checked_duration_since(*start)

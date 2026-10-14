@@ -5,6 +5,7 @@ use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH};
 use bytes::BytesMut;
 use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
 use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use rtc::data_channel::RTCDataChannelId;
 
@@ -33,7 +34,16 @@ pub(super) struct XboxRtcProtocol {
     flush_size_toggle: bool,
     last_input_sent_at: Option<Instant>,
     last_gamepad: Option<GamepadFrame>,
+    last_menu_button: Option<f32>,
 }
+
+/// Probe press tracking for latency measurement.
+///
+/// - `probe_press_us`: atomic microsecond timestamp of the most recent probe press
+///   (relative to process start, 0 if not currently pressed).
+/// - `probe_counter`: monotonically increasing counter incremented on each probe press.
+static PROBE_PRESS_US: AtomicU64 = AtomicU64::new(0);
+static PROBE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl XboxRtcProtocol {
     pub(super) fn new(channel_ids: ChannelIds, video_fps: u32) -> Self {
@@ -48,6 +58,7 @@ impl XboxRtcProtocol {
             flush_size_toggle: false,
             last_input_sent_at: None,
             last_gamepad: None,
+            last_menu_button: None,
         }
     }
 
@@ -84,6 +95,30 @@ impl XboxRtcProtocol {
         {
             return false;
         }
+
+        // --- Latency probe: detect rising edge of Menu button ---
+        // Fire on the rising edge (0 -> >0) at the moment the report is sent,
+        // so the timestamp includes our own send overhead.
+        // Note: the overlay is composited onto presented video frames, so if the
+        // video stalls the counter cannot update and would under-read. That is
+        // acceptable (and itself a signal), but say so in the comment.
+        let menu_was_pressed = self.last_menu_button.unwrap_or(0.0) > 0.0;
+        let menu_now_pressed = frame.menu > 0.0;
+        if menu_now_pressed && !menu_was_pressed {
+            // Rising edge detected: store probe press timestamp (microseconds since process start)
+            let start_us = now.duration_since(*crate::api_xbox::streaming::control::input::SESSION_START.get().expect("SESSION_START should be initialized")).as_micros() as u64;
+            PROBE_PRESS_US.store(start_us, Ordering::Relaxed);
+            // Increment the monotonically increasing probe counter
+            PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            // Record the timestamp in the capped log file (~200 lines)
+            let _ = crate::fs_utils::write_file_truncating(
+                "ux0:data/xcloud-rust/latency-probe.log",
+                format!("{}\n", start_us),
+            );
+        }
+        self.last_menu_button = Some(frame.menu);
+        // ------------------------------------------------
+
         self.last_input_sent_at = Some(now);
         let Some(bytes) = self.input_queue.queue_gamepad_frames([frame.clone()], true) else {
             return false;
