@@ -165,6 +165,16 @@ impl VideoDecodeWorker {
         self.generation.fetch_add(1, Ordering::AcqRel);
         metrics::METRICS.resyncs.fetch_add(1, Ordering::Relaxed);
     }
+
+    /// Drops every access unit still queued (catch-up jump to live). The decoder is
+    /// untouched; the caller arms a keyframe hold, so the next decoded AU is an IDR.
+    pub fn discard_queued_access_units(&self) -> usize {
+        let (queue, _) = &*self.access_units;
+        let mut guard = queue.lock().unwrap();
+        let dropped = guard.len();
+        guard.clear();
+        dropped
+    }
 }
 
 impl Drop for VideoDecodeWorker {

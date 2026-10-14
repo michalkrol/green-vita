@@ -6,6 +6,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_cha
 
 pub const AUDIO_SAMPLE_RATE: i32 = 48_000;
 const AUDIO_CHANNELS: usize = 2;
+const AUDIO_RTP_CLOCK_RATE: u32 = 48_000; // Opus RTP clock
 
 const AUDIO_BYTES_PER_SECOND: u32 = AUDIO_SAMPLE_RATE as u32 * AUDIO_CHANNELS as u32 * 2;
 const MAX_QUEUED_AUDIO_BYTES: u32 = AUDIO_BYTES_PER_SECOND * 240 / 1_000;
@@ -149,10 +150,15 @@ impl AudioRenderer {
                         self.queue.pause();
                         self.queue.clear();
                         self.started = false;
+                        METRICS.audio_queue_clears.fetch_add(1, Ordering::Relaxed);
                     }
                     if let Err(error) = self.queue.queue_audio(&samples) {
                         eprintln!("Failed to queue SDL audio: {error}");
                     }
+                    let frames = (samples.len() / AUDIO_CHANNELS) as u64; // interleaved stereo i16
+                    crate::streaming::video::metrics::METRICS.audio_samples_played.fetch_add(frames, Ordering::Relaxed);
+                    let queued_ms = (self.queue.size() as u64) * 1000 / u64::from(AUDIO_BYTES_PER_SECOND);
+                    crate::streaming::video::metrics::METRICS.audio_queue_ms.store(queued_ms, Ordering::Relaxed);
                     if !self.started && self.queue.size() >= AUDIO_START_BUFFER_BYTES {
                         self.queue.resume();
                         self.started = true;

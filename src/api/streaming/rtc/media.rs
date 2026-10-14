@@ -253,6 +253,11 @@ impl VideoReceiver {
         self.rtp.reset_lag_anchor();
     }
 
+    /// Reset the slip anchor and associated metrics to session start state.
+    pub(crate) fn reset_slip_anchor(&mut self) {
+        self.rtp.reset_slip_anchor();
+    }
+
     pub(crate) fn request_keyframe(&self, peer: &mut RTCPeerConnection) {
         if let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc)
             && let Some(mut receiver) = peer.rtp_receiver(receiver_id)

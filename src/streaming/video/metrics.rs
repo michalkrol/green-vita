@@ -4,6 +4,14 @@ pub(crate) struct VideoMetrics {
     pub(crate) rtp_assembly_sum_us: AtomicU64,
     pub(crate) rtp_assembly_count: AtomicU64,
     pub(crate) rtp_assembly_max_us: AtomicU64,
+    pub(crate) catchup_aus_skipped: AtomicU64,
+    pub(crate) catchup_lag_max_us: AtomicU64,
+    pub(crate) audio_slip_us: AtomicI64,
+    pub(crate) audio_slip_max_us: AtomicU64,
+    pub(crate) audio_samples_played: AtomicU64,
+    pub(crate) audio_queue_ms: AtomicU64,
+    pub(crate) audio_builder_drops: AtomicU64,
+    pub(crate) audio_queue_clears: AtomicU64,
     pub(crate) decode_us: AtomicU64,
     pub(crate) pipeline_age_us: AtomicU64,
     pub(crate) decoded: AtomicU64,
@@ -156,6 +164,14 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     rtx_read_rtx_pt: AtomicU64::new(0),
     rtx_read_rewritten: AtomicU64::new(0),
     rtx_read_unmapped: AtomicU64::new(0),
+    catchup_aus_skipped: AtomicU64::new(0),
+    catchup_lag_max_us: AtomicU64::new(0),
+    audio_slip_us: AtomicI64::new(0),
+    audio_slip_max_us: AtomicU64::new(0),
+    audio_samples_played: AtomicU64::new(0),
+    audio_queue_ms: AtomicU64::new(0),
+    audio_builder_drops: AtomicU64::new(0),
+    audio_queue_clears: AtomicU64::new(0),
 };
 
 /// One drained sample of every metric, taken once per second.
@@ -203,6 +219,13 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) stream_slip_us: i64,
     pub(crate) stream_slip_max_us: u64,
     pub(crate) stream_slip_reanchor_count: u64,
+    // Task B audio metrics
+    pub(crate) audio_slip_us: i64,
+    pub(crate) audio_slip_max_us: u64,
+    pub(crate) audio_samples_played: u64,
+    pub(crate) audio_queue_ms: u64,
+    pub(crate) audio_builder_drops: u64,
+    pub(crate) audio_queue_clears: u64,
     // Loss recovery metrics (Stage 3)
     pub(crate) rtcp_nack_sent: u64,
     pub(crate) rtx_packets_received: u64,
@@ -269,6 +292,15 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let stream_slip_us = METRICS.stream_slip_us.load(Ordering::Relaxed);
     let stream_slip_max_us = METRICS.stream_slip_max_us.swap(0, Ordering::Relaxed);
     let stream_slip_reanchor_count = METRICS.stream_slip_reanchor_count.swap(0, Ordering::Relaxed);
+    // Task B audio metrics
+    let audio_slip_us = METRICS.audio_slip_us.load(Ordering::Relaxed);
+    let audio_slip_max_us = METRICS.audio_slip_max_us.swap(0, Ordering::Relaxed);
+    let audio_samples_played = METRICS.audio_samples_played.load(Ordering::Relaxed);
+    let audio_queue_ms = METRICS.audio_queue_ms.load(Ordering::Relaxed);
+    let audio_builder_drops = METRICS.audio_builder_drops.load(Ordering::Relaxed);
+    let audio_queue_clears = METRICS.audio_queue_clears.load(Ordering::Relaxed);
+    // Reset all session metrics to zero (called at stream start).
+    reset_session_metrics();
     // Loss recovery metrics (Stage 3)
     let rtcp_nack_sent = METRICS.rtcp_nack_sent.swap(0, Ordering::Relaxed);
     let rtx_packets_received = METRICS.rtx_packets_received.swap(0, Ordering::Relaxed);
@@ -329,6 +361,13 @@ pub fn drain_metrics() -> MetricsSnapshot {
         stream_slip_us,
         stream_slip_max_us,
         stream_slip_reanchor_count,
+        // Task B audio metrics
+        audio_slip_us,
+        audio_slip_max_us,
+        audio_samples_played,
+        audio_queue_ms,
+        audio_builder_drops,
+        audio_queue_clears,
         rtcp_nack_sent,
         rtx_packets_received,
         rtx_packets_seen,
@@ -344,6 +383,23 @@ pub fn drain_metrics() -> MetricsSnapshot {
         rtx_read_rewritten,
         rtx_read_unmapped,
     }
+}
+
+/// Reset all per-session metrics to zero (called at stream start via RtcSession::new).
+/// This kills the stale-global path that produced stream_slip_us ≈ -700 ms in the
+/// first CSV rows of a fresh session.
+pub(crate) fn reset_session_metrics() {
+    METRICS.stream_slip_us.store(0, Ordering::Relaxed);
+    METRICS.stream_slip_max_us.store(0, Ordering::Relaxed);
+    METRICS.stream_slip_reanchor_count.store(0, Ordering::Relaxed);
+    METRICS.catchup_aus_skipped.store(0, Ordering::Relaxed);
+    METRICS.catchup_lag_max_us.store(0, Ordering::Relaxed);
+    METRICS.audio_slip_us.store(0, Ordering::Relaxed);
+    METRICS.audio_slip_max_us.store(0, Ordering::Relaxed);
+    METRICS.audio_samples_played.store(0, Ordering::Relaxed);
+    METRICS.audio_queue_ms.store(0, Ordering::Relaxed);
+    METRICS.audio_builder_drops.store(0, Ordering::Relaxed);
+    METRICS.audio_queue_clears.store(0, Ordering::Relaxed);
 }
 
 /// Formats the two-line HUD summary from an already-drained snapshot.

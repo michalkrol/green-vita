@@ -35,6 +35,12 @@ const TWCC_MAX_ANNOTATIONS: usize = 200;
 /// next IDR.
 const AU_ASSEMBLY_TIMEOUT: Duration = Duration::from_millis(35);
 
+/// Catch-up: if a completed access unit lags the newest RTP timestamp we have
+/// seen (any packet of a newer AU) by more than this, skip it and jump to live
+/// instead of presenting the backlog.  ~6 frames at 60 fps; tolerates reordering.
+/// 0 disables the mechanism entirely (A/B on hardware).
+const AU_CATCHUP_LAG_THRESHOLD_US: u64 = 100_000;
+
 /// Stall expiry for an access unit whose marker bit never arrived: abandon it
 /// once no further packets have been seen for this long.  Measured from the
 /// LAST observed packet (not the first) — first-packet expiry caused a resync
@@ -73,6 +79,10 @@ pub(crate) struct VideoSampleStats {
 pub(super) struct AudioRtp {
     samples: SampleBuilder<OpusPacket>,
     payload_type: u8,
+    slip_anchor: Option<(Instant, u32)>,
+    slip_baseline_us: i64,
+    slip_max_magnitude_us: u64,
+    slip_reanchor_count: u64,
 }
 
 impl AudioRtp {
@@ -81,6 +91,10 @@ impl AudioRtp {
             samples: SampleBuilder::new(AUDIO_MAX_LATE_PACKETS, OpusPacket, sample_rate)
                 .with_max_time_delay(std::time::Duration::from_millis(80)),
             payload_type,
+            slip_anchor: None,
+            slip_baseline_us: 0,
+            slip_max_magnitude_us: 0,
+            slip_reanchor_count: 0,
         }
     }
 
@@ -89,11 +103,18 @@ impl AudioRtp {
             return;
         }
 
+        let arrived_at = Instant::now();
         self.samples.push(packet);
         while audio_packets.len() < MAX_PENDING_AUDIO_PACKETS {
             let Some(sample) = self.samples.pop() else {
                 break;
             };
+            let slip_us = slip_sample(&mut self.slip_anchor, &mut self.slip_baseline_us,
+                &mut self.slip_max_magnitude_us, &mut self.slip_reanchor_count,
+                sample.packet_timestamp, arrived_at, AUDIO_RTP_CLOCK_RATE);
+            METRICS.audio_slip_us.store(slip_us, Ordering::Relaxed);
+            METRICS.audio_slip_max_us.fetch_max(slip_us.unsigned_abs(), Ordering::Relaxed);
+            METRICS.audio_builder_drops.fetch_add(u64::from(sample.prev_dropped_packets), Ordering::Relaxed);
             audio_packets.push(sample.data);
         }
     }
@@ -128,6 +149,10 @@ pub(crate) struct VideoRtp {
     /// post-hoc detection of discontinuities that could masquerade as latency
     /// accumulation.
     slip_reanchor_count: u64,
+    /// RTP timestamp of the newest non-RTX access unit received in this session.
+    newest_received_ts: Option<u32>,
+    /// Track whether a catch-up skip was recently armed.
+    catchup_armed: bool,
     total_bytes: u64,
     twcc_annotations: Vec<(u16, Instant)>,
     /// Sliding-window bitrate tracker: (bytes_snapshot, timestamp) pairs sampled
@@ -190,19 +215,25 @@ impl PendingVideoFrame {
     /// straddles the 65535 -> 0 boundary produced roughly 65,000 bogus entries,
     /// and its post-marker loop could overrun the same way.  Everything here is
     /// measured as a wrapping distance from the marker, exactly like `assemble`.
+    /// Test-only convenience wrapper; production passes the expected sequence.
+    #[cfg(test)]
     fn missing_sequences(&self) -> Vec<u16> {
+        self.missing_sequences_from(None)
+    }
+
+    fn missing_sequences_from(&self, expected_first: Option<u16>) -> Vec<u16> {
         let Some(marker_sequence) = self.marker_sequence() else {
             return Vec::new();
         };
         // Expected range starts at the sequence we still owe from the previous
-        // AU when that is known, otherwise at the lowest packet we received.
+        // AU when the caller knows it, otherwise at the lowest packet received.
         let lowest_received = self
             .packets
             .iter()
             .map(|packet| packet.header.sequence_number)
             .min_by_key(|sequence| marker_sequence.wrapping_sub(*sequence))
             .unwrap_or(marker_sequence);
-        let first = self.next_sequence.unwrap_or(lowest_received);
+        let first = expected_first.unwrap_or(lowest_received);
 
         let span = marker_sequence.wrapping_sub(first) as usize + 1;
         // Implausible span (stale marker, or the range wrapped oddly): let the
@@ -293,6 +324,8 @@ impl VideoRtp {
             slip_baseline_us: 0,
             slip_max_magnitude_us: 0,
             slip_reanchor_count: 0,
+            newest_received_ts: None,
+            catchup_armed: false,
             total_bytes: 0,
             twcc_annotations: Vec::with_capacity(TWCC_MAX_ANNOTATIONS),
             bitrate_sample_bytes: 0,
@@ -379,6 +412,11 @@ impl VideoRtp {
         }
         self.total_bytes += 12 + packet.payload.len() as u64;
 
+        // Track the newest non-RTX RTP timestamp for catch-up decisions.
+        if self.newest_received_ts.is_none_or(|newest| timestamp_is_newer(packet.header.timestamp, newest)) {
+            self.newest_received_ts = Some(packet.header.timestamp);
+        }
+
         let packet_timestamp = packet.header.timestamp;
         if let Some(pending) = &self.pending
             && pending.timestamp != packet_timestamp
@@ -427,7 +465,7 @@ impl VideoRtp {
                 {
                     // Capture missing sequence numbers for NACK generation.
                     // This replaces the old single-marker approach with actual gap data.
-                    let missing = pending.missing_sequences();
+                    let missing = pending.missing_sequences_from(self.next_sequence);
                     if !missing.is_empty() {
                         self.pending_nack_sequences.extend(missing);
                     }
@@ -453,6 +491,7 @@ impl VideoRtp {
             } => (data, marker_sequence),
         };
         let completed = self.pending.take().expect("assembled pending video frame");
+        let au_timestamp = completed.timestamp;
         self.update_stream_lag(completed.timestamp, completed.first_packet_at);
         self.update_stream_slip(completed.timestamp, completed.first_packet_at);
         self.update_capture_to_arrival(completed.timestamp, completed.first_packet_at);
@@ -522,6 +561,28 @@ impl VideoRtp {
             self.damage_score = 0;
         } else if !frame_was_damaged {
             self.damage_score = self.damage_score.saturating_sub(1);
+        }
+
+        if let Some(lag_us) = catchup_decision(self.newest_received_ts, au_timestamp, unit.has_idr) {
+            // Jump to live: drop this whole AU and let the existing keyframe hold keep
+            // the last good frame on screen until a clean reference (IDR) arrives.
+            self.waiting_for_keyframe = true;
+            self.damage_score = 0;
+            self.catchup_armed = true;
+            *keyframe_requested = true;
+            crate::streaming::video::metrics::METRICS
+                .catchup_aus_skipped
+                .fetch_add(1, Ordering::Relaxed);
+            crate::streaming::video::metrics::METRICS
+                .catchup_lag_max_us
+                .fetch_max(lag_us, Ordering::Relaxed);
+            let queued = worker.discard_queued_access_units();
+            if queued > 0 {
+                crate::streaming::video::metrics::METRICS
+                    .catchup_aus_skipped
+                    .fetch_add(queued as u64, Ordering::Relaxed);
+            }
+            return stats;
         }
 
         if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
@@ -648,6 +709,29 @@ impl VideoRtp {
         } else {
             // RTX recovery succeeded - reduce damage score since we filled a gap
             self.damage_score = self.damage_score.saturating_sub(1);
+        }
+
+        if let Some(lag_us) = catchup_decision(self.newest_received_ts, packet.header.timestamp, unit.has_idr) {
+            // Jump to live: drop this whole AU and let the existing keyframe hold keep
+            // the last good frame on screen until a clean reference (IDR) arrives.
+            // RTX-recovered AUs are old by definition; skip forward rather than re-inject staleness.
+            self.waiting_for_keyframe = true;
+            self.damage_score = 0;
+            self.catchup_armed = true;
+            *keyframe_requested = true;
+            crate::streaming::video::metrics::METRICS
+                .catchup_aus_skipped
+                .fetch_add(1, Ordering::Relaxed);
+            crate::streaming::video::metrics::METRICS
+                .catchup_lag_max_us
+                .fetch_max(lag_us, Ordering::Relaxed);
+            let queued = worker.discard_queued_access_units();
+            if queued > 0 {
+                crate::streaming::video::metrics::METRICS
+                    .catchup_aus_skipped
+                    .fetch_add(queued as u64, Ordering::Relaxed);
+            }
+            return stats;
         }
 
         if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
@@ -883,6 +967,14 @@ impl VideoRtp {
         self.stream_clock_anchor = None;
         self.lag_baseline_us = u64::MAX;
     }
+
+    /// Reset the session-fixed slip anchor to None (effectively re-anchoring at the next AU).
+    pub(crate) fn reset_slip_anchor(&mut self) {
+        self.slip_anchor = None;
+        self.slip_baseline_us = 0;
+        self.slip_max_magnitude_us = 0;
+        self.slip_reanchor_count = 0;
+    }
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
     pub(crate) fn twcc_median_stride(&self) -> u16 {
         let mut gaps: Vec<u16> = self
@@ -1008,10 +1100,10 @@ fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
 }
 
 /// Microseconds of stream time between two RTP timestamps, wrapping-safe.
-fn rtp_span_us(anchor_timestamp: u32, au_timestamp: u32) -> u64 {
+fn rtp_span_us(anchor_timestamp: u32, au_timestamp: u32, clock_rate: u32) -> u64 {
     u64::from(au_timestamp.wrapping_sub(anchor_timestamp))
         .saturating_mul(1_000_000)
-        / u64::from(VIDEO_RTP_CLOCK_RATE)
+        / u64::from(clock_rate)
 }
 
 /// Drift-tolerant schedule-slip filter.
@@ -1079,7 +1171,7 @@ fn schedule_slip_us(
 
 /// Signed absolute slip relative to a session-fixed anchor.
 ///
-/// Computes: (au_at - anchor_at).as_micros() - rtp_span_us(anchor_ts, au_ts)
+/// Computes: (au_at - anchor_at).as_micros() - rtp_span_us(anchor_ts, au_ts, clock_rate)
 /// Result is SIGNED (i64):
 ///   - positive  = real time elapsed more than RTP time (console clock slow, delay accumulating)
 ///   - negative  = real time elapsed less than RTP time (console clock fast)
@@ -1097,6 +1189,7 @@ fn slip_sample(
     reanchor_count: &mut u64,
     au_timestamp: u32,
     au_at: Instant,
+    clock_rate: u32,
 ) -> i64 {
     let Some((anchor_at, anchor_timestamp)) = *anchor else {
         // First video AU of the session: establish the session-fixed anchor.
@@ -1108,7 +1201,7 @@ fn slip_sample(
 
     let elapsed = au_at.saturating_duration_since(anchor_at);
     let actual_us = elapsed.as_micros() as i64;
-    let expected_us = rtp_span_us(anchor_timestamp, au_timestamp) as i64;
+    let expected_us = rtp_span_us(anchor_timestamp, au_timestamp, clock_rate) as i64;
 
     // Timeline discontinuity detection (same guards as lag_sample):
     // - Backward jump: RTP timeline went backwards (encoder rebuild, new SSRC)
@@ -1137,6 +1230,14 @@ fn slip_sample(
     // a discontinuity re-anchors).  This makes the metric an absolute measure
     // of cumulative clock drift since session start.
     slip_us - *baseline_us
+}
+
+/// `Some(lag_us)` = this access unit must be skipped to catch up to live.
+fn catchup_decision(newest: Option<u32>, au_timestamp: u32, has_idr: bool) -> Option<u64> {
+    if AU_CATCHUP_LAG_THRESHOLD_US == 0 || has_idr { return None; }
+    let newest = newest?;
+    let lag_us = rtp_span_us(newest, au_timestamp);
+    (lag_us > AU_CATCHUP_LAG_THRESHOLD_US).then_some(lag_us)
 }
 
 struct AccessUnitInfo {
@@ -1445,5 +1546,68 @@ mod tests {
         // No marker bit set
         let missing = frame.missing_sequences();
         assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn first_sample_after_reset_returns_zero() {
+        let mut anchor = None;
+        let mut baseline = u64::MAX;
+        let t0 = Instant::now();
+        // First sample with anchor None establishes anchor; slip should be 0.
+        assert_eq!(slip_sample(&mut anchor, &mut baseline, 0, t0, AUDIO_RTP_CLOCK_RATE), 0);
+        // Second sample with same cadence (48 kHz: +960 ts, +20 ms real) ≈ 0.
+        let t1 = t0 + Duration::from_millis(20);
+        assert!(slip_sample(&mut anchor, &mut baseline, 960, t1, AUDIO_RTP_CLOCK_RATE).abs() < 1);
+        // Reset anchor, next sample is 0.
+        anchor = None;
+        assert_eq!(slip_sample(&mut anchor, &mut baseline, 0, t1, AUDIO_RTP_CLOCK_RATE), 0);
+    }
+
+    #[test]
+    fn signed_late_check_ts_4800_at_150ms_real_is_50ms() {
+        let anchor = Instant::now();
+        // RTP timestamp +4800 with +150 ms real time → +50 ms slip.
+        let t1 = anchor + Duration::from_millis(150);
+        let slip = slip_sample(&mut None, &mut 0i64, &mut 0u64, &mut 0u64, 4800, t1, AUDIO_RTP_CLOCK_RATE);
+        assert!(slip >= 40 && slip <= 60, "expected slip in [40,60] ms, got {} ms", slip);
+    }
+
+    #[test]
+    fn wrap_near_u32_max() {
+        let anchor = Instant::now();
+        // Anchor near u32::MAX; the next timestamp wraps around.
+        let anchor_ts = u32::MAX - 4800 + 1;
+        let t1 = anchor + Duration::from_millis(1);
+        let slip = slip_sample(&mut anchor, &mut u64::MAX, &mut 0u64, &mut 0u64, 0, t1, anchor_ts, AUDIO_RTP_CLOCK_RATE);
+        assert_eq!(slip, 0);
+    }
+
+    #[test]
+    fn discontinuity_backward_jump_over_1s() {
+        let mut anchor = None;
+        let mut reanchor_count = 0u64;
+        let t0 = Instant::now();
+        // First sample establishes anchor.
+        assert_eq!(slip_sample(&mut anchor, &mut u64::MAX, &mut 0u64, &mut reanchor_count, 0, t0, AUDIO_RTP_CLOCK_RATE), 0);
+        // Backward jump > 1 s → reanchor and return 0.
+        let t1 = t0 + Duration::from_secs(2);
+        let slip = slip_sample(&mut anchor, &mut u64::MAX, &mut 0u64, &mut reanchor_count, u32::MAX, t1, AUDIO_RTP_CLOCK_RATE);
+        assert_eq!(slip, 0);
+        assert_eq!(reanchor_count, 1);
+    }
+
+    #[test]
+    fn catchup_decision_cases() {
+        use crate::api::streaming::rtc::rtp::catchup_decision;
+        // Threshold 0 → None
+        assert_eq!(catchup_decision(None, 0, false), None);
+        // has_idr → None
+        assert_eq!(catchup_decision(Some(0), 0, true), None);
+        // lag below threshold → None
+        assert_eq!(catchup_decision(Some(90_000), 90_000, false), None);
+        // lag above threshold → Some(lag)
+        assert_eq!(catchup_decision(Some(120_000), 90_000, false), Some(30_000));
+        // newest None → None
+        assert_eq!(catchup_decision(None, 90_000, false), None);
     }
 }

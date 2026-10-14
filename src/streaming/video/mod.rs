@@ -15,7 +15,7 @@ pub(crate) const UNLOCKED_VIDEO_FPS: u32 = 60;
 pub(crate) const NUM_TEXTURES: usize = 3;
 
 pub use memory::reserve_decoder_cdram;
-pub(crate) use metrics::{drain_metrics, format_summary};
+pub(crate) use metrics::{drain_metrics, format_summary, reset_session_metrics};
 pub(crate) use metrics_log::{MetricsLog, RowExtras};
 pub use worker::VideoDecodeWorker;
 
