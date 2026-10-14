@@ -197,4 +197,5 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
             .show(ctx, |ui| {
                 draw_hold_progress_ring(ui, progress);
             });
+    }
 }
