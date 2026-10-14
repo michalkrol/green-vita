@@ -6,7 +6,7 @@ use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH};
 use bytes::BytesMut;
 use std::time::{Duration, Instant};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use rtc::data_channel::RTCDataChannelId;
 

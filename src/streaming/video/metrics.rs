@@ -56,11 +56,16 @@ pub(crate) struct VideoMetrics {
     pub(crate) sr_anchor_ntp: AtomicU64,          // NTP timestamp from SR (ms since 1900)
     pub(crate) sr_anchor_rtp_ts: AtomicU64,       // RTP timestamp from SR
     pub(crate) sr_anchor_local_us: AtomicU64,     // Local monotonic time when SR arrived (us since boot)
+    pub(crate) sr_anchor_local_wall_us: AtomicU64, // Client wall clock at SR arrival (us since UNIX epoch)
 
-    // True end-to-end capture-to-arrival latency (microseconds)
+    // Per-second absolute latency metrics (microseconds, signed i64)
+    pub(crate) sr_age_ms: AtomicI64,              // Age of SR anchor in ms
+    pub(crate) sr_clock_offset_ms: AtomicI64,     // Console unix-ms minus client wall-ms
+
+    // True end-to-end capture-to-arrival latency (microseconds, signed i64)
     // Measures console capture queue + transport + assembly; NOT blind to pre-RTP-stamp queue
-    pub(crate) capture_to_arrival_us: AtomicU64,
-    pub(crate) capture_to_arrival_max_us: AtomicU64,
+    pub(crate) capture_to_arrival_us: AtomicI64,
+    pub(crate) capture_to_arrival_max_us: AtomicI64,
 
     // Absolute stream slip metric (microseconds, SIGNED via i64 storage)
     // Measures cumulative divergence between real elapsed time and RTP-timestamp elapsed time
@@ -151,8 +156,11 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     sr_anchor_ntp: AtomicU64::new(0),
     sr_anchor_rtp_ts: AtomicU64::new(0),
     sr_anchor_local_us: AtomicU64::new(0),
-    capture_to_arrival_us: AtomicU64::new(0),
-    capture_to_arrival_max_us: AtomicU64::new(0),
+    sr_anchor_local_wall_us: AtomicU64::new(0),
+    capture_to_arrival_us: AtomicI64::new(0),
+    capture_to_arrival_max_us: AtomicI64::new(0),
+    sr_age_ms: AtomicI64::new(0),
+    sr_clock_offset_ms: AtomicI64::new(0),
     stream_slip_us: AtomicI64::new(0),
     stream_slip_max_us: AtomicU64::new(0),
     stream_slip_reanchor_count: AtomicU64::new(0),
@@ -221,8 +229,9 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) rtcp_rr_loss_fraction: u64,
     pub(crate) rtcp_rr_jitter: u64,
     pub(crate) rtcp_sr_ntp_timestamp: u64,
-    pub(crate) capture_to_arrival_us: u64,
-    pub(crate) capture_to_arrival_max_us: u64,
+    pub(crate) sr_anchor_local_wall_us: u64,
+    pub(crate) capture_to_arrival_us: i64,
+    pub(crate) capture_to_arrival_max_us: i64,
     // Absolute stream slip metrics (microseconds)
     pub(crate) stream_slip_us: i64,
     pub(crate) stream_slip_max_us: u64,
@@ -253,6 +262,9 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) rtx_read_rtx_pt: u64,
     pub(crate) rtx_read_rewritten: u64,
     pub(crate) rtx_read_unmapped: u64,
+    // Task C absolute latency metrics (appended at end to stay in sync with HEADER/cols)
+    pub(crate) sr_age_ms: i64,
+    pub(crate) sr_clock_offset_ms: i64,
 }
 
 /// Drains all per-second metric atomics exactly once and returns a snapshot.
@@ -298,6 +310,7 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let rtcp_rr_loss_fraction = METRICS.rtcp_rr_loss_fraction.load(Ordering::Relaxed);
     let rtcp_rr_jitter = METRICS.rtcp_rr_jitter.load(Ordering::Relaxed);
     let rtcp_sr_ntp_timestamp = METRICS.rtcp_sr_ntp_timestamp.load(Ordering::Relaxed);
+    let sr_anchor_local_wall_us = METRICS.sr_anchor_local_wall_us.load(Ordering::Relaxed);
     let capture_to_arrival_us = METRICS.capture_to_arrival_us.load(Ordering::Relaxed);
     let capture_to_arrival_max_us = METRICS.capture_to_arrival_max_us.swap(0, Ordering::Relaxed);
     // Absolute stream slip metrics (Stage 4)
@@ -330,6 +343,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let rtx_read_rtx_pt = METRICS.rtx_read_rtx_pt.swap(0, Ordering::Relaxed);
     let rtx_read_rewritten = METRICS.rtx_read_rewritten.swap(0, Ordering::Relaxed);
     let rtx_read_unmapped = METRICS.rtx_read_unmapped.swap(0, Ordering::Relaxed);
+    let sr_age_ms = METRICS.sr_age_ms.swap(0, Ordering::Relaxed);
+    let sr_clock_offset_ms = METRICS.sr_clock_offset_ms.swap(0, Ordering::Relaxed);
 
     MetricsSnapshot {
         rtp_assembly_sum_us,
@@ -371,6 +386,7 @@ pub fn drain_metrics() -> MetricsSnapshot {
         rtcp_rr_loss_fraction,
         rtcp_rr_jitter,
         rtcp_sr_ntp_timestamp,
+        sr_anchor_local_wall_us,
         capture_to_arrival_us,
         capture_to_arrival_max_us,
         stream_slip_us,
@@ -399,6 +415,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
         rtx_read_rtx_pt,
         rtx_read_rewritten,
         rtx_read_unmapped,
+    sr_age_ms,
+    sr_clock_offset_ms,
     }
 }
 

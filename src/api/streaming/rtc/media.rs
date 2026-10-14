@@ -547,6 +547,48 @@ impl VideoReceiver {
             self.last_bw_bytes = total;
         }
 
+        // Compute SR-anchored absolute latency metrics once per second.
+        // Requires: SR anchor exists, NTP > 0, and newest received RTP timestamp available.
+        {
+            use crate::streaming::video::metrics::METRICS;
+            let sr_anchor_ntp = METRICS.sr_anchor_ntp.load(Ordering::Relaxed);
+            let sr_anchor_rtp_ts = METRICS.sr_anchor_rtp_ts.load(Ordering::Relaxed);
+            let sr_anchor_local_us = METRICS.sr_anchor_local_us.load(Ordering::Relaxed);
+            let sr_anchor_local_wall_us = METRICS.sr_anchor_local_wall_us.load(Ordering::Relaxed);
+            let newest_received_ts = self.rtp.newest_received_ts;
+
+            if sr_anchor_ntp > 0 && sr_anchor_local_us > 0 && sr_anchor_local_wall_us > 0
+                && newest_received_ts.is_some()
+            {
+                let sr_anchor_ntp_ms = sr_anchor_ntp as u64;
+                // Age of the SR anchor in milliseconds
+                let sr_age_ms = ((PROCESS_START.elapsed().as_micros() as u64 - sr_anchor_local_us) / 1000) as i64;
+                // Console unix ms minus client wall ms: alignment offset
+                let sr_clock_offset_ms = (sr_anchor_ntp_ms - 2_208_988_800_000) as i64
+                    - (sr_anchor_local_wall_us / 1000) as i64;
+                // RTP timestamp delta from SR anchor (90 kHz clock)
+                let newest_rtp_ts = newest_received_ts.unwrap() as u32;
+                let delta_ts = newest_rtp_ts.wrapping_sub(sr_anchor_rtp_ts as u32);
+                // Guard against stale anchor or wrap: >10s delta is invalid
+                if delta_ts <= 900_000 {
+                    // Console media time in microseconds:
+                    //   (NTP unix ms) * 1000 + (RTP delta * 1_000_000 / 90_000)
+                    let console_media_unix_us = (sr_anchor_ntp_ms as i64 - 2_208_988_800_000) * 1000
+                        + delta_ts as i64 * 1_000_000 / 90_000;
+                    // Now wall at "now", extrapolated from SR arrival
+                    let now_wall_us = sr_anchor_local_wall_us
+                        + (PROCESS_START.elapsed().as_micros() as u64 - sr_anchor_local_us);
+                    let capture_to_arrival_us = now_wall_us as i64 - console_media_unix_us;
+
+                    // Store per-second metrics
+                    METRICS.capture_to_arrival_us.store(capture_to_arrival_us, Ordering::Relaxed);
+                    METRICS.capture_to_arrival_max_us.store(capture_to_arrival_us, Ordering::Relaxed);
+                    METRICS.sr_age_ms.store(sr_age_ms, Ordering::Relaxed);
+                    METRICS.sr_clock_offset_ms.store(sr_clock_offset_ms, Ordering::Relaxed);
+                }
+            }
+        }
+
         let snapshot = crate::streaming::video::drain_metrics();
         let performance = crate::streaming::video::format_summary(&snapshot);
         let source_fps = self
@@ -601,6 +643,11 @@ impl VideoReceiver {
         for packet in rtcp_packets {
             // Sender Report from Xbox: contains NTP timestamp for RTT calculation
             if let Some(sr) = packet.as_any().downcast_ref::<SenderReport>() {
+                // Skip SRs with zero NTP time (invalid/unspecified)
+                if sr.ntp_time == 0 {
+                    eprintln!("RTCP SR skipped: ntp_time is zero");
+                    continue;
+                }
                 // sr.ntp_time = wall clock when report sent (ms since 1900)
                 // sr.rtp_time = corresponding RTP timestamp (90 kHz clock)
                 // Capture all three values as an anchor for capture-to-arrival latency
@@ -611,6 +658,12 @@ impl VideoReceiver {
                 METRICS.sr_anchor_ntp.store(sr.ntp_time, Ordering::Relaxed);
                 METRICS.sr_anchor_rtp_ts.store(sr.rtp_time as u64, Ordering::Relaxed);
                 METRICS.sr_anchor_local_us.store(sr_arrival_us, Ordering::Relaxed);
+                // Also store the client wall clock at SR arrival (µs since UNIX epoch)
+                let now_wall_us = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_micros() as u64;
+                METRICS.sr_anchor_local_wall_us.store(now_wall_us, Ordering::Relaxed);
                 // Also keep the legacy single-field metric for compatibility
                 METRICS.rtcp_sr_ntp_timestamp.store(sr.ntp_time, Ordering::Relaxed);
             }
