@@ -39,6 +39,7 @@ paused-resume = Return to game
 paused-xbox-button = Xbox button
 paused-exit-game = Exit game
 paused-flush-encoder = Rebuild console encoder (test)
+paused-rate-shock-test = Rate shock (test)
 paused-disconnect-stream = Disconnect
 
 streaming-hold-back = Hold Back to open the quick menu

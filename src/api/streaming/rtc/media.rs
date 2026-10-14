@@ -8,7 +8,7 @@ use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
@@ -20,6 +20,12 @@ const TWCC_INTERVAL: Duration = Duration::from_millis(15);
 const TWCC_PACKET_THRESHOLD: usize = 8;
 /// Shared REMB bitrate knob accessible from main thread.
 pub(crate) static REMB_BPS: AtomicU32 = AtomicU32::new(15_000_000);
+/// REMB shock: brief deep drop in requested bitrate to drain the console's send/encode queue.
+pub(crate) const REMB_SHOCK_BPS: u32 = 150_000;
+/// Window during which the shock is active.
+const REMB_SHOCK_WINDOW: Duration = Duration::from_secs(2);
+/// Shock state: AtomicU64 storing milliseconds since PROCESS_START (0 = off).
+static SHOCK_BPS: AtomicU64 = AtomicU64::new(0);
 /// Arbitrary stable local RTCP sender SSRC (we transmit no RTP of our own).
 const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
 
@@ -45,6 +51,22 @@ pub(crate) fn set_negotiated_rtx_map(map: HashMap<u8, u8>) {
 /// Checks if a payload type is a negotiated RTX type.
 pub(crate) fn is_negotiated_rtx_pt(payload_type: u8) -> bool {
     negotiated_rtx_map().contains_key(&payload_type)
+}
+
+/// Arms the REMB shock for REMB_SHOCK_WINDOW from now.
+/// Idempotent: re-arming extends the shock window.
+pub(crate) fn request_remb_shock() {
+    let now_ms = PROCESS_START.elapsed().as_millis() as u64;
+    SHOCK_BPS.store(now_ms + REMB_SHOCK_WINDOW.as_millis() as u64, Ordering::Relaxed);
+}
+
+/// Checks whether the REMB shock is currently armed.
+/// The shock stores an absolute expiry (ms since process start); it is active
+/// while the current elapsed time is still within that window.
+pub(crate) fn is_remb_shock_armed() -> bool {
+    let elapsed = PROCESS_START.elapsed().as_millis() as u64;
+    let shock_expiry = SHOCK_BPS.load(Ordering::Relaxed);
+    shock_expiry > 0 && elapsed <= shock_expiry
 }
 
 /// Gets the primary H.264 payload type for a negotiated RTX payload type.
@@ -304,7 +326,49 @@ impl VideoReceiver {
             return;
         };
 
-        // Dynamic REMB adjustment based on network conditions
+        // Check if shock window has expired
+        let shock_expiry = SHOCK_BPS.load(Ordering::Relaxed);
+        if shock_expiry > 0 {
+            let elapsed = PROCESS_START.elapsed().as_millis() as u64;
+            if elapsed > shock_expiry {
+                // Window expired: clear shock, restore base cap, fall through to normal path
+                SHOCK_BPS.store(0, Ordering::Relaxed);
+                REMB_BPS.store(self.remb_base_cap_bps, Ordering::Relaxed);
+            }
+        }
+
+        // Check if shock is armed (still within window)
+        if is_remb_shock_armed() {
+            // While shock is armed, send REMB_SHOCK_BPS respecting the remb_interval rate limit
+            let remb_interval = Duration::from_millis(self.remb_interval_ms as u64);
+            if self
+                .last_remb_at
+                .is_some_and(|sent_at| now.duration_since(sent_at) < remb_interval)
+            {
+                return; // Not due yet, return without clearing the shock
+            }
+            self.last_remb_at = Some(now);
+            // Log what we actually asked for, so a session CSV shows the feedback loop.
+            crate::streaming::video::metrics::METRICS
+                .remb_bps
+                .store(REMB_SHOCK_BPS as u64, Ordering::Relaxed);
+            crate::streaming::video::metrics::METRICS
+                .remb_sent
+                .fetch_add(1, Ordering::Relaxed);
+            if let Some(mut receiver) = peer.rtp_receiver(receiver_id) {
+                let remb =
+                    rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {
+                        sender_ssrc: LOCAL_RTCP_SENDER_SSRC,
+                        bitrate: REMB_SHOCK_BPS as f32,
+                        ssrcs: vec![ssrc],
+                    };
+                let _ = receiver.write_rtcp(vec![Box::new(remb)]);
+            }
+            // Do NOT clear SHOCK_BPS — stay armed for the full 2 s window
+            return;
+        }
+
+        // Normal dynamic path
         self.adjust_remb_dynamically(now);
 
         let bitrate = REMB_BPS.load(Ordering::Relaxed) as f32;
@@ -317,9 +381,6 @@ impl VideoReceiver {
         }
         self.last_remb_at = Some(now);
         // Log what we actually asked for, so a session CSV shows the feedback loop.
-        crate::streaming::video::metrics::METRICS
-            .remb_sent
-            .fetch_add(1, Ordering::Relaxed);
         crate::streaming::video::metrics::METRICS
             .remb_bps
             .store(bitrate as u64, Ordering::Relaxed);

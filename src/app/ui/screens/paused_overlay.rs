@@ -3,6 +3,7 @@ use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::menu_item;
 use crate::i18n::I18n;
 use crate::{App, AppCommand, AppState, InputCommand};
+use crate::api::streaming::rtc::media::request_remb_shock;
 use anyhow::Result;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -12,6 +13,7 @@ pub enum Command {
     PressGuideButton,
     ExitGame,
     FlushConsoleEncoder,
+    RateShockTest,
 }
 
 pub const MENU_ITEMS: [Command; 5] = [
@@ -30,6 +32,7 @@ impl Command {
             Self::PressGuideButton => "\u{2302}",
             Self::ExitGame => "\u{2715}",
             Self::FlushConsoleEncoder => "\u{23F3}",
+        Self::RateShockTest => "\u{1f50e}",
         }
     }
 
@@ -40,6 +43,7 @@ impl Command {
             Self::PressGuideButton => "paused-xbox-button",
             Self::ExitGame => "paused-exit-game", // xCloud uses "Exit Game"; xHome override below
             Self::FlushConsoleEncoder => "paused-flush-encoder",
+        Self::RateShockTest => "paused-rate-shock-test",
         }
     }
 
@@ -159,6 +163,13 @@ impl App {
             }
             Command::ExitGame => {
                 self.exit_stream().await;
+            }
+            Command::RateShockTest => {
+                if let Some(streaming) = self.state.streaming_mut() {
+                    // Arm the REMB shock for the configured window
+                    request_remb_shock();
+                }
+                self.menu.open = false;
             }
         }
 

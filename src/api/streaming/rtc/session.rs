@@ -1,4 +1,4 @@
-use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver, set_negotiated_rtx_map};
+use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver, set_negotiated_rtx_map, request_remb_shock};
 use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
@@ -269,15 +269,17 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         // NACK feedback: request retransmission of missing RTP packets.
         self.video.send_nacks(&mut self.peer, now);
         self.maybe_flush_backlog(now);
-        // Optional periodic encoder flush (interval configured via settings)
+        // Optional periodic rate shock interval (configurable via settings, 0 = off).
+        // When active, briefly drops the REMB estimate to drain the console's send/encode queue,
+        // then recovers. The shock interval label reflects this behavior.
         let interval = flush_interval_s();
         if interval > 0 {
             let now = Instant::now();
             let due = self.last_flush.is_none_or(|last| now.duration_since(last) >= Duration::from_secs(interval as u64));
             if due {
-                eprintln!("Periodic encoder flush interval elapsed: {}s", interval);
+                eprintln!("Periodic rate shock interval elapsed: {}s", interval);
                 METRICS.flushes.fetch_add(1, Ordering::Relaxed);
-                self.backend.notify_stream_flush(&mut self.peer);
+                request_remb_shock();
                 self.video.reset_lag_anchor();
                 self.last_flush = Some(now);
             }

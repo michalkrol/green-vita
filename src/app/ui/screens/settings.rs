@@ -519,13 +519,13 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 }
                 row_index += 1;
 
-                // Flush interval preset row (console encoder rebuild)
+                // Rate shock interval preset row
                 {
                     let interval = app.settings.flush_interval_s;
                     let label = if interval == 0 {
-                        "Flush interval (console encoder): Off".to_owned()
+                        "Rate shock interval: Off".to_owned()
                     } else {
-                        format!("Flush interval (console encoder): {interval}s")
+                        format!("Rate shock interval: {}s", interval)
                     };
                     if focus_row(ui, selected_index == row_index, label) {
                         let next = next_flush_interval_preset(interval);
@@ -680,7 +680,7 @@ fn next_decode_queue_depth_preset(current: u32) -> u32 {
         .unwrap_or(DECODE_QUEUE_DEPTH_PRESETS[0])
 }
 
-const FLUSH_INTERVAL_PRESETS: &[u32] = &[0, 10, 20, 30, 60];
+const FLUSH_INTERVAL_PRESETS: &[u32] = &[0, 10, 15, 30, 60];
 
 fn next_flush_interval_preset(current: u32) -> u32 {
     FLUSH_INTERVAL_PRESETS
