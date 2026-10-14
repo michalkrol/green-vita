@@ -19,7 +19,7 @@ const TWCC_INTERVAL: Duration = Duration::from_millis(15);
 /// preventing large I-frame bursts from looking like bufferbloat to the rate controller.
 const TWCC_PACKET_THRESHOLD: usize = 8;
 /// Shared REMB bitrate knob accessible from main thread.
-pub(crate) static REMB_BPS: AtomicU32 = AtomicU32::new(15_000_000);
+pub(crate) static REMB_BPS: AtomicU32 = AtomicU32::new(5_000_000);
 /// REMB override: when set (>0), sent instead of dynamic REMB to drain console queue.
 pub(crate) static REMB_OVERRIDE_BPS: AtomicU32 = AtomicU32::new(0);
 /// REMB shock: brief deep drop in requested bitrate to drain the console's send/encode queue.

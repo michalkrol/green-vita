@@ -95,11 +95,14 @@ pub(crate) fn spawn(
         DEFAULT_VIDEO_FPS
     };
     // Wire REMB target to the user's bandwidth cap setting.
-    // 0 = no cap → 15 Mbps default (console manages its own rate).
+    // 0 = no cap → 5 Mbps default: the Vita's 2.4 GHz radio manages ~7 Mbps max
+    // and ~5 Mbps comfortably, and a higher ceiling only lets the console
+    // overshoot into the AP buffer (measured: transit queue grows to seconds
+    // with a 15 Mbps ceiling). The drain governor lowers it further when queued.
     let remb_bps = if video_bitrate_kbps > 0 && hard_bandwidth_cap {
         video_bitrate_kbps * 1000
     } else {
-        15_000_000
+        5_000_000
     };
     REMB_BPS.store(remb_bps, Ordering::Release);
     RtcWorker::spawn(XboxRtcWorkerProvider {
