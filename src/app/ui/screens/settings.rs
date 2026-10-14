@@ -953,7 +953,13 @@ Command::SetHardBandwidthCap(enabled) => {
             Command::SetShowStreamDebugInfo(enabled) => { self.settings.show_stream_debug_info = enabled; self.settings.save(); }
             Command::SetShowFpsOverlay(enabled) => { self.settings.show_fps_overlay = enabled; self.settings.save(); }
             Command::SetLatencyProbe(enabled) => { self.settings.latency_probe = enabled; self.settings.save(); }
-            Command::SetFlushIntervalS(interval) => { self.settings.flush_interval_s = interval; self.settings.save(); }
+            Command::SetFlushIntervalS(interval) => {
+                self.settings.flush_interval_s = interval;
+                // The RTC session reads this global every tick, so applying it here makes
+                // the change take effect mid-session instead of only on the next connect.
+                crate::api::streaming::rtc::session::set_flush_interval_s(interval);
+                self.settings.save();
+            }
             Command::SetVideoBitrateCap(kbps) => {
                 self.settings.video_bitrate_kbps = kbps.min(15_000);
                 self.settings.save();
