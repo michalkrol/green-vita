@@ -312,8 +312,8 @@ mod tests {
         assert!(fmtp102.contains("max-fs=8160"), "{fmtp102}");
         // The requested frame rate is declared as the max-fr cap.
         assert!(fmtp102.contains("max-fr=30"), "{fmtp102}");
-        // max-qp is merged in to cap the quantiser for dark-scene quality.
-        assert!(fmtp102.contains("max-qp=35"), "{fmtp102}");
+        // max-qp is no longer injected; the negotiated profile is preserved as-is.
+        assert!(!fmtp102.contains("max-qp=35"), "{fmtp102}");
         // The fallback payload type is left untouched.
         assert!(
             constrained
@@ -360,7 +360,8 @@ mod tests {
         assert!(constrained.contains("profile-level-id=42e01f"), "{constrained}");
         assert!(constrained.contains("max-fs=8160"), "{constrained}");
         assert!(constrained.contains("max-fr=30"), "{constrained}");
-        assert!(constrained.contains("max-qp=35"), "{constrained}");
+        // max-qp is no longer injected; assert its absence.
+        assert!(!constrained.contains("max-qp=35"), "{constrained}");
     }
 
     #[test]
@@ -418,7 +419,8 @@ mod tests {
         assert!(fmtp102.contains("profile-level-id=4d0020"), "Negotiated profile preserved: {fmtp102}");
         assert!(fmtp102.contains("max-fr=30"), "max-fr added: {fmtp102}");
         assert!(fmtp102.contains("max-fs=8160"), "max-fs added: {fmtp102}");
-        assert!(fmtp102.contains("max-qp=35"), "max-qp added: {fmtp102}");
+        // max-qp is no longer injected.
+        assert!(!fmtp102.contains("max-qp=35"), "max-qp added: {fmtp102}");
         assert_eq!(constrained.matches("a=fmtp:102 ").count(), 1, "No duplicate fmtp 102");
 
         // RTX PT 112 should be untouched
@@ -615,7 +617,6 @@ mod tests {
 pub(super) fn constrain_h264_codec(sdp: &str, video_fps: u32) -> String {
     let max_fr_param = format!("max-fr={video_fps}");
     const MAX_FS_PARAM: &str = "max-fs=8160";
-    const MAX_QP_PARAM: &str = "max-qp=35";
 
     let newline = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
     let trailing_newline = sdp.ends_with('\n');
@@ -658,10 +659,6 @@ pub(super) fn constrain_h264_codec(sdp: &str, video_fps: u32) -> String {
                 merged.push(';');
                 merged.push_str(MAX_FS_PARAM);
             }
-            if !merged.contains("max-qp=") {
-                merged.push(';');
-                merged.push_str(MAX_QP_PARAM);
-            }
             output.push(merged);
             fmtp_merged = true;
             continue;
@@ -677,7 +674,7 @@ pub(super) fn constrain_h264_codec(sdp: &str, video_fps: u32) -> String {
             && (line.starts_with("a=") || line.starts_with("b="))
         {
             output.push(format!(
-                "a=fmtp:{video_h264_pt} profile-level-id=42e01f;packetization-mode=1;{max_fr_param};{MAX_FS_PARAM};{MAX_QP_PARAM}"
+                "a=fmtp:{video_h264_pt} profile-level-id=42e01f;packetization-mode=1;{max_fr_param};{MAX_FS_PARAM}"
             ));
             fmtp_merged = true;
         }
@@ -687,7 +684,7 @@ pub(super) fn constrain_h264_codec(sdp: &str, video_fps: u32) -> String {
 
     if in_video && !fmtp_merged && !video_h264_pt.is_empty() {
         output.push(format!(
-            "a=fmtp:{video_h264_pt} profile-level-id=42e01f;packetization-mode=1;{max_fr_param};{MAX_FS_PARAM};{MAX_QP_PARAM}"
+            "a=fmtp:{video_h264_pt} profile-level-id=42e01f;packetization-mode=1;{max_fr_param};{MAX_FS_PARAM}"
         ));
     }
 

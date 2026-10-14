@@ -51,6 +51,15 @@ pub(crate) struct VideoMetrics {
     pub(crate) rtcp_rr_jitter: AtomicU64,         // jitter in RTP timestamp units
     pub(crate) rtcp_sr_ntp_timestamp: AtomicU64,  // NTP timestamp from SenderReport
 
+    // Inbound RTCP packet type counters
+    pub(crate) rtcp_in_sr: AtomicU64,
+    pub(crate) rtcp_in_rr: AtomicU64,
+    pub(crate) rtcp_in_pli: AtomicU64,
+    pub(crate) rtcp_in_nack: AtomicU64,
+    pub(crate) rtcp_in_remb: AtomicU64,
+    pub(crate) rtcp_in_other: AtomicU64,
+    pub(crate) rtcp_in_unhandled_track: AtomicU64,
+
     // RTCP Sender Report anchor (NTP wall-clock + RTP timestamp + local arrival)
     // Used to derive true capture-to-arrival latency: arrival - (sr_local + (rtp - sr_rtp) * 1e6 / 90k)
     pub(crate) sr_anchor_ntp: AtomicU64,          // NTP timestamp from SR (ms since 1900)
@@ -153,6 +162,13 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     rtcp_rr_loss_fraction: AtomicU64::new(0),
     rtcp_rr_jitter: AtomicU64::new(0),
     rtcp_sr_ntp_timestamp: AtomicU64::new(0),
+    rtcp_in_sr: AtomicU64::new(0),
+    rtcp_in_rr: AtomicU64::new(0),
+    rtcp_in_pli: AtomicU64::new(0),
+    rtcp_in_nack: AtomicU64::new(0),
+    rtcp_in_remb: AtomicU64::new(0),
+    rtcp_in_other: AtomicU64::new(0),
+    rtcp_in_unhandled_track: AtomicU64::new(0),
     sr_anchor_ntp: AtomicU64::new(0),
     sr_anchor_rtp_ts: AtomicU64::new(0),
     sr_anchor_local_us: AtomicU64::new(0),
@@ -265,6 +281,14 @@ pub(crate) struct MetricsSnapshot {
     // Task C absolute latency metrics (appended at end to stay in sync with HEADER/cols)
     pub(crate) sr_age_ms: i64,
     pub(crate) sr_clock_offset_ms: i64,
+    // Inbound RTCP census (per-second delta)
+    pub(crate) rtcp_in_sr: u64,
+    pub(crate) rtcp_in_rr: u64,
+    pub(crate) rtcp_in_pli: u64,
+    pub(crate) rtcp_in_nack: u64,
+    pub(crate) rtcp_in_remb: u64,
+    pub(crate) rtcp_in_other: u64,
+    pub(crate) rtcp_in_unhandled_track: u64,
 }
 
 /// Drains all per-second metric atomics exactly once and returns a snapshot.
@@ -345,6 +369,13 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let rtx_read_unmapped = METRICS.rtx_read_unmapped.swap(0, Ordering::Relaxed);
     let sr_age_ms = METRICS.sr_age_ms.swap(0, Ordering::Relaxed);
     let sr_clock_offset_ms = METRICS.sr_clock_offset_ms.swap(0, Ordering::Relaxed);
+    let rtcp_in_sr = METRICS.rtcp_in_sr.swap(0, Ordering::Relaxed);
+    let rtcp_in_rr = METRICS.rtcp_in_rr.swap(0, Ordering::Relaxed);
+    let rtcp_in_pli = METRICS.rtcp_in_pli.swap(0, Ordering::Relaxed);
+    let rtcp_in_nack = METRICS.rtcp_in_nack.swap(0, Ordering::Relaxed);
+    let rtcp_in_remb = METRICS.rtcp_in_remb.swap(0, Ordering::Relaxed);
+    let rtcp_in_other = METRICS.rtcp_in_other.swap(0, Ordering::Relaxed);
+    let rtcp_in_unhandled_track = METRICS.rtcp_in_unhandled_track.swap(0, Ordering::Relaxed);
 
     MetricsSnapshot {
         rtp_assembly_sum_us,
@@ -417,6 +448,13 @@ pub fn drain_metrics() -> MetricsSnapshot {
         rtx_read_unmapped,
     sr_age_ms,
     sr_clock_offset_ms,
+    rtcp_in_sr,
+    rtcp_in_rr,
+    rtcp_in_pli,
+    rtcp_in_nack,
+    rtcp_in_remb,
+    rtcp_in_other,
+    rtcp_in_unhandled_track,
     }
 }
 
