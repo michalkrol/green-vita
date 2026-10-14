@@ -113,50 +113,6 @@ pub(super) fn request_video_fps(sdp: &str, video_fps: u32) -> String {
     result
 }
 
-/// Injects `b=AS`/`b=TIAS` bandwidth lines into the H.264 video media section.
-/// Pass 0 to leave the SDP uncapped (no bandwidth lines injected).
-pub(super) fn cap_video_bitrate(sdp: &str, max_kbps: u32) -> String {
-    if max_kbps == 0 {
-        return sdp.to_owned();
-    }
-    let newline = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
-    let trailing_newline = sdp.ends_with('\n');
-    let lines = sdp
-        .lines()
-        .map(|line| line.trim_end_matches('\r'))
-        .collect::<Vec<_>>();
-    let mut output = Vec::with_capacity(lines.len() + 2);
-    let mut in_video = false;
-    let mut video_has_h264 = false;
-    let mut injected = false;
-
-    for line in lines {
-        if line.starts_with("m=") {
-            if in_video && video_has_h264 && !injected {
-                output.push(format!("b=AS:{max_kbps}"));
-                output.push(format!("b=TIAS:{}", u64::from(max_kbps) * 1000));
-                injected = true;
-            }
-            in_video = line.starts_with("m=video ");
-            video_has_h264 = false;
-        }
-        if in_video && line.to_ascii_lowercase().contains(" h264/") {
-            video_has_h264 = true;
-        }
-        // Drop stale bandwidth lines from the capped section.
-        if in_video && (line.starts_with("b=AS:") || line.starts_with("b=TIAS:")) {
-            continue;
-        }
-        output.push(line.to_owned());
-    }
-
-    let mut result = output.join(newline);
-    if trailing_newline {
-        result.push_str(newline);
-    }
-    result
-}
-
 /// Injects `transport-wide-cc` feedback declaration and both extmap URIs into the
 /// video section.  The console annotates every RTP packet with transport sequence
 /// numbers only when explicitly requested in the SDP offer; without these lines the
@@ -173,6 +129,7 @@ pub(super) fn enable_transport_cc(sdp: &str) -> String {
     let mut in_video = false;
     let mut video_h264_pt = String::new();
     let mut extmap_injected = false;
+    let mut aud_extmap_injected = false;
     let mut fb_injected = false;
 
     for line in lines {
@@ -182,9 +139,27 @@ pub(super) fn enable_transport_cc(sdp: &str) -> String {
             if in_video && !extmap_injected {
                 output.push(format!("a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"));
                 output.push(format!("a=extmap:4 http://www.webrtc.org/experiments/rtp-hdrext/transport-wide-cc-02"));
+                // Inject other video extmaps mirroring Chrome's SDP
+                output.push(format!("a=extmap:5 http://www.webrtc.org/experiments/rtp-hdrext/playout-delay"));
+                output.push(format!("a=extmap:6 http://www.webrtc.org/experiments/rtp-hdrext/video-content-type"));
+                output.push(format!("a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/video-timing"));
+                output.push(format!("a=extmap:8 http://www.webrtc.org/experiments/rtp-hdrext/color-space"));
+                output.push(format!("a=extmap:9 urn:ietf:params:rtp-hdrext:sdes:mid"));
+                output.push(format!("a=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"));
+                output.push(format!("a=extmap:11 urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"));
+                output.push(format!("a=extmap:13 urn:3gpp:video-orientation"));
+                output.push(format!("a=extmap:14 urn:ietf:params:rtp-hdrext:toffset"));
                 extmap_injected = true;
             }
             in_video = line.starts_with("m=video ");
+            // Inject the audio extmap right after the m=audio line so it lands
+            // inside the audio section (mirroring Chrome's SDP).
+            if line.starts_with("m=audio ") && !aud_extmap_injected {
+                output.push(line.to_owned());
+                output.push(format!("a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level"));
+                aud_extmap_injected = true;
+                continue;
+            }
         }
         if in_video && line.starts_with("a=rtpmap:") && line.to_ascii_lowercase().contains("h264") {
             // Extract payload type from "a=rtpmap:102 H264/90000"
@@ -257,31 +232,6 @@ mod tests {
         let unlocked = request_video_fps(offer, 60);
         assert!(!unlocked.contains("a=framerate:30"));
         assert_eq!(unlocked.matches("a=framerate:60").count(), 1);
-    }
-
-    #[test]
-    fn injects_bandwidth_cap_into_the_h264_video_section() {
-        let offer = concat!(
-            "v=0\r\n",
-            "m=video 9 UDP/TLS/RTP/SAVPF 102\r\n",
-            "a=rtpmap:102 H264/90000\r\n",
-            "b=AS:2500\r\n",
-            "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
-        );
-
-        let capped = cap_video_bitrate(offer, 8_000);
-        assert_eq!(capped.matches("b=AS:8000").count(), 1);
-        assert_eq!(capped.matches("b=TIAS:8000000").count(), 1);
-        assert!(!capped.contains("b=AS:2500"));
-        let video_end = capped.find("m=audio").unwrap();
-        assert!(capped.find("b=AS:8000").unwrap() < video_end);
-        assert!(capped.find("b=TIAS:8000000").unwrap() < video_end);
-    }
-
-    #[test]
-    fn leaves_sdp_without_h264_untouched() {
-        let offer = "v=0\nm=audio 9 UDP/TLS/RTP/SAVPF 111\n";
-        assert_eq!(cap_video_bitrate(offer, 8_000), offer);
     }
 
     #[test]
@@ -441,28 +391,6 @@ mod tests {
         assert!(constrained.contains("a=rtcp-fb:102 nack pli"), "NACK PLI for 102 preserved");
         assert!(constrained.contains("a=rtcp-fb:103 nack"), "Generic NACK for 103 preserved");
         assert!(constrained.contains("a=rtcp-fb:103 nack pli"), "NACK PLI for 103 preserved");
-    }
-
-    #[test]
-    fn preserves_rtx_and_nack_through_cap_video_bitrate() {
-        let offer = concat!(
-            "v=0\r\n",
-            "m=video 9 UDP/TLS/RTP/SAVPF 102 112\r\n",
-            "a=rtpmap:102 H264/90000\r\n",
-            "a=fmtp:102 profile-level-id=4d0020\r\n",
-            "a=rtcp-fb:102 nack\r\n",
-            "a=rtpmap:112 rtx/90000\r\n",
-            "a=fmtp:112 apt=102\r\n",
-            "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
-            "a=rtpmap:111 opus/48000/2\r\n",
-        );
-
-        let capped = cap_video_bitrate(offer, 5000);
-        assert!(capped.contains("b=AS:5000"), "Bitrate cap injected");
-        assert!(capped.contains("b=TIAS:5000000"), "TIAS cap injected");
-        assert!(capped.contains("a=rtpmap:112 rtx/90000"), "RTX preserved through cap_video_bitrate");
-        assert!(capped.contains("a=fmtp:112 apt=102"), "RTX fmtp preserved");
-        assert!(capped.contains("a=rtcp-fb:102 nack"), "NACK feedback preserved");
     }
 
     #[test]

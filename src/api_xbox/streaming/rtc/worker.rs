@@ -62,8 +62,7 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
     }
 
     async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<String> {
-        let sdp = sdp::cap_video_bitrate(&offer.sdp, self.video_bitrate_kbps);
-        let sdp = sdp::enable_transport_cc(&sdp);
+        let sdp = sdp::enable_transport_cc(&offer.sdp);
         let sdp = sdp::request_video_fps(&sdp, self.video_fps);
         let sdp = sdp::constrain_h264_codec(&sdp, self.video_fps);
         let answer = self.stream.send_sdp_offer(&sdp).await?;
