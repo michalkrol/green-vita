@@ -1236,10 +1236,16 @@ fn slip_sample(
 }
 
 /// `Some(lag_us)` = this access unit must be skipped to catch up to live.
+///
+/// The lag is how far this AU sits *behind* the newest timestamp we have seen:
+/// `newest - au_timestamp` in RTP time.  The arguments to `rtp_span_us` are the
+/// earlier timestamp first; swapping them wraps the subtraction and reports a
+/// ~47,000 s lag for a frame that is a single tick behind, which would skip
+/// every frame and hold for a keyframe forever.
 fn catchup_decision(newest: Option<u32>, au_timestamp: u32, has_idr: bool) -> Option<u64> {
     if AU_CATCHUP_LAG_THRESHOLD_US == 0 || has_idr { return None; }
     let newest = newest?;
-    let lag_us = rtp_span_us(newest, au_timestamp, VIDEO_RTP_CLOCK_RATE);
+    let lag_us = rtp_span_us(au_timestamp, newest, VIDEO_RTP_CLOCK_RATE);
     (lag_us > AU_CATCHUP_LAG_THRESHOLD_US).then_some(lag_us)
 }
 
@@ -1554,47 +1560,85 @@ mod tests {
     #[test]
     fn first_sample_after_reset_returns_zero() {
         let mut anchor = None;
-        let mut baseline = u64::MAX;
+        let mut baseline_us = 0i64;
+        let mut max_magnitude_us = 0u64;
+        let mut reanchor_count = 0u64;
         let t0 = Instant::now();
-        // First sample with anchor None establishes anchor; slip should be 0.
-        assert_eq!(slip_sample(&mut anchor, &mut baseline, 0, t0, AUDIO_RTP_CLOCK_RATE), 0);
-        // Second sample with same cadence (48 kHz: +960 ts, +20 ms real) ≈ 0.
+        // First sample with anchor None establishes the session anchor; slip is 0.
+        assert_eq!(
+            slip_sample(&mut anchor, &mut baseline_us, &mut max_magnitude_us, &mut reanchor_count, 0, t0, AUDIO_RTP_CLOCK_RATE),
+            0
+        );
+        // Second sample with matching cadence (48 kHz: +960 ticks, +20 ms real) ≈ 0.
         let t1 = t0 + Duration::from_millis(20);
-        assert!(slip_sample(&mut anchor, &mut baseline, 960, t1, AUDIO_RTP_CLOCK_RATE).abs() < 1);
-        // Reset anchor, next sample is 0.
+        let slip = slip_sample(&mut anchor, &mut baseline_us, &mut max_magnitude_us, &mut reanchor_count, 960, t1, AUDIO_RTP_CLOCK_RATE);
+        assert!(slip.abs() < 1_000, "expected <1 ms after reset, got {slip} us");
+        // Reset the anchor: the next sample must read 0, not the old baseline.
         anchor = None;
-        assert_eq!(slip_sample(&mut anchor, &mut baseline, 0, t1, AUDIO_RTP_CLOCK_RATE), 0);
+        baseline_us = 0;
+        max_magnitude_us = 0;
+        assert_eq!(
+            slip_sample(&mut anchor, &mut baseline_us, &mut max_magnitude_us, &mut reanchor_count, 0, t1, AUDIO_RTP_CLOCK_RATE),
+            0
+        );
     }
 
     #[test]
     fn signed_late_check_ts_4800_at_150ms_real_is_50ms() {
-        let anchor = Instant::now();
-        // RTP timestamp +4800 with +150 ms real time → +50 ms slip.
-        let t1 = anchor + Duration::from_millis(150);
-        let slip = slip_sample(&mut None, &mut 0i64, &mut 0u64, &mut 0u64, 4800, t1, AUDIO_RTP_CLOCK_RATE);
-        assert!(slip >= 40 && slip <= 60, "expected slip in [40,60] ms, got {} ms", slip);
+        let mut anchor = None;
+        let mut baseline_us = 0i64;
+        let mut max_magnitude_us = 0u64;
+        let mut reanchor_count = 0u64;
+        let t0 = Instant::now();
+        // Establish the session anchor first: a fresh anchor always reports 0.
+        assert_eq!(
+            slip_sample(&mut anchor, &mut baseline_us, &mut max_magnitude_us, &mut reanchor_count, 0, t0, AUDIO_RTP_CLOCK_RATE),
+            0
+        );
+        // RTP time advanced 100 ms (4800 ticks at 48 kHz) while 150 ms of real
+        // time elapsed -> +50 ms of positive slip.
+        let t1 = t0 + Duration::from_millis(150);
+        let slip = slip_sample(&mut anchor, &mut baseline_us, &mut max_magnitude_us, &mut reanchor_count, 4_800, t1, AUDIO_RTP_CLOCK_RATE);
+        assert_eq!(slip, 50_000, "expected +50 ms of slip, got {slip} us");
     }
 
     #[test]
     fn wrap_near_u32_max() {
-        let anchor = Instant::now();
-        // Anchor near u32::MAX; the next timestamp wraps around.
-        let anchor_ts = u32::MAX - 4800 + 1;
-        let t1 = anchor + Duration::from_millis(1);
-        let slip = slip_sample(&mut anchor, &mut u64::MAX, &mut 0u64, &mut 0u64, 0, t1, anchor_ts, AUDIO_RTP_CLOCK_RATE);
-        assert_eq!(slip, 0);
+        let mut anchor = None;
+        let mut baseline_us = 0i64;
+        let mut max_magnitude_us = 0u64;
+        let mut reanchor_count = 0u64;
+        let t0 = Instant::now();
+        // Anchor 4800 ticks below the wrap point.
+        let anchor_ts = u32::MAX - 4_800 + 1;
+        assert_eq!(
+            slip_sample(&mut anchor, &mut baseline_us, &mut max_magnitude_us, &mut reanchor_count, anchor_ts, t0, AUDIO_RTP_CLOCK_RATE),
+            0
+        );
+        // 4800 ticks later the timestamp has wrapped through 0; the elapsed real
+        // time matches exactly, so the wrap must not read as a timeline jump.
+        let t1 = t0 + Duration::from_micros(100_000);
+        let slip = slip_sample(&mut anchor, &mut baseline_us, &mut max_magnitude_us, &mut reanchor_count, 0, t1, AUDIO_RTP_CLOCK_RATE);
+        assert_eq!(slip, 0, "wrap must report 0, got {slip} us");
+        assert_eq!(reanchor_count, 0, "a wrap must not count as a re-anchor");
     }
 
     #[test]
     fn discontinuity_backward_jump_over_1s() {
         let mut anchor = None;
+        let mut baseline_us = 0i64;
+        let mut max_magnitude_us = 0u64;
         let mut reanchor_count = 0u64;
         let t0 = Instant::now();
-        // First sample establishes anchor.
-        assert_eq!(slip_sample(&mut anchor, &mut u64::MAX, &mut 0u64, &mut reanchor_count, 0, t0, AUDIO_RTP_CLOCK_RATE), 0);
-        // Backward jump > 1 s → reanchor and return 0.
+        // First sample establishes the anchor.
+        assert_eq!(
+            slip_sample(&mut anchor, &mut baseline_us, &mut max_magnitude_us, &mut reanchor_count, 0, t0, AUDIO_RTP_CLOCK_RATE),
+            0
+        );
+        // The RTP timeline jumps backwards by ~47,000 s of RTP time: a
+        // discontinuity, so re-anchor and report 0 instead of pinning the metric.
         let t1 = t0 + Duration::from_secs(2);
-        let slip = slip_sample(&mut anchor, &mut u64::MAX, &mut 0u64, &mut reanchor_count, u32::MAX, t1, AUDIO_RTP_CLOCK_RATE);
+        let slip = slip_sample(&mut anchor, &mut baseline_us, &mut max_magnitude_us, &mut reanchor_count, u32::MAX, t1, AUDIO_RTP_CLOCK_RATE);
         assert_eq!(slip, 0);
         assert_eq!(reanchor_count, 1);
     }
@@ -1602,15 +1646,24 @@ mod tests {
     #[test]
     fn catchup_decision_cases() {
         use crate::api::streaming::rtc::rtp::catchup_decision;
-        // Threshold 0 → None
+        // The threshold is a const, so its 0-disabled path cannot be exercised
+        // here; every case below uses the compiled-in 100 ms value.
+        // No newest timestamp yet → nothing to catch up to.
         assert_eq!(catchup_decision(None, 0, false), None);
-        // has_idr → None
+        // A keyframe is a clean jump point: never skip it.
         assert_eq!(catchup_decision(Some(0), 0, true), None);
-        // lag below threshold → None
+        // Zero lag → present in order.
         assert_eq!(catchup_decision(Some(90_000), 90_000, false), None);
-        // lag above threshold → Some(lag)
-        assert_eq!(catchup_decision(Some(120_000), 90_000, false), Some(30_000));
-        // newest None → None
-        assert_eq!(catchup_decision(None, 90_000, false), None);
+        // 900 ticks behind (10 ms) is under the threshold → present in order.
+        assert_eq!(catchup_decision(Some(90_000), 89_100, false), None);
+        // 30_000 ticks at 90 kHz = 333_333 us (333 ms) > 100 ms → skip, and the
+        // returned value is microseconds, not RTP ticks.
+        assert_eq!(catchup_decision(Some(120_000), 90_000, false), Some(333_333));
+        // A timestamp newer than the AU under test yields no lag.
+        // (In production `newest` is the maximum seen, so this only guards the
+        // wrap: an AU just before the wrap point is still "behind" in modulo time.)
+        assert_eq!(catchup_decision(Some(1_000), u32::MAX - 100, false), None);
+        // …and just over the threshold across the same wrap is still detected.
+        assert_eq!(catchup_decision(Some(1_000), u32::MAX - 10_000, false), Some(122_233));
     }
 }
