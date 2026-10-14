@@ -299,8 +299,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let audio_slip_max_us = METRICS.audio_slip_max_us.swap(0, Ordering::Relaxed);
     let audio_samples_played = METRICS.audio_samples_played.load(Ordering::Relaxed);
     let audio_queue_ms = METRICS.audio_queue_ms.load(Ordering::Relaxed);
-    let audio_builder_drops = METRICS.audio_builder_drops.load(Ordering::Relaxed);
-    let audio_queue_clears = METRICS.audio_queue_clears.load(Ordering::Relaxed);
+    let audio_builder_drops = METRICS.audio_builder_drops.swap(0, Ordering::Relaxed);
+    let audio_queue_clears = METRICS.audio_queue_clears.swap(0, Ordering::Relaxed);
     // Window counters: swap so the next second starts clean.
     let catchup_aus_skipped = METRICS.catchup_aus_skipped.swap(0, Ordering::Relaxed);
     let catchup_lag_max_us = METRICS.catchup_lag_max_us.swap(0, Ordering::Relaxed);
