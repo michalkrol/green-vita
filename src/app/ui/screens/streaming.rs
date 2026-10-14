@@ -65,7 +65,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
         }
 
         // Latency probe overlay - shows a white square and timer when the
-        // probe button (Menu) is pressed, allowing end-to-end latency measurement
+        // probe: any newly pressed digital button (D-pad, face, bumpers, stick
+        // clicks, Menu/View, trigger press) starts a measurement, allowing
+        // end-to-end latency measurement
         // via camera flash + stopwatch. The overlay is composited onto presented
         // video frames, so if the video stalls the counter cannot update and would
         // under-read. That is acceptable (and itself a signal).
@@ -99,9 +101,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
 
             // Small line showing the probe counter and the button being used
             let counter_text = if counter > 0 {
-                format!("Probe #{}  Menu button", counter)
+                format!("Probe #{}  any button", counter)
             } else {
-                "Menu button".to_owned()
+                "any button".to_owned()
             };
 
             egui::Area::new(egui::Id::new("latency_probe_overlay"))

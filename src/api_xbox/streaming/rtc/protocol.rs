@@ -35,7 +35,7 @@ pub(super) struct XboxRtcProtocol {
     flush_size_toggle: bool,
     last_input_sent_at: Option<Instant>,
     last_gamepad: Option<GamepadFrame>,
-    last_menu_button: Option<f32>,
+    last_button_mask: Option<u32>,
 }
 
 /// Probe press tracking for latency measurement is defined in
@@ -55,7 +55,7 @@ impl XboxRtcProtocol {
             flush_size_toggle: false,
             last_input_sent_at: None,
             last_gamepad: None,
-            last_menu_button: None,
+            last_button_mask: None,
         }
     }
 
@@ -93,16 +93,34 @@ impl XboxRtcProtocol {
             return false;
         }
 
-        // --- Latency probe: detect rising edge of Menu button ---
-        // Fire on the rising edge (0 -> >0) at the moment the report is sent,
-        // so the timestamp includes our own send overhead.
-        // Note: the overlay is composited onto presented video frames, so if the
-        // video stalls the counter cannot update and would under-read. That is
-        // acceptable (and itself a signal), but say so in the comment.
-        let menu_was_pressed = self.last_menu_button.unwrap_or(0.0) > 0.0;
-        let menu_now_pressed = frame.menu > 0.0;
-        if menu_now_pressed && !menu_was_pressed {
-            // Rising edge detected: store probe press timestamp (microseconds since process start)
+        // --- Latency probe: any newly pressed digital button starts a measurement ---
+        // Digital buttons only (D-pad, face buttons, bumpers, stick clicks,
+        // Menu/View/guide, trigger press). Stick AXES are deliberately excluded:
+        // they move constantly and the measurement would never settle.
+        // Fires on the report we are about to send, so the timestamp includes our
+        // own send overhead. The overlay is composited onto presented video
+        // frames, so a video stall also delays the counter — that is itself a
+        // signal, and the reason the probe is read from the screen.
+        let probe_buttons: u32 = (frame.nexus > 0.0) as u32
+            | ((frame.menu > 0.0) as u32) << 1
+            | ((frame.view > 0.0) as u32) << 2
+            | ((frame.a > 0.0) as u32) << 3
+            | ((frame.b > 0.0) as u32) << 4
+            | ((frame.x > 0.0) as u32) << 5
+            | ((frame.y > 0.0) as u32) << 6
+            | ((frame.dpad_up > 0.0) as u32) << 7
+            | ((frame.dpad_down > 0.0) as u32) << 8
+            | ((frame.dpad_left > 0.0) as u32) << 9
+            | ((frame.dpad_right > 0.0) as u32) << 10
+            | ((frame.left_shoulder > 0.0) as u32) << 11
+            | ((frame.right_shoulder > 0.0) as u32) << 12
+            | ((frame.left_thumb > 0.0) as u32) << 13
+            | ((frame.right_thumb > 0.0) as u32) << 14
+            | ((frame.left_trigger > 0.5) as u32) << 15
+            | ((frame.right_trigger > 0.5) as u32) << 16;
+        let newly_pressed = probe_buttons & !self.last_button_mask.unwrap_or(0);
+        if newly_pressed != 0 && crate::api_xbox::streaming::control::input::probe_enabled() {
+            // Store probe press timestamp (microseconds since process start)
             let start_us = now.duration_since(*crate::api_xbox::streaming::control::input::SESSION_START.get().expect("SESSION_START should be initialized")).as_micros() as u64;
             crate::api_xbox::streaming::control::input::PROBE_PRESS_US.store(start_us, Ordering::Relaxed);
             // Increment the monotonically increasing probe counter
@@ -110,7 +128,7 @@ impl XboxRtcProtocol {
             // Record the timestamp in the capped log file (~200 lines)
             probe_log_press(start_us);
         }
-        self.last_menu_button = Some(frame.menu);
+        self.last_button_mask = Some(probe_buttons);
         // ------------------------------------------------
 
         self.last_input_sent_at = Some(now);
