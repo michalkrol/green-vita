@@ -48,10 +48,14 @@ impl StreamingSession {
         decode_queue_depth: u32,
         hard_bandwidth_cap: bool,
         remb_interval_ms: u32,
+        flush_interval_s: u32,
         twcc_delay_injection: bool,
         twcc_delay_ramp_max: u8,
         periodic_keyframe_enabled: bool,
     ) -> Result<Self> {
+        // The RTC session reads this session-global in its tick (0 = disabled).
+        // Without this the setting is accepted and silently dropped.
+        crate::api::streaming::rtc::session::set_flush_interval_s(flush_interval_s);
         let backend = PlaybackBackend::start_xbox(
             stream,
             unlock_video_fps,
@@ -94,6 +98,10 @@ impl StreamingSession {
 
     pub(crate) fn take_audio_packets(&mut self) -> Vec<Bytes> {
         std::mem::take(&mut self.pending_audio_packets)
+    }
+
+    pub(crate) fn flush_encoder(&self) {
+        self.backend.flush_encoder();
     }
 
     pub(crate) fn video_frame(&self) -> Option<(u64, &DecodedFrame)> {

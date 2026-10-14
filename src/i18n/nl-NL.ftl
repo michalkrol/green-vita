@@ -31,6 +31,7 @@ mode-select-home-subtitle = Nog niet geïmplementeerd — gebruik voorlopig xVit
 paused-resume = Terug naar het spel
 paused-xbox-button = Xbox-knop
 paused-exit-game = Spel afsluiten
+paused-flush-encoder = Encoder herbouwen (test)
 
 streaming-hold-back = Houd Back ingedrukt om het snelmenu te openen
 connecting-cancel = Druk op Cirkel om te annuleren

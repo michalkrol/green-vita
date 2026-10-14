@@ -31,6 +31,7 @@ mode-select-home-subtitle = 未実装です。当面は xVita を使用してく
 paused-resume = ゲームに戻る
 paused-xbox-button = Xbox ボタン
 paused-exit-game = ゲームを終了
+paused-flush-encoder = エンコーダを再構築（テスト）
 
 streaming-hold-back = Back を長押ししてクイックメニューを開く
 connecting-cancel = キャンセルするには○を押してください

@@ -31,6 +31,7 @@ mode-select-home-subtitle = 아직 구현되지 않았습니다. 당분간 xVita
 paused-resume = 게임으로 돌아가기
 paused-xbox-button = Xbox 버튼
 paused-exit-game = 게임 종료
+paused-flush-encoder = 인코더 재구성 (테스트)
 
 streaming-hold-back = 빠른 메뉴를 열려면 Back을 길게 누르세요
 connecting-cancel = 취소하려면 Circle을 누르세요

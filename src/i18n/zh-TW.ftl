@@ -31,6 +31,7 @@ mode-select-home-subtitle = 尚未實作 — 暫時請使用 xVita
 paused-resume = 返回遊戲
 paused-xbox-button = Xbox 按鈕
 paused-exit-game = 離開遊戲
+paused-flush-encoder = 重建編碼器（測試）
 
 streaming-hold-back = 按住 Back 開啟快速選單
 connecting-cancel = 按圓圈取消

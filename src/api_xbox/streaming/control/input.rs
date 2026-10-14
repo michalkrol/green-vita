@@ -93,19 +93,27 @@ pub(crate) fn uptime_ms() -> f64 {
 /// - `probe_log`: capped log file writer recording each press timestamp (capped at ~200 lines).
 pub(crate) static PROBE_PRESS_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub(crate) static PROBE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Lines already written to the probe log this run (caps the file at ~200 lines).
+static PROBE_LOG_LINES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Writes a probe press timestamp to the capped log at `ux0:data/xcloud-rust/latency-probe.log`.
 /// Cap at ~200 lines; never panics or blocks on IO error.
-fn probe_log_press(us_since_start: u64) {
-    // Cap at ~200 lines total
-    let current = PROBE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if current >= 200 {
+pub(crate) fn probe_log_press(us_since_start: u64) {
+    use std::io::Write;
+    // Cap the file at ~200 lines per run without touching PROBE_COUNTER, which is
+    // the press counter the HUD displays (incrementing it here would count twice).
+    if PROBE_LOG_LINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 200 {
         return;
     }
-    let _ = crate::fs_utils::write_file_truncating(
-        "ux0:data/xcloud-rust/latency-probe.log",
-        format!("{}\n", us_since_start),
-    );
+    // True append: one line per press, previous presses preserved. Never blocks the
+    // input path; I/O errors are deliberately ignored.
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("ux0:data/xcloud-rust/latency-probe.log")
+    {
+        let _ = writeln!(file, "{us_since_start}");
+    }
 }
 
 fn uptime_ms_u32_since(at: Instant) -> u32 {

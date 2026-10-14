@@ -1,4 +1,5 @@
 use crate::api::streaming::rtc::session::RtcSessionBackend;
+use crate::api_xbox::streaming::control::input::probe_log_press;
 use crate::api_xbox::streaming::control::channel::{self, HandshakeStage};
 use crate::api_xbox::streaming::control::input::{InputQueue, PointerFrame};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
@@ -107,10 +108,7 @@ impl XboxRtcProtocol {
             // Increment the monotonically increasing probe counter
             crate::api_xbox::streaming::control::input::PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
             // Record the timestamp in the capped log file (~200 lines)
-            let _ = crate::fs_utils::write_file_truncating(
-                "ux0:data/xcloud-rust/latency-probe.log",
-                format!("{}\n", start_us),
-            );
+            probe_log_press(start_us);
         }
         self.last_menu_button = Some(frame.menu);
         // ------------------------------------------------

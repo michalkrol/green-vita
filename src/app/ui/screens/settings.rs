@@ -36,6 +36,7 @@ pub enum Command {
     SetTwccDelayRampMax(u8),
     SetPeriodicKeyframe(bool),
     SetLatencyProbe(bool),
+    SetFlushIntervalS(u32),
 }
 
 #[derive(Clone)]
@@ -60,6 +61,7 @@ enum SettingsRow {
     TwccDelayInjection(bool),
     TwccDelayRampMax(u8),
     LatencyProbe(bool),
+    FlushIntervalS(u32),
     Version,
     Back,
 }
@@ -126,6 +128,8 @@ rows.push(SettingsRow::UnlockVideoFps(app.settings.unlock_video_fps));
         rows.push(SettingsRow::RembIntervalMs(app.settings.remb_interval_ms));
         rows.push(SettingsRow::TwccDelayInjection(app.settings.twcc_delay_injection));
         rows.push(SettingsRow::TwccDelayRampMax(app.settings.twcc_delay_ramp_max));
+        rows.push(SettingsRow::LatencyProbe(app.settings.latency_probe));
+        rows.push(SettingsRow::FlushIntervalS(app.settings.flush_interval_s));
     }
     rows.push(SettingsRow::Version);
     rows.push(SettingsRow::Back);
@@ -372,6 +376,19 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     if focus_row(ui, selected_index == row_index, label) {
                         let next = next_decode_queue_depth_preset(app.settings.video_decode_queue_depth);
                         commands.push(Command::SetVideoDecodeQueueDepth(next).into());
+                    }
+                }
+
+                // Flush interval preset row
+                {
+                    let interval = app.settings.flush_interval_s;
+                    let label = if interval == 0 {
+                        "Off".to_owned()
+                    } else {
+                        format!("{interval}s")
+                    };
+                    if focus_row(ui, selected_index == row_index, label) {
+                        commands.push(Command::SetFlushIntervalS(interval).into());
                     }
                 }
 row_index += 1;
@@ -656,6 +673,16 @@ fn next_decode_queue_depth_preset(current: u32) -> u32 {
         .unwrap_or(DECODE_QUEUE_DEPTH_PRESETS[0])
 }
 
+const FLUSH_INTERVAL_PRESETS: &[u32] = &[0, 10, 20, 30, 60];
+
+fn next_flush_interval_preset(current: u32) -> u32 {
+    FLUSH_INTERVAL_PRESETS
+        .iter()
+        .copied()
+        .find(|&p| p > current)
+        .unwrap_or(FLUSH_INTERVAL_PRESETS[0])
+}
+
 impl App {
     pub(crate) fn handle_settings_input(&mut self, command: InputCommand) -> Result<()> {
         let rows = settings_rows(self);
@@ -724,6 +751,10 @@ impl App {
             }
             SettingsRow::LatencyProbe(enabled) => {
                 return self.handle_settings_command(Command::SetLatencyProbe(!enabled));
+            }
+            SettingsRow::FlushIntervalS(interval) => {
+                self.settings.flush_interval_s = *interval;
+                self.settings.save();
             }
 SettingsRow::SwapShouldersTriggers(enabled) => {
                 return self.handle_settings_command(Command::SetSwapShouldersTriggers(!enabled));
@@ -912,6 +943,7 @@ Command::SetHardBandwidthCap(enabled) => {
             Command::SetShowStreamDebugInfo(enabled) => { self.settings.show_stream_debug_info = enabled; self.settings.save(); }
             Command::SetShowFpsOverlay(enabled) => { self.settings.show_fps_overlay = enabled; self.settings.save(); }
             Command::SetLatencyProbe(enabled) => { self.settings.latency_probe = enabled; self.settings.save(); }
+            Command::SetFlushIntervalS(interval) => { self.settings.flush_interval_s = interval; self.settings.save(); }
             Command::SetVideoBitrateCap(kbps) => {
                 self.settings.video_bitrate_kbps = kbps.min(15_000);
                 self.settings.save();
@@ -929,6 +961,7 @@ Command::SetHardBandwidthCap(enabled) => {
             Command::SetTwccDelayRampMax(max) => { self.settings.twcc_delay_ramp_max = max; self.settings.save(); }
             Command::SetPeriodicKeyframe(enabled) => { self.settings.periodic_keyframe_enabled = enabled; self.settings.save(); }
         }
+        
 
         Ok(())
     }

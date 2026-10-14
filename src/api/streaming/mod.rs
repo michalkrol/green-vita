@@ -64,6 +64,12 @@ impl PlaybackBackend {
         }
     }
 
+    pub(crate) fn flush_encoder(&self) {
+        match self {
+            Self::Xbox(backend) => backend.flush_encoder(),
+        }
+    }
+
     pub(crate) fn take_latest_frame(&self) -> Option<(u64, DecodedFrame)> {
         match self {
             Self::Xbox(backend) => backend.take_latest_frame(),

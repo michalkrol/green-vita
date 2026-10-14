@@ -176,6 +176,10 @@ pub struct Settings {
     /// video stalls the counter cannot update and would under-read. That is
     /// acceptable (and itself a signal), but say so in the comment.
     pub latency_probe: bool,
+    /// Optional periodic encoder flush interval in seconds. 0 = disabled; forces
+    /// the console to rebuild its encoder after this many seconds, helping
+    /// drain accumulated backlog during long sessions. Default off.
+    pub flush_interval_s: u32,
     /// When enabled, sends RTCP REMB at 100ms at the user's configured bitrate
     /// cap to force the Xbox encoder to stay within the bandwidth ceiling.
     /// When disabled, REMB stays at 15 Mbps (no client-side cap).
@@ -226,6 +230,7 @@ impl Default for Settings {
             show_stream_debug_info: false,
             show_fps_overlay: false,
             latency_probe: false,
+            flush_interval_s: 0,
             home_console_ip: None,
             video_bitrate_kbps: 2_000,
             video_h264_profile: H264Profile::default(),

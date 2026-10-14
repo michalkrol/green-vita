@@ -31,6 +31,7 @@ mode-select-home-subtitle = Inte implementerat ännu — använd xVita så läng
 paused-resume = Tillbaka till spelet
 paused-xbox-button = Xbox-knapp
 paused-exit-game = Avsluta spel
+paused-flush-encoder = Bygg om kodaren (test)
 
 streaming-hold-back = Håll Back för att öppna snabbmenyn
 connecting-cancel = Tryck på Cirkel för att avbryta

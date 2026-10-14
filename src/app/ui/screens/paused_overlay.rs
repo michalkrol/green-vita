@@ -11,13 +11,15 @@ pub enum Command {
     Settings,
     PressGuideButton,
     ExitGame,
+    FlushConsoleEncoder,
 }
 
-pub const MENU_ITEMS: [Command; 4] = [
+pub const MENU_ITEMS: [Command; 5] = [
     Command::Resume,
     Command::Settings,
     Command::PressGuideButton,
     Command::ExitGame,
+    Command::FlushConsoleEncoder,
 ];
 
 impl Command {
@@ -27,6 +29,7 @@ impl Command {
             Self::Settings => "\u{2699}",
             Self::PressGuideButton => "\u{2302}",
             Self::ExitGame => "\u{2715}",
+            Self::FlushConsoleEncoder => "\u{23F3}",
         }
     }
 
@@ -36,6 +39,7 @@ impl Command {
             Self::Settings => "menu-settings",
             Self::PressGuideButton => "paused-xbox-button",
             Self::ExitGame => "paused-exit-game", // xCloud uses "Exit Game"; xHome override below
+            Self::FlushConsoleEncoder => "paused-flush-encoder",
         }
     }
 
@@ -131,6 +135,12 @@ impl App {
 
     pub(crate) async fn handle_paused_overlay_command(&mut self, command: Command) -> Result<()> {
         match command {
+            Command::FlushConsoleEncoder => {
+                if let Some(streaming) = self.state.streaming_mut() {
+                    streaming.flush_encoder();
+                }
+                self.menu.open = false;
+            }
             Command::Resume => {
                 if let Some(streaming) = self.state.streaming_mut() {
                     streaming.set_paused(false);

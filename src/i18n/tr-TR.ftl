@@ -31,6 +31,7 @@ mode-select-home-subtitle = Henüz uygulanmadı — şimdilik xVita kullanın
 paused-resume = Oyuna dön
 paused-xbox-button = Xbox düğmesi
 paused-exit-game = Oyundan çık
+paused-flush-encoder = Kodlayıcıyı yeniden kur (test)
 
 streaming-hold-back = Hızlı menüyü açmak için Back tuşunu basılı tut
 connecting-cancel = İptal etmek için Daire'ye bas

@@ -13,8 +13,8 @@ use rtc::peer_connection::transport::RTCIceCandidateInit;
 use rtc::statistics::StatsSelector;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::sansio::Protocol;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(150);
@@ -58,6 +58,17 @@ const FLUSH_TRIGGER_ENABLED: bool = false;
 /// the latency-critical RTC pump thread and stderr is blocking I/O on the Vita;
 /// the same data is available in the metrics CSV.
 const LOG_STATUS_TO_STDERR: bool = false;
+
+static FLUSH_INTERVAL_S: AtomicU32 = AtomicU32::new(0);
+
+pub(crate) fn set_flush_interval_s(s: u32) {
+    FLUSH_INTERVAL_S.store(s, Ordering::Relaxed);
+}
+
+pub(crate) fn flush_interval_s() -> u32 {
+    FLUSH_INTERVAL_S.load(Ordering::Relaxed)
+}
+
 
 pub(crate) struct RtcSessionConfig {
     pub stun_server: &'static str,
@@ -109,6 +120,7 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     recent_keyframe_requests: Vec<Instant>,
     lag_high_since: Option<Instant>,
     last_lag_flush: Option<Instant>,
+    last_flush: Option<Instant>,
     drops_at_last_flush: u64,
     initial_video_watchdog_started_at: Option<Instant>,
     last_initial_video_keyframe_request: Option<Instant>,
@@ -164,6 +176,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             recent_keyframe_requests: Vec::new(),
             lag_high_since: None,
             last_lag_flush: None,
+            last_flush: None,
             drops_at_last_flush: 0,
             initial_video_watchdog_started_at: None,
             last_initial_video_keyframe_request: None,
@@ -256,6 +269,19 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         // NACK feedback: request retransmission of missing RTP packets.
         self.video.send_nacks(&mut self.peer, now);
         self.maybe_flush_backlog(now);
+        // Optional periodic encoder flush (interval configured via settings)
+        let interval = flush_interval_s();
+        if interval > 0 {
+            let now = Instant::now();
+            let due = self.last_flush.is_none_or(|last| now.duration_since(last) >= Duration::from_secs(interval as u64));
+            if due {
+                eprintln!("Periodic encoder flush interval elapsed: {}s", interval);
+                METRICS.flushes.fetch_add(1, Ordering::Relaxed);
+                self.backend.notify_stream_flush(&mut self.peer);
+                self.video.reset_lag_anchor();
+                self.last_flush = Some(now);
+            }
+        }
         if let Some(status) = self.video.status(now) {
             let debug_state = self.backend.debug_state();
             self.status = if let Some((width, height)) = self.backend.server_video_size() {

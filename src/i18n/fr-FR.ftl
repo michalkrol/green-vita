@@ -31,6 +31,7 @@ mode-select-home-subtitle = Pas encore implémenté — utilisez xVita pour le m
 paused-resume = Retour au jeu
 paused-xbox-button = Bouton Xbox
 paused-exit-game = Quitter le jeu
+paused-flush-encoder = Reconstruire l'encodeur (test)
 
 streaming-hold-back = Maintenir Back pour ouvrir le menu rapide
 connecting-cancel = Appuyer sur Cercle pour annuler

@@ -42,6 +42,7 @@ enum RtcWorkerCommand {
     AddRemoteCandidate(RTCIceCandidateInit),
     SendPointerEvent(PointerEvent),
     Stop,
+    FlushEncoder,
 }
 
 struct SampledGamepadFrame {
@@ -137,6 +138,10 @@ impl RtcWorker {
 
     pub fn send_pointer_event(&self, event: PointerEvent) {
         send_lossy(&self.commands_tx, RtcWorkerCommand::SendPointerEvent(event));
+    }
+
+    pub fn flush_encoder(&self) {
+        send_lossy(&self.commands_tx, RtcWorkerCommand::FlushEncoder);
     }
 }
 
@@ -389,6 +394,13 @@ fn drain_commands<B: super::session::RtcSessionBackend>(
             }
             Ok(RtcWorkerCommand::SendPointerEvent(event)) => {
                 session.backend.send_pointer_event(&mut session.peer, event);
+            }
+            Ok(RtcWorkerCommand::FlushEncoder) => {
+                session.backend.notify_stream_flush(&mut session.peer);
+                crate::streaming::video::metrics::METRICS
+                    .flushes
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                eprintln!("Flush encoder command sent to worker");
             }
             Ok(RtcWorkerCommand::Stop) | Err(TryRecvError::Disconnected) => return false,
             Err(TryRecvError::Empty) => return true,

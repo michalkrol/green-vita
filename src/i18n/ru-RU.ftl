@@ -31,6 +31,7 @@ mode-select-home-subtitle = Ещё не реализовано — пока ис
 paused-resume = Вернуться в игру
 paused-xbox-button = Кнопка Xbox
 paused-exit-game = Выйти из игры
+paused-flush-encoder = Пересоздать энкодер (тест)
 
 streaming-hold-back = Удерживайте Back, чтобы открыть быстрое меню
 connecting-cancel = Нажмите Круг для отмены

@@ -92,6 +92,10 @@ impl XboxStreamingBackend {
         self.worker.audio_rx.try_recv().ok()
     }
 
+    pub(crate) fn flush_encoder(&self) {
+        self.worker.flush_encoder();
+    }
+
     pub(crate) fn take_latest_frame(&self) -> Option<(u64, DecodedFrame)> {
         self.worker.latest_frame.lock().ok()?.take()
     }

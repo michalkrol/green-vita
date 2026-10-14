@@ -31,6 +31,7 @@ mode-select-home-subtitle = Jeszcze nie zaimplementowano — na razie użyj xVit
 paused-resume = Wróć do gry
 paused-xbox-button = Przycisk Xbox
 paused-exit-game = Wyjdź z gry
+paused-flush-encoder = Przebuduj enkoder (test)
 
 streaming-hold-back = Przytrzymaj Back, aby otworzyć szybkie menu
 connecting-cancel = Naciśnij Kółko, aby anulować
