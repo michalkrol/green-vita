@@ -316,6 +316,13 @@ impl VideoReceiver {
             return;
         }
         self.last_remb_at = Some(now);
+        // Log what we actually asked for, so a session CSV shows the feedback loop.
+        crate::streaming::video::metrics::METRICS
+            .remb_sent
+            .fetch_add(1, Ordering::Relaxed);
+        crate::streaming::video::metrics::METRICS
+            .remb_bps
+            .store(bitrate as u64, Ordering::Relaxed);
         if let Some(mut receiver) = peer.rtp_receiver(receiver_id) {
             let remb =
                 rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {

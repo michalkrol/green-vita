@@ -228,10 +228,6 @@ impl App {
                 }
                 self.service.auth = MsalAuth::new();
                 let title_id = session.game_id.clone();
-                // Keep the probe trigger free of SD-card I/O unless the user enabled it.
-                crate::api_xbox::streaming::control::input::set_probe_enabled(
-                    self.settings.latency_probe,
-                );
                 match StreamingSession::start_xbox(
                     session.stream.clone(),
                     session.kind,

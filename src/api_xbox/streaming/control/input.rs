@@ -95,18 +95,6 @@ pub(crate) static PROBE_PRESS_US: std::sync::atomic::AtomicU64 = std::sync::atom
 pub(crate) static PROBE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Lines already written to the probe log this run (caps the file at ~200 lines).
 static PROBE_LOG_LINES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Whether the latency probe is enabled for this session. Set once at stream
-/// start from the user setting; when false the trigger performs no I/O at all,
-/// which matters because the trigger runs on the input-send path.
-static PROBE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-pub(crate) fn set_probe_enabled(enabled: bool) {
-    PROBE_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
-}
-
-pub(crate) fn probe_enabled() -> bool {
-    PROBE_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
-}
 
 /// Writes a probe press timestamp to the capped log at `ux0:data/xcloud-rust/latency-probe.log`.
 /// Cap at ~200 lines; never panics or blocks on IO error.

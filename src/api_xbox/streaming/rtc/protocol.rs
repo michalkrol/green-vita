@@ -119,7 +119,7 @@ impl XboxRtcProtocol {
             | ((frame.left_trigger > 0.5) as u32) << 15
             | ((frame.right_trigger > 0.5) as u32) << 16;
         let newly_pressed = probe_buttons & !self.last_button_mask.unwrap_or(0);
-        if newly_pressed != 0 && crate::api_xbox::streaming::control::input::probe_enabled() {
+        if newly_pressed != 0 {
             // Store probe press timestamp (microseconds since process start)
             let start_us = now.duration_since(*crate::api_xbox::streaming::control::input::SESSION_START.get().expect("SESSION_START should be initialized")).as_micros() as u64;
             crate::api_xbox::streaming::control::input::PROBE_PRESS_US.store(start_us, Ordering::Relaxed);

@@ -35,6 +35,10 @@ pub(crate) struct VideoMetrics {
     pub(crate) dec_queue_full: AtomicU64,
     pub(crate) flushes: AtomicU64,
     pub(crate) twcc_sent: AtomicU64,
+    /// REMB reports actually written (window counter) and the bitrate value last
+    /// requested, so a session log shows whether the console obeys our requests.
+    pub(crate) remb_sent: AtomicU64,
+    pub(crate) remb_bps: AtomicU64,
     pub(crate) twcc_samples: AtomicU64,
     pub(crate) rtp_ext_any: AtomicU64,
     pub(crate) twcc_stride: AtomicU64,
@@ -132,6 +136,8 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     dec_queue_full: AtomicU64::new(0),
     flushes: AtomicU64::new(0),
     twcc_sent: AtomicU64::new(0),
+    remb_sent: AtomicU64::new(0),
+    remb_bps: AtomicU64::new(0),
     twcc_samples: AtomicU64::new(0),
     rtp_ext_any: AtomicU64::new(0),
     twcc_stride: AtomicU64::new(0),
@@ -203,6 +209,8 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) dec_queue_full: u64,
     pub(crate) flushes: u64,
     pub(crate) twcc_sent: u64,
+    pub(crate) remb_sent: u64,
+    pub(crate) remb_bps: u64,
     pub(crate) twcc_samples: u64,
     pub(crate) rtp_ext_any: u64,
     pub(crate) twcc_stride: u64,
@@ -278,6 +286,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let dec_queue_full = METRICS.dec_queue_full.swap(0, Ordering::Relaxed);
     let flushes = METRICS.flushes.load(Ordering::Relaxed);
     let twcc_sent = METRICS.twcc_sent.load(Ordering::Relaxed);
+    let remb_sent = METRICS.remb_sent.swap(0, Ordering::Relaxed);
+    let remb_bps = METRICS.remb_bps.load(Ordering::Relaxed);
     let twcc_samples = METRICS.twcc_samples.swap(0, Ordering::Relaxed);
     let rtp_ext_any = METRICS.rtp_ext_any.swap(0, Ordering::Relaxed);
     let twcc_stride = METRICS.twcc_stride.swap(0, Ordering::Relaxed);
@@ -349,6 +359,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
         dec_queue_full,
         flushes,
         twcc_sent,
+        remb_sent,
+        remb_bps,
         twcc_samples,
         rtp_ext_any,
         twcc_stride,
