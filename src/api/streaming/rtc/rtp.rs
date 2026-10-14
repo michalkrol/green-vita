@@ -391,20 +391,41 @@ impl VideoRtp {
         // Check for video-timing extension (extmap id=7) in the packet header.
         let video_timing_ext_id = 7u8;
         if packet.header.extensions.iter().any(|ext| ext.id == video_timing_ext_id) {
-            VT_PACKETS.fetch_add(1, Ordering::Relaxed);
+            // Increment METRICS counters (not local statics)
+            METRICS.vt_packets.fetch_add(1, Ordering::Relaxed);
             // Check if the extension payload is not all zeros
             if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == video_timing_ext_id) {
                 if !ext.payload.iter().all(|&b| b == 0) {
-                    VT_NONZERO.fetch_add(1, Ordering::Relaxed);
+                    METRICS.vt_nonzero.fetch_add(1, Ordering::Relaxed);
                 }
-                // Dump raw extension bytes for the first 100 packets carrying video-timing.
-                if VT_DUMP_COUNTER.fetch_add(1, Ordering::Relaxed) < 100 {
+                // Decode pacer-exit when payload length is 13
+                if ext.payload.len() == 13 {
+                    let f4 = u16::from_be_bytes([ext.payload[7], ext.payload[8]]) as u64;
+                    METRICS.vt_exit_ms_sum.fetch_add(f4, Ordering::Relaxed);
+                    METRICS.vt_exit_ms_max.fetch_max(f4, Ordering::Relaxed);
+                    METRICS.vt_exit_samples.fetch_add(1, Ordering::Relaxed);
+                }
+                // Whole-session sampling: append a line at most once every 500 ms
+                // (using a static AtomicU64 holding the last dump's PROCESS_START.elapsed().as_micros()),
+                // with a total-lines cap of 6000 (reusing VT_DUMP_COUNTER).
+                static VT_DUMP_LAST_MICROS: AtomicU64 = AtomicU64::new(0);
+                let now_micros: u64 = PROCESS_START.elapsed().as_micros().try_into().unwrap_or(0);
+                let last_dump = VT_DUMP_LAST_MICROS.load(Ordering::Relaxed);
+                let line_count = VT_DUMP_COUNTER.load(Ordering::Relaxed);
+                if now_micros.saturating_sub(last_dump) >= 500_000 && line_count < 6000 {
+                    VT_DUMP_LAST_MICROS.store(now_micros, Ordering::Relaxed);
+                    VT_DUMP_COUNTER.fetch_add(1, Ordering::Relaxed);
                     let rtp_ts = packet.header.timestamp;
                     let seq = packet.header.sequence_number;
-                    let hex_bytes = format!("{:04x}", ext.payload);
+                    let f4 = if ext.payload.len() == 13 {
+                        u16::from_be_bytes([ext.payload[7], ext.payload[8]]) as u64
+                    } else {
+                        0
+                    };
+                    let hex_bytes: String = ext.payload.iter().map(|b| format!("{:02x}", b)).collect();
                     // Use OpenOptions to create/append to the log file.
                     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("ux0:data/xcloud-rust/video-timing.log") {
-                        let _ = writeln!(file, "{} {} {}", rtp_ts, seq, hex_bytes);
+                        let _ = writeln!(file, "{} {} {} {} {}", now_micros, rtp_ts, seq, f4, hex_bytes);
                     }
                 }
             }

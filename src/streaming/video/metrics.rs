@@ -125,6 +125,13 @@ pub(crate) struct VideoMetrics {
     // all zeros.  Tracked per-second via swap(0) in drain_metrics().
     pub(crate) vt_packets: AtomicU64,
     pub(crate) vt_nonzero: AtomicU64,
+    // ** Task D: video-timing pacer-exit extension (extmap id=7)
+    // vt_exit_ms_sum: cumulative pacer-exit delta (us) sampled per packet
+    // vt_exit_ms_max: max pacer-exit delta seen in the current 1-second window (reset via swap(0))
+    // vt_exit_samples: count of pacer-exit samples in the current 1-second window (reset via swap(0))
+    pub(crate) vt_exit_ms_sum: AtomicU64,
+    pub(crate) vt_exit_ms_max: AtomicU64,
+    pub(crate) vt_exit_samples: AtomicU64,
     // RTX-PT packets with no usable mapping (unmapped)
     pub(crate) rtx_read_unmapped: AtomicU64,
 }
@@ -202,6 +209,10 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     // ** Task C: video-timing extension census
     vt_packets: AtomicU64::new(0),
     vt_nonzero: AtomicU64::new(0),
+    // ** Task D: video-timing pacer-exit extension (extmap id=7)
+    vt_exit_ms_sum: AtomicU64::new(0),
+    vt_exit_ms_max: AtomicU64::new(0),
+    vt_exit_samples: AtomicU64::new(0),
     rtx_read_unmapped: AtomicU64::new(0),
     catchup_aus_skipped: AtomicU64::new(0),
     catchup_lag_max_us: AtomicU64::new(0),
@@ -300,6 +311,9 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) rtcp_in_unhandled_track: u64,
     pub(crate) vt_packets: u64,
     pub(crate) vt_nonzero: u64,
+    // Task D: video-timing pacer-exit metrics
+    pub(crate) vt_exit_ms_mean: u64,
+    pub(crate) vt_exit_ms_max: u64,
 }
 
 /// Drains all per-second metric atomics exactly once and returns a snapshot.
@@ -389,6 +403,11 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let rtcp_in_unhandled_track = METRICS.rtcp_in_unhandled_track.swap(0, Ordering::Relaxed);
     let vt_packets = METRICS.vt_packets.swap(0, Ordering::Relaxed);
     let vt_nonzero = METRICS.vt_nonzero.swap(0, Ordering::Relaxed);
+    // Task D: video-timing pacer-exit metrics (swap=0 resets each 1-second drain)
+    let vt_exit_ms_sum = METRICS.vt_exit_ms_sum.swap(0, Ordering::Relaxed);
+    let vt_exit_ms_max = METRICS.vt_exit_ms_max.swap(0, Ordering::Relaxed);
+    let vt_exit_samples = METRICS.vt_exit_samples.swap(0, Ordering::Relaxed);
+    let vt_exit_ms_mean = vt_exit_ms_sum / vt_exit_samples.max(1);
 
     MetricsSnapshot {
         rtp_assembly_sum_us,
@@ -459,6 +478,9 @@ pub fn drain_metrics() -> MetricsSnapshot {
         rtx_read_rtx_pt,
         rtx_read_rewritten,
         rtx_read_unmapped,
+    // Task D: video-timing pacer-exit metrics (appended at end to stay in sync with HEADER/cols)
+    vt_exit_ms_mean,
+    vt_exit_ms_max,
     sr_age_ms,
     sr_clock_offset_ms,
     rtcp_in_sr,
