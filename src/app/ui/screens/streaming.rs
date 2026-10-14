@@ -121,7 +121,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                     );
 
                     // Large text readout (48 pt) of microseconds-since-press formatted as milliseconds
-                    let text_pos = egui::pos2(30.0, 50.0);
+                    // Centred on the square's own axis so the text always sits inside the
+                    // flashing background regardless of how wide the readout gets.
+                    let text_pos = egui::pos2(rect_pos.x + rect_size.x * 0.5, 50.0);
                     ui.painter().text(
                         text_pos,
                         egui::Align2::CENTER_TOP,
@@ -131,7 +133,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                     );
 
                     // Small line showing the probe counter and the button being used
-                    let counter_pos = egui::pos2(30.0, 100.0);
+                    let counter_pos = egui::pos2(rect_pos.x + rect_size.x * 0.5, 100.0);
                     ui.painter().text(
                         counter_pos,
                         egui::Align2::CENTER_TOP,
