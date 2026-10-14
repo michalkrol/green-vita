@@ -119,6 +119,12 @@ pub(crate) struct VideoMetrics {
     pub(crate) rtx_read_rtx_pt: AtomicU64,
     // Packets actually rewritten (SSRC changed)
     pub(crate) rtx_read_rewritten: AtomicU64,
+    // ** Task C: video-timing extension census
+    // vt_packets: packets carrying an extension whose id equals the negotiated id
+    // for video-timing (id=7). vt_nonzero: those whose extension payload is not
+    // all zeros.  Tracked per-second via swap(0) in drain_metrics().
+    pub(crate) vt_packets: AtomicU64,
+    pub(crate) vt_nonzero: AtomicU64,
     // RTX-PT packets with no usable mapping (unmapped)
     pub(crate) rtx_read_unmapped: AtomicU64,
 }
@@ -193,6 +199,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     rtx_map_learned: AtomicU64::new(0),
     rtx_read_rtx_pt: AtomicU64::new(0),
     rtx_read_rewritten: AtomicU64::new(0),
+    // ** Task C: video-timing extension census
+    vt_packets: AtomicU64::new(0),
+    vt_nonzero: AtomicU64::new(0),
     rtx_read_unmapped: AtomicU64::new(0),
     catchup_aus_skipped: AtomicU64::new(0),
     catchup_lag_max_us: AtomicU64::new(0),
@@ -289,6 +298,8 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) rtcp_in_remb: u64,
     pub(crate) rtcp_in_other: u64,
     pub(crate) rtcp_in_unhandled_track: u64,
+    pub(crate) vt_packets: u64,
+    pub(crate) vt_nonzero: u64,
 }
 
 /// Drains all per-second metric atomics exactly once and returns a snapshot.
@@ -376,6 +387,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let rtcp_in_remb = METRICS.rtcp_in_remb.swap(0, Ordering::Relaxed);
     let rtcp_in_other = METRICS.rtcp_in_other.swap(0, Ordering::Relaxed);
     let rtcp_in_unhandled_track = METRICS.rtcp_in_unhandled_track.swap(0, Ordering::Relaxed);
+    let vt_packets = METRICS.vt_packets.swap(0, Ordering::Relaxed);
+    let vt_nonzero = METRICS.vt_nonzero.swap(0, Ordering::Relaxed);
 
     MetricsSnapshot {
         rtp_assembly_sum_us,
@@ -455,6 +468,8 @@ pub fn drain_metrics() -> MetricsSnapshot {
     rtcp_in_remb,
     rtcp_in_other,
     rtcp_in_unhandled_track,
+    vt_packets,
+    vt_nonzero,
     }
 }
 

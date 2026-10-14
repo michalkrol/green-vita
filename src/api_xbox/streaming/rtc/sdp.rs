@@ -113,11 +113,13 @@ pub(super) fn request_video_fps(sdp: &str, video_fps: u32) -> String {
     result
 }
 
-/// Injects `transport-wide-cc` feedback declaration and both extmap URIs into the
-/// video section.  The console annotates every RTP packet with transport sequence
-/// numbers only when explicitly requested in the SDP offer; without these lines the
-/// console falls back to ~1/s sparse probing, starving client-side TWCC feedback.
-pub(super) fn enable_transport_cc(sdp: &str) -> String {
+/// Injects `transport-wide-cc` feedback declaration, both extmap URIs, and
+/// bandwidth (`b=AS`/`b=TIAS`) attributes into the video section.  The console
+/// annotates every RTP packet with transport sequence numbers only when explicitly
+/// requested in the SDP offer; without these lines the console falls back to ~1/s
+/// sparse probing, starving client-side TWCC feedback.
+pub(super) fn enable_transport_cc(sdp: &str, bitrate_kbps: u32) -> String {
+    let twcc_bandwidth_tias = bitrate_kbps * 1000;
     let newline = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
     let trailing_newline = sdp.ends_with('\n');
     let lines = sdp
@@ -149,6 +151,9 @@ pub(super) fn enable_transport_cc(sdp: &str) -> String {
                 output.push(format!("a=extmap:11 urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"));
                 output.push(format!("a=extmap:13 urn:3gpp:video-orientation"));
                 output.push(format!("a=extmap:14 urn:ietf:params:rtp-hdrext:toffset"));
+                // Inject bandwidth attributes: b=AS (max bandwidth) and b=TIAS (min bandwidth)
+                output.push(format!("b=AS:{bitrate_kbps}"));
+                output.push(format!("b=TIAS:{twcc_bandwidth_tias}"));
                 extmap_injected = true;
             }
             in_video = line.starts_with("m=video ");
@@ -310,8 +315,8 @@ mod tests {
         assert!(constrained.contains("profile-level-id=42e01f"), "{constrained}");
         assert!(constrained.contains("max-fs=8160"), "{constrained}");
         assert!(constrained.contains("max-fr=30"), "{constrained}");
-        // max-qp is no longer injected; assert its absence.
-        assert!(!constrained.contains("max-qp=35"), "{constrained}");
+        // max-qp is now injected as part of the fmtp synthesis.
+        assert!(constrained.contains("max-qp=35"), "{constrained}");
     }
 
     #[test]
@@ -586,6 +591,10 @@ pub(super) fn constrain_h264_codec(sdp: &str, video_fps: u32) -> String {
             if !merged.contains("max-fs=") {
                 merged.push(';');
                 merged.push_str(MAX_FS_PARAM);
+            }
+            if !merged.contains("max-qp=") {
+                merged.push(';');
+                merged.push_str("max-qp=35");
             }
             output.push(merged);
             fmtp_merged = true;

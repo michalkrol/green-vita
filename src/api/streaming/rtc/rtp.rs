@@ -12,8 +12,10 @@ use rtc::rtp::codec::h264::H264Packet;
 use rtc::rtp::codec::opus::OpusPacket;
 use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use std::fs::OpenOptions;
+use std::io::Write;
 
 const MAX_PENDING_AUDIO_PACKETS: usize = 32;
 const MAX_H264_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
@@ -69,6 +71,15 @@ const LAG_RESET_FORWARD_US: u64 = 5_000_000;
 
 /// Negotiated transport-cc extmap ID from the answer SDP (0 = not negotiated).
 pub(crate) static TWCC_EXT_ID: AtomicU8 = AtomicU8::new(0);
+
+/// Counter for video-timing extension packets (extension id = 7).
+pub(crate) static VT_PACKETS: AtomicU64 = AtomicU64::new(0);
+
+/// Counter for video-timing extension packets with non-zero payload.
+pub(crate) static VT_NONZERO: AtomicU64 = AtomicU64::new(0);
+
+/// Counter to limit video-timing raw dump to first 100 packets.
+static VT_DUMP_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Default)]
 pub(crate) struct VideoSampleStats {
@@ -373,6 +384,28 @@ impl VideoRtp {
                     crate::streaming::video::metrics::METRICS
                         .twcc_samples
                         .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        // Check for video-timing extension (extmap id=7) in the packet header.
+        let video_timing_ext_id = 7u8;
+        if packet.header.extensions.iter().any(|ext| ext.id == video_timing_ext_id) {
+            VT_PACKETS.fetch_add(1, Ordering::Relaxed);
+            // Check if the extension payload is not all zeros
+            if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == video_timing_ext_id) {
+                if !ext.payload.iter().all(|&b| b == 0) {
+                    VT_NONZERO.fetch_add(1, Ordering::Relaxed);
+                }
+                // Dump raw extension bytes for the first 100 packets carrying video-timing.
+                if VT_DUMP_COUNTER.fetch_add(1, Ordering::Relaxed) < 100 {
+                    let rtp_ts = packet.header.timestamp;
+                    let seq = packet.header.sequence_number;
+                    let hex_bytes = format!("{:04x}", ext.payload);
+                    // Use OpenOptions to create/append to the log file.
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("ux0:data/xcloud-rust/video-timing.log") {
+                        let _ = writeln!(file, "{} {} {}", rtp_ts, seq, hex_bytes);
+                    }
                 }
             }
         }
