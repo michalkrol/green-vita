@@ -134,6 +134,15 @@ pub(crate) struct VideoMetrics {
     pub(crate) vt_exit_samples: AtomicU64,
     // RTX-PT packets with no usable mapping (unmapped)
     pub(crate) rtx_read_unmapped: AtomicU64,
+
+    // ** Task E: video-timing queue/transit metrics
+    // vt_transit_us_last: latest observed transit (us) computed from RTP timing ext
+    pub(crate) vt_transit_us_last: AtomicI64,
+    // vt_transit_us_min: minimum transit observed over the session (us)
+    pub(crate) vt_transit_us_min: AtomicI64,
+
+    // Per-second drain events counter (swapped to 0 each second)
+    pub(crate) drain_events: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -222,6 +231,10 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     audio_queue_ms: AtomicU64::new(0),
     audio_builder_drops: AtomicU64::new(0),
     audio_queue_clears: AtomicU64::new(0),
+    // ** Task E: video-timing queue/transit metrics
+    vt_transit_us_last: AtomicI64::new(i64::MAX),
+    vt_transit_us_min: AtomicI64::new(i64::MAX),
+    drain_events: AtomicU64::new(0),
 };
 
 /// One drained sample of every metric, taken once per second.
@@ -309,7 +322,10 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) rtcp_in_remb: u64,
     pub(crate) rtcp_in_other: u64,
     pub(crate) rtcp_in_unhandled_track: u64,
+    pub(crate) drain_events: u64,
     pub(crate) vt_packets: u64,
+    pub(crate) vt_transit_ms_rel: u64,
+    pub(crate) vt_transit_ms_min: i64,
     pub(crate) vt_nonzero: u64,
     // Task D: video-timing pacer-exit metrics
     pub(crate) vt_exit_ms_mean: u64,
@@ -394,6 +410,7 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let rtx_read_unmapped = METRICS.rtx_read_unmapped.swap(0, Ordering::Relaxed);
     let sr_age_ms = METRICS.sr_age_ms.swap(0, Ordering::Relaxed);
     let sr_clock_offset_ms = METRICS.sr_clock_offset_ms.swap(0, Ordering::Relaxed);
+    let drain_events = METRICS.drain_events.swap(0, Ordering::Relaxed);
     let rtcp_in_sr = METRICS.rtcp_in_sr.swap(0, Ordering::Relaxed);
     let rtcp_in_rr = METRICS.rtcp_in_rr.swap(0, Ordering::Relaxed);
     let rtcp_in_pli = METRICS.rtcp_in_pli.swap(0, Ordering::Relaxed);
@@ -408,6 +425,22 @@ pub fn drain_metrics() -> MetricsSnapshot {
     let vt_exit_ms_max = METRICS.vt_exit_ms_max.swap(0, Ordering::Relaxed);
     let vt_exit_samples = METRICS.vt_exit_samples.swap(0, Ordering::Relaxed);
     let vt_exit_ms_mean = vt_exit_ms_sum / vt_exit_samples.max(1);
+
+    // Task E: video-timing queue/transit metrics
+    let vt_transit_ms_rel = {
+        let last = METRICS.vt_transit_us_last.load(Ordering::Relaxed);
+        let min = METRICS.vt_transit_us_min.load(Ordering::Relaxed);
+        if last == i64::MAX || min == i64::MAX {
+            0
+        } else {
+            let diff = last.saturating_sub(min);
+            if diff < 0 { 0 } else { diff as u64 / 1000 }
+        }
+    };
+    let vt_transit_ms_min = {
+        let min = METRICS.vt_transit_us_min.load(Ordering::Relaxed);
+        if min == i64::MAX { 0 } else { min }
+    };
 
     MetricsSnapshot {
         rtp_assembly_sum_us,
@@ -490,8 +523,11 @@ pub fn drain_metrics() -> MetricsSnapshot {
     rtcp_in_remb,
     rtcp_in_other,
     rtcp_in_unhandled_track,
+    drain_events,
     vt_packets,
     vt_nonzero,
+    vt_transit_ms_rel,
+    vt_transit_ms_min,
     }
 }
 

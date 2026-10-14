@@ -1,4 +1,4 @@
-use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver, set_negotiated_rtx_map, request_remb_shock};
+use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver, set_negotiated_rtx_map, request_remb_shock, REMB_OVERRIDE_BPS};
 use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
@@ -53,6 +53,11 @@ const LAG_FLUSH_ENABLED: bool = false;
 /// false both the drop-count and the lag triggers no-op; drops and lag are still
 /// counted and logged.  Supersedes LAG_FLUSH_ENABLED while disabled.
 const FLUSH_TRIGGER_ENABLED: bool = false;
+
+/// REMB drain governor thresholds and constants.
+const TRANSIT_HIGH_MS: u64 = 60;
+const TRANSIT_LOW_MS: u64 = 20;
+const DRAIN_BPS: u32 = 500_000;
 
 /// Prints the per-second HUD/status line to stderr.  Disabled because it runs on
 /// the latency-critical RTC pump thread and stderr is blocking I/O on the Vita;
@@ -133,6 +138,8 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     /// Last time we sampled crate RTX stats via get_stats().
     last_stats_sample: Option<Instant>,
     pub status: String,
+    /// Drain governor state: true when REMB override is actively draining the console queue.
+    draining: bool,
 }
 
 impl<B: RtcSessionBackend> RtcSession<B> {
@@ -185,6 +192,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             unknown_track_packets: 0,
             last_stats_sample: None,
             status: "Negotiating WebRTC connection".to_owned(),
+            draining: false,
         })
     }
 
@@ -265,6 +273,28 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         }
         // REMB+TWCC feedback: keeps the console's bandwidth estimate fresh.
         self.video.send_remb(&mut self.peer, now);
+        // Drain governor: if queue is building up (transit > high threshold),
+        // override REMB to drain the console's send buffer. When the queue
+        // drains below the low threshold, restore normal REMB.
+        let vt_transit_ms_rel = {
+            let last = METRICS.vt_transit_us_last.load(Ordering::Relaxed);
+            let min = METRICS.vt_transit_us_min.load(Ordering::Relaxed);
+            if min == i64::MAX || last <= min {
+                0
+            } else {
+                ((last - min) / 1000) as u64
+            }
+        };
+        if vt_transit_ms_rel > TRANSIT_HIGH_MS && !self.draining {
+            eprintln!("drain governor: transit={}ms > {}ms, starting drain", vt_transit_ms_rel, TRANSIT_HIGH_MS);
+            REMB_OVERRIDE_BPS.store(DRAIN_BPS, Ordering::Relaxed);
+            self.draining = true;
+            METRICS.drain_events.fetch_add(1, Ordering::Relaxed);
+        } else if self.draining && vt_transit_ms_rel < TRANSIT_LOW_MS {
+            eprintln!("drain governor: transit={}ms < {}ms, stopping drain", vt_transit_ms_rel, TRANSIT_LOW_MS);
+            REMB_OVERRIDE_BPS.store(0, Ordering::Relaxed);
+            self.draining = false;
+        }
         self.video.send_twcc(&mut self.peer, now);
         // NACK feedback: request retransmission of missing RTP packets.
         self.video.send_nacks(&mut self.peer, now);

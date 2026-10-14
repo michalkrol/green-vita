@@ -20,6 +20,8 @@ const TWCC_INTERVAL: Duration = Duration::from_millis(15);
 const TWCC_PACKET_THRESHOLD: usize = 8;
 /// Shared REMB bitrate knob accessible from main thread.
 pub(crate) static REMB_BPS: AtomicU32 = AtomicU32::new(15_000_000);
+/// REMB override: when set (>0), sent instead of dynamic REMB to drain console queue.
+pub(crate) static REMB_OVERRIDE_BPS: AtomicU32 = AtomicU32::new(0);
 /// REMB shock: brief deep drop in requested bitrate to drain the console's send/encode queue.
 pub(crate) const REMB_SHOCK_BPS: u32 = 150_000;
 /// Window during which the shock is active.
@@ -28,6 +30,11 @@ const REMB_SHOCK_WINDOW: Duration = Duration::from_secs(2);
 static SHOCK_BPS: AtomicU64 = AtomicU64::new(0);
 /// Arbitrary stable local RTCP sender SSRC (we transmit no RTP of our own).
 const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
+
+/// When true, NACK feedback packets are generated and sent to request
+/// retransmissions of missing RTP packets. Set to false to trade visual artefacts
+/// for latency on congested links, per an explicit product decision.
+pub(crate) const NACK_ENABLED: bool = false;
 
 /// Process start reference for monotonic timestamps used by RTCP SR anchoring
 /// and capture-to-arrival latency. Initialized once at first use.
@@ -298,6 +305,12 @@ impl VideoReceiver {
     /// Generates and sends NACK feedback for missing RTP sequences detected during
     /// access-unit assembly. Called once per pump tick.
     pub(crate) fn send_nacks(&mut self, peer: &mut RTCPeerConnection, now: Instant) {
+        if !NACK_ENABLED {
+            // NACKs disabled: trade visual artefacts for latency on congested links,
+            // per an explicit product decision.  Inbound RTX packets are still handled
+            // normally if they arrive.
+            return;
+        }
         let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else {
             return;
         };
@@ -325,6 +338,39 @@ impl VideoReceiver {
         let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else {
             return;
         };
+
+        // If REMB override is set, send that value instead of dynamic REMB.
+        // This is used by the drain governor to force bitrate down and drain the
+        // console's send/encode buffer.
+        let override_bps = REMB_OVERRIDE_BPS.load(Ordering::Relaxed);
+        if override_bps > 0 {
+            // Respect the remb_interval_ms rate limit
+            let remb_interval = Duration::from_millis(self.remb_interval_ms as u64);
+            if self
+                .last_remb_at
+                .is_some_and(|sent_at| now.duration_since(sent_at) < remb_interval)
+            {
+                return; // Not due yet, don't send override yet
+            }
+            self.last_remb_at = Some(now);
+            // Log what we actually asked for
+            crate::streaming::video::metrics::METRICS
+                .remb_bps
+                .store(override_bps as u64, Ordering::Relaxed);
+            crate::streaming::video::metrics::METRICS
+                .remb_sent
+                .fetch_add(1, Ordering::Relaxed);
+            if let Some(mut receiver) = peer.rtp_receiver(receiver_id) {
+                let remb =
+                    rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {
+                        sender_ssrc: LOCAL_RTCP_SENDER_SSRC,
+                        bitrate: override_bps as f32,
+                        ssrcs: vec![ssrc],
+                    };
+                let _ = receiver.write_rtcp(vec![Box::new(remb)]);
+            }
+            return;
+        }
 
         // Check if shock window has expired
         let shock_expiry = SHOCK_BPS.load(Ordering::Relaxed);

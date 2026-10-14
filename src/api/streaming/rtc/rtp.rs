@@ -37,7 +37,7 @@ const TWCC_MAX_ANNOTATIONS: usize = 200;
 /// dropped the AU and asked for a keyframe before the repair could arrive,
 /// which is why loss recovery never worked and artefacts persisted until the
 /// next IDR.
-const AU_ASSEMBLY_TIMEOUT: Duration = Duration::from_millis(35);
+const AU_ASSEMBLY_TIMEOUT: Duration = Duration::from_millis(4);
 
 /// Catch-up: if a completed access unit lags the newest RTP timestamp we have
 /// seen (any packet of a newer AU) by more than this, skip it and jump to live
@@ -49,7 +49,7 @@ const AU_CATCHUP_LAG_THRESHOLD_US: u64 = 100_000;
 /// once no further packets have been seen for this long.  Measured from the
 /// LAST observed packet (not the first) — first-packet expiry caused a resync
 /// storm historically.
-const AU_STALL_EXPIRY: Duration = Duration::from_millis(100);
+const AU_STALL_EXPIRY: Duration = Duration::from_millis(20);
 
 /// Length of the lag measurement window.  The reported lag is the slip relative
 /// to the best-served access unit seen within this window, so a constant
@@ -404,6 +404,17 @@ impl VideoRtp {
                     METRICS.vt_exit_ms_sum.fetch_add(f4, Ordering::Relaxed);
                     METRICS.vt_exit_ms_max.fetch_max(f4, Ordering::Relaxed);
                     METRICS.vt_exit_samples.fetch_add(1, Ordering::Relaxed);
+                    // Queue estimate for the drain governor: our arrival (monotonic us)
+                    // minus the console's wire time (RTP capture timestamp + pacer-exit
+                    // delta). It spans two clocks so the absolute value carries an
+                    // unknown constant; the session minimum is the best-case path and
+                    // the governor uses the difference (buffer depth above best case).
+                    let now_us = PROCESS_START.elapsed().as_micros() as i64;
+                    let wire_us = (packet.header.timestamp as i64) * 1_000_000 / 90_000
+                        + (f4 as i64) * 1_000;
+                    let transit_us = now_us - wire_us;
+                    METRICS.vt_transit_us_last.store(transit_us, Ordering::Relaxed);
+                    METRICS.vt_transit_us_min.fetch_min(transit_us, Ordering::Relaxed);
                 }
                 // Whole-session sampling: append a line at most once every 500 ms
                 // (using a static AtomicU64 holding the last dump's PROCESS_START.elapsed().as_micros()),
