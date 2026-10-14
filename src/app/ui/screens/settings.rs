@@ -60,6 +60,7 @@ enum SettingsRow {
     RembIntervalMs(u32),
     TwccDelayInjection(bool),
     TwccDelayRampMax(u8),
+    PeriodicKeyframe(bool),
     LatencyProbe(bool),
     FlushIntervalS(u32),
     Version,
@@ -128,6 +129,9 @@ rows.push(SettingsRow::UnlockVideoFps(app.settings.unlock_video_fps));
         rows.push(SettingsRow::RembIntervalMs(app.settings.remb_interval_ms));
         rows.push(SettingsRow::TwccDelayInjection(app.settings.twcc_delay_injection));
         rows.push(SettingsRow::TwccDelayRampMax(app.settings.twcc_delay_ramp_max));
+        rows.push(SettingsRow::PeriodicKeyframe(
+            app.settings.periodic_keyframe_enabled,
+        ));
         rows.push(SettingsRow::LatencyProbe(app.settings.latency_probe));
         rows.push(SettingsRow::FlushIntervalS(app.settings.flush_interval_s));
     }
@@ -379,19 +383,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     }
                 }
 
-                // Flush interval preset row (console encoder rebuild)
-                {
-                    let interval = app.settings.flush_interval_s;
-                    let label = if interval == 0 {
-                        "Flush interval (console encoder): Off".to_owned()
-                    } else {
-                        format!("Flush interval (console encoder): {interval}s")
-                    };
-                    if focus_row(ui, selected_index == row_index, label) {
-                        commands.push(Command::SetFlushIntervalS(interval).into());
-                    }
-                }
-row_index += 1;
+                row_index += 1;
 
                 ui.add_space(14.0);
                 ui.separator();
@@ -431,16 +423,6 @@ row_index += 1;
                         commands.push(
                             Command::SetShowFpsOverlay(!app.settings.show_fps_overlay).into(),
                         );
-                    }
-                    row_index += 1;
-
-                    if checkbox_row(
-                        ui,
-                        selected_index == row_index,
-                        app.settings.latency_probe,
-                        i18n.text("settings-latency-probe"),
-                    ) {
-                        commands.push(Command::SetLatencyProbe(!app.settings.latency_probe).into());
                     }
                     row_index += 1;
                 }
@@ -524,6 +506,31 @@ row_index += 1;
                         Command::SetPeriodicKeyframe(!app.settings.periodic_keyframe_enabled)
                             .into(),
                     );
+                }
+                row_index += 1;
+
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.latency_probe,
+                    i18n.text("settings-latency-probe"),
+                ) {
+                    commands.push(Command::SetLatencyProbe(!app.settings.latency_probe).into());
+                }
+                row_index += 1;
+
+                // Flush interval preset row (console encoder rebuild)
+                {
+                    let interval = app.settings.flush_interval_s;
+                    let label = if interval == 0 {
+                        "Flush interval (console encoder): Off".to_owned()
+                    } else {
+                        format!("Flush interval (console encoder): {interval}s")
+                    };
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = next_flush_interval_preset(interval);
+                        commands.push(Command::SetFlushIntervalS(next).into());
+                    }
                 }
                 row_index += 1;
                 } // end Custom-only params
@@ -748,6 +755,9 @@ impl App {
             }
             SettingsRow::StreamFpsOverlay(enabled) => {
                 return self.handle_settings_command(Command::SetShowFpsOverlay(!enabled));
+            }
+            SettingsRow::PeriodicKeyframe(enabled) => {
+                return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
             }
             SettingsRow::LatencyProbe(enabled) => {
                 return self.handle_settings_command(Command::SetLatencyProbe(!enabled));
