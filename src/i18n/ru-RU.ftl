@@ -81,3 +81,5 @@ error-stream-state = Ошибка проверки трансляции
 error-webrtc-session = Ошибка сеанса WebRTC
 error-stream-ended = Сеанс трансляции завершён
 error-technical-details = Технические сведения: { $error }
+
+settings-latency-probe = Тест задержки (любая кнопка)

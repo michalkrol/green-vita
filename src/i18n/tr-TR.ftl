@@ -81,3 +81,5 @@ error-stream-state = Yayın durumu denetlenemedi
 error-webrtc-session = WebRTC oturumu başarısız
 error-stream-ended = Yayın oturumu sona erdi
 error-technical-details = Teknik ayrıntılar: { $error }
+
+settings-latency-probe = Gecikme testi (herhangi bir tuş)

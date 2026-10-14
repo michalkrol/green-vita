@@ -81,3 +81,5 @@ error-stream-state = Streamstatus controleren mislukt
 error-webrtc-session = WebRTC-sessie mislukt
 error-stream-ended = Streamsessie beëindigd
 error-technical-details = Technische details: { $error }
+
+settings-latency-probe = Latentietest (elke knop)

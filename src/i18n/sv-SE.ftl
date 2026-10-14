@@ -81,3 +81,5 @@ error-stream-state = Kunde inte kontrollera strömmen
 error-webrtc-session = WebRTC-session misslyckades
 error-stream-ended = Strömningssessionen avslutades
 error-technical-details = Tekniska detaljer: { $error }
+
+settings-latency-probe = Latensprov (valfri knapp)

@@ -81,3 +81,5 @@ error-stream-state = فشل التحقق من حالة البث
 error-webrtc-session = فشلت جلسة WebRTC
 error-stream-ended = انتهت جلسة البث
 error-technical-details = التفاصيل التقنية: { $error }
+
+settings-latency-probe = اختبار الكمون (أي زر)

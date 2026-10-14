@@ -379,13 +379,13 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     }
                 }
 
-                // Flush interval preset row
+                // Flush interval preset row (console encoder rebuild)
                 {
                     let interval = app.settings.flush_interval_s;
                     let label = if interval == 0 {
-                        "Off".to_owned()
+                        "Flush interval (console encoder): Off".to_owned()
                     } else {
-                        format!("{interval}s")
+                        format!("Flush interval (console encoder): {interval}s")
                     };
                     if focus_row(ui, selected_index == row_index, label) {
                         commands.push(Command::SetFlushIntervalS(interval).into());
@@ -753,8 +753,8 @@ impl App {
                 return self.handle_settings_command(Command::SetLatencyProbe(!enabled));
             }
             SettingsRow::FlushIntervalS(interval) => {
-                self.settings.flush_interval_s = *interval;
-                self.settings.save();
+                let next = next_flush_interval_preset(*interval);
+                return self.handle_settings_command(Command::SetFlushIntervalS(next));
             }
 SettingsRow::SwapShouldersTriggers(enabled) => {
                 return self.handle_settings_command(Command::SetSwapShouldersTriggers(!enabled));

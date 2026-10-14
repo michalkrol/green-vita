@@ -81,3 +81,5 @@ error-stream-state = 检查串流状态失败
 error-webrtc-session = WebRTC 会话失败
 error-stream-ended = 串流会话已结束
 error-technical-details = 技术详情：{ $error }
+
+settings-latency-probe = 延迟测试（任意按钮）

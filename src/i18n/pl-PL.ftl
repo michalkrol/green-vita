@@ -81,3 +81,5 @@ error-stream-state = Nie udało się sprawdzić transmisji
 error-webrtc-session = Sesja WebRTC nie powiodła się
 error-stream-ended = Sesja transmisji zakończona
 error-technical-details = Szczegóły techniczne: { $error }
+
+settings-latency-probe = Test opóźnień (dowolny przycisk)
