@@ -55,7 +55,10 @@ const LAG_FLUSH_ENABLED: bool = false;
 const FLUSH_TRIGGER_ENABLED: bool = false;
 
 /// REMB drain governor thresholds and constants.
-const TRANSIT_HIGH_MS: u64 = 60;
+// Disabled: the transit input mixed a wrapping 32-bit RTP clock with the
+// process clock and latched the governor at 500 kbps for whole sessions.
+// Re-enable only after adding RTP-timestamp wrap tracking.
+const TRANSIT_HIGH_MS: u64 = u64::MAX;
 const TRANSIT_LOW_MS: u64 = 20;
 const DRAIN_BPS: u32 = 500_000;
 

@@ -37,7 +37,7 @@ const TWCC_MAX_ANNOTATIONS: usize = 200;
 /// dropped the AU and asked for a keyframe before the repair could arrive,
 /// which is why loss recovery never worked and artefacts persisted until the
 /// next IDR.
-const AU_ASSEMBLY_TIMEOUT: Duration = Duration::from_millis(4);
+const AU_ASSEMBLY_TIMEOUT: Duration = Duration::from_millis(12);
 
 /// Catch-up: if a completed access unit lags the newest RTP timestamp we have
 /// seen (any packet of a newer AU) by more than this, skip it and jump to live
@@ -49,7 +49,7 @@ const AU_CATCHUP_LAG_THRESHOLD_US: u64 = 100_000;
 /// once no further packets have been seen for this long.  Measured from the
 /// LAST observed packet (not the first) — first-packet expiry caused a resync
 /// storm historically.
-const AU_STALL_EXPIRY: Duration = Duration::from_millis(20);
+const AU_STALL_EXPIRY: Duration = Duration::from_millis(60);
 
 /// Length of the lag measurement window.  The reported lag is the slip relative
 /// to the best-served access unit seen within this window, so a constant

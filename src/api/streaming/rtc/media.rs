@@ -34,7 +34,7 @@ const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
 /// When true, NACK feedback packets are generated and sent to request
 /// retransmissions of missing RTP packets. Set to false to trade visual artefacts
 /// for latency on congested links, per an explicit product decision.
-pub(crate) const NACK_ENABLED: bool = false;
+pub(crate) const NACK_ENABLED: bool = true;
 
 /// Process start reference for monotonic timestamps used by RTCP SR anchoring
 /// and capture-to-arrival latency. Initialized once at first use.
