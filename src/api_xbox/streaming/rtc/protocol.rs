@@ -37,13 +37,9 @@ pub(super) struct XboxRtcProtocol {
     last_menu_button: Option<f32>,
 }
 
-/// Probe press tracking for latency measurement.
-///
-/// - `probe_press_us`: atomic microsecond timestamp of the most recent probe press
-///   (relative to process start, 0 if not currently pressed).
-/// - `probe_counter`: monotonically increasing counter incremented on each probe press.
-static PROBE_PRESS_US: AtomicU64 = AtomicU64::new(0);
-static PROBE_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Probe press tracking for latency measurement is defined in
+/// `crate::api_xbox::streaming::control::input` to ensure a single shared
+/// counter/timestamp across the app.  The protocol layer reads those values.
 
 impl XboxRtcProtocol {
     pub(super) fn new(channel_ids: ChannelIds, video_fps: u32) -> Self {
@@ -107,9 +103,9 @@ impl XboxRtcProtocol {
         if menu_now_pressed && !menu_was_pressed {
             // Rising edge detected: store probe press timestamp (microseconds since process start)
             let start_us = now.duration_since(*crate::api_xbox::streaming::control::input::SESSION_START.get().expect("SESSION_START should be initialized")).as_micros() as u64;
-            PROBE_PRESS_US.store(start_us, Ordering::Relaxed);
+            crate::api_xbox::streaming::control::input::PROBE_PRESS_US.store(start_us, Ordering::Relaxed);
             // Increment the monotonically increasing probe counter
-            PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            crate::api_xbox::streaming::control::input::PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
             // Record the timestamp in the capped log file (~200 lines)
             let _ = crate::fs_utils::write_file_truncating(
                 "ux0:data/xcloud-rust/latency-probe.log",

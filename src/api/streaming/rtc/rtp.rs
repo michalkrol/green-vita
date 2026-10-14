@@ -1,3 +1,5 @@
+use crate::streaming::audio::AUDIO_RTP_CLOCK_RATE;
+use crate::streaming::video::metrics::METRICS;
 use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker};
 use crate::api::streaming::rtc::media::{is_negotiated_rtx_pt, PROCESS_START};
 use bytes::Bytes;
@@ -711,7 +713,7 @@ impl VideoRtp {
             self.damage_score = self.damage_score.saturating_sub(1);
         }
 
-        if let Some(lag_us) = catchup_decision(self.newest_received_ts, packet.header.timestamp, unit.has_idr) {
+        if let Some(lag_us) = catchup_decision(self.newest_received_ts, packet_timestamp, unit.has_idr) {
             // Jump to live: drop this whole AU and let the existing keyframe hold keep
             // the last good frame on screen until a clean reference (IDR) arrives.
             // RTX-recovered AUs are old by definition; skip forward rather than re-inject staleness.
@@ -863,6 +865,7 @@ impl VideoRtp {
             &mut self.slip_reanchor_count,
             au_timestamp,
             au_first_packet_at,
+            VIDEO_RTP_CLOCK_RATE,
         );
         crate::streaming::video::metrics::METRICS
             .stream_slip_us
@@ -1129,7 +1132,7 @@ fn lag_sample(
 
     let elapsed = au_at.saturating_duration_since(anchor_at);
     let actual_us = elapsed.as_micros() as u64;
-    let expected_us = rtp_span_us(anchor_timestamp, au_timestamp);
+    let expected_us = rtp_span_us(anchor_timestamp, au_timestamp, VIDEO_RTP_CLOCK_RATE);
 
     // Window rollover bounds the uncorrected clock-rate tilt.
     if elapsed >= LAG_WINDOW {
@@ -1236,7 +1239,7 @@ fn slip_sample(
 fn catchup_decision(newest: Option<u32>, au_timestamp: u32, has_idr: bool) -> Option<u64> {
     if AU_CATCHUP_LAG_THRESHOLD_US == 0 || has_idr { return None; }
     let newest = newest?;
-    let lag_us = rtp_span_us(newest, au_timestamp);
+    let lag_us = rtp_span_us(newest, au_timestamp, VIDEO_RTP_CLOCK_RATE);
     (lag_us > AU_CATCHUP_LAG_THRESHOLD_US).then_some(lag_us)
 }
 

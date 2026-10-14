@@ -132,7 +132,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     ) -> Result<Self> {
         let transport =
             RtcTransport::bind(&mut peer, config.stun_server, config.route_probe).await?;
-        let video = VideoReceiver::new(
+        let mut video = VideoReceiver::new(
             config.decoder,
             direct_output,
             config.video_fps,
@@ -141,6 +141,11 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             config.twcc_delay_ramp_max,
             config.remb_base_cap_bps,
         )?;
+
+        // Fresh session: clear the process-global per-session metrics and the slip
+        // anchor so the first CSV rows cannot report the previous session's values.
+        crate::streaming::video::reset_session_metrics();
+        video.reset_slip_anchor();
 
         let periodic_keyframe_interval = if config.periodic_keyframe_enabled {
             Some(Duration::from_millis(200))

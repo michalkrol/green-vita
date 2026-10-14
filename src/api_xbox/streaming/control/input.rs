@@ -75,7 +75,7 @@ pub(crate) fn note_gamepad_activity(frame: &GamepadFrame) {
     }
 }
 
-static SESSION_START: OnceLock<Instant> = OnceLock::new();
+pub(crate) static SESSION_START: OnceLock<Instant> = OnceLock::new();
 
 /// Monotonic session-uptime milliseconds — the wire-format equivalent of the
 /// reference client's performance.now(). Our old header wrote per-packet elapsed
@@ -91,8 +91,8 @@ pub(crate) fn uptime_ms() -> f64 {
 ///   (relative to process start, 0 if not currently pressed).
 /// - `probe_counter`: monotonically increasing counter incremented on each probe press.
 /// - `probe_log`: capped log file writer recording each press timestamp (capped at ~200 lines).
-static PROBE_PRESS_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static PROBE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static PROBE_PRESS_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static PROBE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Writes a probe press timestamp to the capped log at `ux0:data/xcloud-rust/latency-probe.log`.
 /// Cap at ~200 lines; never panics or blocks on IO error.

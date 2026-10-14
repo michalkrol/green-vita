@@ -106,7 +106,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
 
             egui::Area::new(egui::Id::new("latency_probe_overlay"))
                 .order(egui::Order::Foreground)
-                .anchor(egui::Align2::TOP_LEFT, egui::vec2(20.0, 20.0))
+                .anchor(egui::Align2([egui::Align::Min, egui::Align::Min]), egui::vec2(20.0, 20.0))
                 .show(ctx, |ui| {
                     // Large filled square (approx 120x120 logical px)
                     // Bright white for first ~150ms after probe press, dark otherwise
@@ -123,8 +123,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                     ui.painter().text(
                         text_pos,
                         egui::Align2::CENTER_TOP,
-                        egui::RichText::new(&display_text)
-                            .size(48.0),
+                        &display_text,
+                        egui::FontId::default(),
                         egui::Color32::WHITE,
                     );
 
@@ -133,8 +133,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                     ui.painter().text(
                         counter_pos,
                         egui::Align2::CENTER_TOP,
-                        egui::RichText::new(&counter_text)
-                            .size(16.0),
+                        &counter_text,
+                        egui::FontId::default(),
                         egui::Color32::LIGHT_GRAY,
                     );
                 });
@@ -198,4 +198,40 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                 draw_hold_progress_ring(ui, progress);
             });
     }
+}
+/// Parses the streaming status string and appSettings to produce debug text rows.
+fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(String, Option<String>)> {
+    let mut rows = Vec::new();
+
+    // Parse status fields
+    let bw = extract_field(status, "bw:");
+    let dp = extract_field(status, "d/p:");
+
+    if !bw.is_empty() {
+        rows.push((format!("bw:{}kbps", bw).into(), None));
+    }
+    if !dp.is_empty() {
+        let presented = dp.split('/').nth(1).unwrap_or("").to_owned();
+        rows.push((format!("fps:{}", presented).into(), None));
+    }
+
+    // Settings rows
+    if settings.show_fps_overlay {
+        rows.push(("fps_overactive".into(), None));
+    }
+    if settings.latency_probe {
+        rows.push(("latency_probe_active".into(), None));
+    }
+    if settings.show_stream_debug_info {
+        rows.push(("debug_overlay_active".into(), None));
+    }
+
+    rows
+}
+fn extract_field<'a>(status: &'a str, label: &'a str) -> &'a str {
+    let prefix = format!("{}:", label);
+    status
+        .find(&prefix)
+        .map(|idx| &status[idx + prefix.len()..])
+        .unwrap_or("")
 }
