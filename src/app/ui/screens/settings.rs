@@ -426,8 +426,7 @@ row_index += 1;
                         commands.push(Command::SetLatencyProbe(!app.settings.latency_probe).into());
                     }
                     row_index += 1;
-
-                    if checkbox_row(
+                }
 
                 if checkbox_row(
                     ui,
