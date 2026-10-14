@@ -232,10 +232,22 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(
 
     rows
 }
-fn extract_field<'a>(status: &'a str, label: &'a str) -> &'a str {
-    let prefix = format!("{}:", label);
-    status
-        .find(&prefix)
-        .map(|idx| &status[idx + prefix.len()..])
-        .unwrap_or("")
+/// Extract the value of `key` from the status string, stopping at the first
+/// non-alphanumeric character (except '/', '.', '%').  e.g. `bw:1500 wait:0`
+/// → "1500",  `d/p:58/58` → "58/58".
+fn extract_field(status: &str, key: &str) -> String {
+    if let Some(pos) = status.find(key) {
+        let start = pos + key.len();
+        let mut val = String::new();
+        for ch in status[start..].chars() {
+            if ch.is_ascii_alphanumeric() || ch == '/' || ch == '.' || ch == '%' {
+                val.push(ch);
+            } else {
+                break;
+            }
+        }
+        val
+    } else {
+        String::new()
+    }
 }
