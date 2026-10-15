@@ -11,6 +11,31 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Drift instrumentation buffer: HUD lines accumulated in RAM, flushed to
+/// ux0:data/xcloud-rust/hud.log once at session end. Never written during a
+/// session — per-second file I/O on the pump thread has caused stalls before.
+static DRIFT_BUF: std::sync::LazyLock<std::sync::Mutex<Vec<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+/// Flushes the drift buffer to ux0:data/xcloud-rust/hud.log (append) and clears it.
+pub(crate) fn flush_drift_log() {
+    let Ok(mut buffer) = DRIFT_BUF.lock() else {
+        return;
+    };
+    if buffer.is_empty() {
+        return;
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("ux0:data/xcloud-rust/hud.log")
+    {
+        let payload = buffer.join("\n") + "\n";
+        let _ = std::io::Write::write_all(&mut file, payload.as_bytes());
+    }
+    buffer.clear();
+}
 const DEFAULT_REMB_INTERVAL: Duration = Duration::from_millis(500);
 const TWCC_INTERVAL: Duration = Duration::from_millis(15);
 /// Send TWCC immediately when this many packets have accumulated since last send,
@@ -433,17 +458,14 @@ impl VideoReceiver {
             self.stats.dropped,
             self.stats.decode_errors,
         );
-        // Drift instrumentation (logging only): append the per-second HUD line with a
-        // session-relative timestamp, so the presentation-vs-media offset (d/p, lag) can
-        // be trended offline to test the clock-drift accumulation hypothesis.
+        // Drift instrumentation (logging only): buffer the per-second HUD line in RAM
+        // and flush it to ux0:data/xcloud-rust/hud.log once, at session end (see
+        // flush_drift_log, called from RtcWorker::drop). No filesystem I/O during the
+        // session: per-second writes on the pump thread have caused stalls before
+        // (cf. the 0.2.5 CSV regression).
         static DRIFT_T0: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("ux0:data/xcloud-rust/hud.log")
-        {
-            let line = format!("{} {}\n", DRIFT_T0.elapsed().as_millis(), summary);
-            let _ = std::io::Write::write_all(&mut file, line.as_bytes());
+        if let Ok(mut buffer) = DRIFT_BUF.lock() {
+            buffer.push(format!("{} {}", DRIFT_T0.elapsed().as_millis(), summary));
         }
         Some(summary)
     }

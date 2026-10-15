@@ -142,6 +142,7 @@ impl RtcWorker {
 
 impl Drop for RtcWorker {
     fn drop(&mut self) {
+        crate::api::streaming::rtc::media::flush_drift_log();
         send_lossy(&self.commands_tx, RtcWorkerCommand::Stop);
     }
 }
