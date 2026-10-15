@@ -427,12 +427,25 @@ impl VideoReceiver {
             .encoded_resolution
             .map(|(width, height)| format!("{width}x{height}"))
             .unwrap_or_else(|| "?".to_owned());
-        Some(format!(
+        let summary = format!(
             "enc:{encoded_resolution} srcfps:{source_fps} {performance} wait:{} drop:{} err:{}",
             u8::from(self.rtp.waiting_for_keyframe()),
             self.stats.dropped,
             self.stats.decode_errors,
-        ))
+        );
+        // Drift instrumentation (logging only): append the per-second HUD line with a
+        // session-relative timestamp, so the presentation-vs-media offset (d/p, lag) can
+        // be trended offline to test the clock-drift accumulation hypothesis.
+        static DRIFT_T0: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("ux0:data/xcloud-rust/hud.log")
+        {
+            let line = format!("{} {}\n", DRIFT_T0.elapsed().as_millis(), summary);
+            let _ = std::io::Write::write_all(&mut file, line.as_bytes());
+        }
+        Some(summary)
     }
 
     /// Process incoming RTCP packets from the console (SenderReport, ReceiverReport, etc.)
