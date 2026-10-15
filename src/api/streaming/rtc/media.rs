@@ -14,7 +14,18 @@ const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
 const REMB_INTERVAL: Duration = Duration::from_millis(500);
 const TWCC_INTERVAL: Duration = Duration::from_millis(100);
 /// Matches the SDP bitrate cap so pacing never becomes the limit.
-const REMB_BITRATE_BPS: f32 = 15_000_000.0;
+/// Deliberate UNDER-report of the link capacity, sent to the console every
+/// `REMB_INTERVAL` (policy: latency over quality).
+///
+/// The Vita's 2.4 GHz hop measures ~3.5-5 Mbps sustained (spikes to 7.5), and the
+/// previous fixed 15 Mbps announcement told the sender there was headroom it does not
+/// have: it overfilled the AP queue, and with no surplus capacity the queue never
+/// drained - the accumulating-latency bug.  REMB is also the ONLY rate signal the
+/// console gets from us (transport-cc is stubbed in this base).
+///
+/// Next step: derive this from the bitrate-cap setting (clamped, no-cap ceiling) and
+/// from measured delivered throughput.
+const REMB_BITRATE_BPS: f32 = 2_500_000.0;
 /// Arbitrary stable local RTCP sender SSRC (we transmit no RTP of our own).
 const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
 
