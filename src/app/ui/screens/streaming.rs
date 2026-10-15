@@ -2,6 +2,7 @@ use crate::App;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::draw_hold_progress_ring;
 use crate::i18n::I18n;
+use egui::{Area, Frame, RichText, Align2};
 
 /// Fullscreen video view with a one-time "Hold Back to pause" hint, fading out over `HINT_FADE`.
 pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
@@ -37,14 +38,21 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
         }
 
         if app.settings.show_stream_debug_info {
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.add_space(12.0);
-                ui.colored_label(
-                    theme.text.gamma_multiply(0.75),
-                    egui::RichText::new(&streaming.status).size(12.0),
-                );
-                ui.add_space(12.0);
-            });
+            // Split the two-line status text at the newline separator.
+            // Status format from media.rs: "enc:XXX srcfps:YY line1\nline2 wait:Z drop:W err:X"
+            let (line1, line2) = streaming.status.split_once('\n').unwrap_or((&streaming.status, ""));
+
+            // Improved HUD: monospace text with translucent dark background, bottom-left anchored.
+            Area::new(egui::Id::new("stream_debug_hud"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::BOTTOM_LEFT, egui::vec2(12.0, 12.0))
+                .fixed_size(egui::Vec2::new(280.0, 36.0))
+                .frame(Frame::none().fill(egui::Color32::from_black_alpha(200)))
+                .show(ctx, |ui| {
+                    ui.label(RichText::new(line1).monospace().size(10.0));
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(line2).monospace().size(10.0));
+                });
         }
     });
 
