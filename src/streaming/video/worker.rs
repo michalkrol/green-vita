@@ -192,9 +192,9 @@ fn run_decode_loop(
     _source_duration: Arc<AtomicU64>,
 ) {
     use std::thread::sleep;
-    // Pace the decoder at roughly 62 fps (13 ms sleep + ~3 ms decode per frame)
-    // to keep up with the console's 60 fps encoder rate.  This prevents the
-    // access-unit queue from filling (which delays frames and causes drift).
+    // Idle pace: when nothing is queued we sleep ~13 ms (≈62 fps with ~3 ms of
+    // decode) instead of spinning.  The sleep is skipped whenever another access
+    // unit is already waiting, so a steady queue never pays the pace delay.
     const DECODE_PACE_SLEEP: Duration = Duration::from_micros(13_000);
 
     let mut decoder = Some(initial_decoder);
@@ -219,7 +219,13 @@ fn run_decode_loop(
                     access_unit,
                     &direct_output,
                 );
-                sleep(DECODE_PACE_SLEEP);
+                // Only pace when the decoder is idle.  If another access unit is
+                // already queued, decode it straight away: paying the full pace
+                // sleep per frame would add up to ~13 ms of latency whenever the
+                // encoder is running at the console's 60 fps.
+                if access_units.is_empty() {
+                    sleep(DECODE_PACE_SLEEP);
+                }
             }
         }
     }
