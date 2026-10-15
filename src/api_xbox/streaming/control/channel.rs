@@ -35,9 +35,9 @@ pub(in crate::api_xbox::streaming) fn handle_data_channel_message(
     if let Some(mut control_channel) = pc.data_channel(ids.control) {
         let _ = control_channel.send_text(authorization_request().to_string());
         let _ = control_channel.send_text(gamepad_changed(0, true).to_string());
-        let _ = control_channel.send_text(
-            video_preference(STREAM_WIDTH, STREAM_HEIGHT, video_fps).to_string(),
-        );
+        // VideoPreference intentionally NOT sent: reference Chrome client sends
+        // none (see chrome-dumps/README.md) and the console picks its own
+        // defaults instead of being pinned to a client-declared stream.
     }
     if let Some(mut message_channel) = pc.data_channel(ids.message) {
         for message in startup_messages(video_fps) {

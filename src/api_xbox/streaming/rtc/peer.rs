@@ -8,7 +8,7 @@ use crate::api_xbox::streaming::rtc::{AUDIO_PAYLOAD_TYPE, STUN_SERVER};
 use crate::settings::H264Profile;
 use anyhow::{Context, Result};
 use rtc::peer_connection::configuration::media_engine::{
-    MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine,
+    MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_RTX, MediaEngine,
 };
 use rtc::peer_connection::transport::RTCIceServer;
 use rtc::rtp_transceiver::rtp_sender::{
@@ -53,70 +53,87 @@ pub(super) fn create(video_fps: u32, video_h264_profile: H264Profile) -> Result<
     ))
 }
 
+/// Flip to false for the "no audio negotiation" test build.
+const AUDIO_NEGOTIATION_ENABLED: bool = true;
+
 fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32, video_h264_profile: H264Profile) -> Result<()> {
-    // Offer the selected profile at PT 102, PLUS a fallback Constrained Baseline
-    // at PT 103. The xHome console requires at least one profile it supports
-    // in the m=video line — offering only one (especially High) gets rejected
-    // with m=video 0 and a BUNDLE/ice-ufrag mismatch downstream.
+    // Offer every H.264 profile the Vita's decoder can handle, user-selected
+    // profile first. The console requires at least one acceptable profile in
+    // the m=video line — offering only one (especially High) gets m=video
+    // rejected with a BUNDLE/ice-ufrag mismatch downstream.
+    let baseline = h264_profile_level_id(video_fps, H264Profile::Baseline);
+    let main = h264_profile_level_id(video_fps, H264Profile::Main);
+    let high = h264_profile_level_id(video_fps, H264Profile::High);
+    let ordered: [&'static str; 3] = match video_h264_profile {
+        H264Profile::Baseline => [baseline, main, high],
+        H264Profile::Main => [main, baseline, high],
+        H264Profile::High => [high, baseline, main],
+    };
 
-    // Primary: user-selected profile at PT 102
-    media_engine.register_codec(
-        RTCRtpCodecParameters {
-            rtp_codec: RTCRtpCodec {
-                mime_type: MIME_TYPE_H264.to_owned(),
-                clock_rate: 90_000,
-                channels: 0,
-                sdp_fmtp_line: format!(
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={}",
-                    h264_profile_level_id(video_fps, video_h264_profile)
-                ),
-                rtcp_feedback: vec![
-                    RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
-                    RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
-                    RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
-                ],
-            },
-            payload_type: 102,
-        },
-        RtpCodecKind::Video,
-    )?;
-
-    // Fallback: Constrained Baseline at PT 103 (always offered, ensures console
-    // has at least one acceptable codec to pick)
-    if video_h264_profile != H264Profile::Baseline {
+    let mut next_pt: u8 = 102;
+    let mut h264_pts: Vec<u8> = Vec::new();
+    for level in ordered {
         media_engine.register_codec(
             RTCRtpCodecParameters {
                 rtp_codec: RTCRtpCodec {
                     mime_type: MIME_TYPE_H264.to_owned(),
                     clock_rate: 90_000,
                     channels: 0,
-                    sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+                    sdp_fmtp_line: format!(
+                        "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={level}"
+                    ),
                     rtcp_feedback: vec![
                         RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
                         RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
+                        RTCPFeedback { typ: "nack".to_owned(), parameter: "".to_owned() },
                         RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
                     ],
                 },
-                payload_type: 103,
+                payload_type: next_pt,
             },
             RtpCodecKind::Video,
         )?;
+        h264_pts.push(next_pt);
+        next_pt += 1;
     }
 
-    // Audio codec
-    media_engine.register_codec(
-        RTCRtpCodecParameters {
-            rtp_codec: RTCRtpCodec {
-                mime_type: MIME_TYPE_OPUS.to_owned(),
-                clock_rate: 48_000,
-                channels: 2,
-                sdp_fmtp_line: "minptime=10;useinbandfec=1;stereo=1".to_owned(),
-                rtcp_feedback: vec![],
+    // RTX pair for each H.264 PT (Chrome-style apt= mapping). Chrome negotiates
+    // this and the console opens its RFC 4588 retransmission path for it; our
+    // client previously advertised neither `nack` nor RTX, so every loss
+    // escalated to keyframe/flush storms that backlogged the Xbox One encoder.
+    for primary_pt in &h264_pts {
+        media_engine.register_codec(
+            RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_RTX.to_owned(),
+                    clock_rate: 90_000,
+                    channels: 0,
+                    sdp_fmtp_line: format!("apt={primary_pt}"),
+                    rtcp_feedback: vec![],
+                },
+                payload_type: next_pt,
             },
-            payload_type: AUDIO_PAYLOAD_TYPE,
-        },
-        RtpCodecKind::Audio,
-    )?;
+            RtpCodecKind::Video,
+        )?;
+        next_pt += 1;
+    }
+
+    // Audio codec (omitted entirely for the no-audio negotiation test build).
+    if AUDIO_NEGOTIATION_ENABLED {
+        media_engine.register_codec(
+            RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_OPUS.to_owned(),
+                    clock_rate: 48_000,
+                    channels: 2,
+                    sdp_fmtp_line: "minptime=10;useinbandfec=1;stereo=1".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                payload_type: AUDIO_PAYLOAD_TYPE,
+            },
+            RtpCodecKind::Audio,
+        )?;
+    }
 
     Ok(())
 }
