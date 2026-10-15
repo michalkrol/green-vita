@@ -466,16 +466,13 @@ fn host_text(i18n: &I18n, id: &'static str, host: &str) -> String {
     i18n.text_with(id, args)
 }
 
-// Preset ladder for the bitrate cap: 500 kbps steps up to 8 Mbps, then 0 = no cap.
-const BITRATE_PRESETS_KBPS: &[u32] = &[
-    500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500, 4_000, 4_500, 5_000, 5_500, 6_000, 6_500, 7_000,
-    7_500, 8_000, 0,
-];
+// Preset ladder for the bitrate cap: 0 = no cap first, then 500 kbps steps up to 4 Mbps
+// (the REMB ceiling we treat as this hop's practical maximum).
+const BITRATE_PRESETS_KBPS: &[u32] = &[0, 500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500, 4_000];
 
 fn next_bitrate_preset(current: u32) -> u32 {
-    // Walk the ladder in order, wrapping back to 500; 0 (= no cap) sits at the end and is
-    // reachable from 8 Mbps.  Any value from an older settings file that is not on the
-    // ladder jumps to the first preset.
+    // Walk the ladder in order and wrap: after 4 Mbps comes 0 (= no cap).  A value from an
+    // older settings file that is not on the ladder lands on the first preset.
     match BITRATE_PRESETS_KBPS.iter().position(|&p| p == current) {
         Some(index) if index + 1 < BITRATE_PRESETS_KBPS.len() => BITRATE_PRESETS_KBPS[index + 1],
         _ => BITRATE_PRESETS_KBPS[0],
@@ -655,11 +652,8 @@ impl App {
             }
             Command::SetVideoBitrateCap(kbps) => {
                 // 0 = no cap: keep it, do not clamp up to a minimum.
-                self.settings.video_bitrate_kbps = if kbps == 0 {
-                    0
-                } else {
-                    kbps.min(8_000).max(BITRATE_PRESETS_KBPS[0])
-                };
+                self.settings.video_bitrate_kbps =
+                    if kbps == 0 { 0 } else { kbps.clamp(500, 4_000) };
                 self.settings.save();
             }
             Command::SetVideoH264Profile(profile) => {
