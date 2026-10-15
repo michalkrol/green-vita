@@ -126,6 +126,17 @@ pub(super) fn enable_transport_cc(sdp: &str) -> String {
             if in_video && !extmap_injected {
                 output.push(format!("a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"));
                 output.push(format!("a=extmap:4 http://www.webrtc.org/experiments/rtp-hdrext/transport-wide-cc-02"));
+                // Mirror Chrome's video extmaps so the console attaches the
+                // video-timing extension (id 7: capture→pacer-exit latency).
+                output.push(format!("a=extmap:5 http://www.webrtc.org/experiments/rtp-hdrext/playout-delay"));
+                output.push(format!("a=extmap:6 http://www.webrtc.org/experiments/rtp-hdrext/video-content-type"));
+                output.push(format!("a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/video-timing"));
+                output.push(format!("a=extmap:8 http://www.webrtc.org/experiments/rtp-hdrext/color-space"));
+                output.push(format!("a=extmap:9 urn:ietf:params:rtp-hdrext:sdes:mid"));
+                output.push(format!("a=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"));
+                output.push(format!("a=extmap:11 urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"));
+                output.push(format!("a=extmap:13 urn:3gpp:video-orientation"));
+                output.push(format!("a=extmap:14 urn:ietf:params:rtp-hdrext:toffset"));
                 extmap_injected = true;
             }
             in_video = line.starts_with("m=video ");
@@ -158,6 +169,15 @@ pub(super) fn enable_transport_cc(sdp: &str) -> String {
     if in_video && !extmap_injected {
         output.push(format!("a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"));
         output.push(format!("a=extmap:4 http://www.webrtc.org/experiments/rtp-hdrext/transport-wide-cc-02"));
+        output.push(format!("a=extmap:5 http://www.webrtc.org/experiments/rtp-hdrext/playout-delay"));
+        output.push(format!("a=extmap:6 http://www.webrtc.org/experiments/rtp-hdrext/video-content-type"));
+        output.push(format!("a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/video-timing"));
+        output.push(format!("a=extmap:8 http://www.webrtc.org/experiments/rtp-hdrext/color-space"));
+        output.push(format!("a=extmap:9 urn:ietf:params:rtp-hdrext:sdes:mid"));
+        output.push(format!("a=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"));
+        output.push(format!("a=extmap:11 urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"));
+        output.push(format!("a=extmap:13 urn:3gpp:video-orientation"));
+        output.push(format!("a=extmap:14 urn:ietf:params:rtp-hdrext:toffset"));
     }
     if in_video && !fb_injected && !video_h264_pt.is_empty() {
         output.push(format!("a=rtcp-fb:{video_h264_pt} transport-cc"));

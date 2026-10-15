@@ -79,6 +79,11 @@ pub(crate) struct VideoRtp {
     /// Drift instrumentation: (arrival, RTP timestamp) of the newest video
     /// packet seen; used by stream_slip() for the accumulation trend.
     latest_rtp: Option<(Instant, u32)>,
+    /// Drift instrumentation: per-window video-timing (extmap id 7) stats:
+    /// console capture→pacer-exit sum/max ms and sample count.
+    vt_exit_sum: u64,
+    vt_exit_max: u64,
+    vt_exit_count: u64,
     total_bytes: u64,
     twcc_annotations: Vec<(u16, Instant)>,
     /// Sliding-window bitrate tracker: (bytes_snapshot, timestamp) pairs sampled
@@ -185,6 +190,9 @@ impl VideoRtp {
             waiting_for_keyframe: false,
             stream_clock_anchor: None,
             latest_rtp: None,
+            vt_exit_sum: 0,
+            vt_exit_max: 0,
+            vt_exit_count: 0,
             total_bytes: 0,
             twcc_annotations: Vec::with_capacity(TWCC_MAX_ANNOTATIONS),
             bitrate_sample_bytes: 0,
@@ -249,6 +257,17 @@ impl VideoRtp {
         match self.latest_rtp {
             Some((_, last_ts)) if !timestamp_is_newer(packet_timestamp, last_ts) => {}
             _ => self.latest_rtp = Some((Instant::now(), packet_timestamp)),
+        }
+
+        // video-timing extension (extmap id 7, negotiated in the offer): f4 at
+        // payload[7..9] big-endian = console capture→pacer-exit latency in ms.
+        if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == 7)
+            && ext.payload.len() == 13
+        {
+            let f4 = u16::from_be_bytes([ext.payload[7], ext.payload[8]]) as u64;
+            self.vt_exit_sum += f4;
+            self.vt_exit_max = self.vt_exit_max.max(f4);
+            self.vt_exit_count += 1;
         }
 
         if let Some(pending) = &self.pending
@@ -444,8 +463,20 @@ impl VideoRtp {
         let (anchor_at, anchor_ts) = self.stream_clock_anchor?;
         let (arrival_at, arrival_ts) = self.latest_rtp?;
         let wall_ms = arrival_at.duration_since(anchor_at).as_millis() as i64;
-        let media_ms = (arrival_ts.wrapping_sub(anchor_ts) as i64) * 1000 / 90;
+        let media_ms = (arrival_ts.wrapping_sub(anchor_ts) as i64) / 90;
         Some((wall_ms - media_ms, wall_ms, media_ms))
+    }
+
+    /// Drift instrumentation: per-window video-timing stats (mean_ms, max_ms,
+    /// samples) for console capture→pacer-exit; resets the window.
+    pub(crate) fn take_vt_exit(&mut self) -> (u64, u64, u64) {
+        let count = self.vt_exit_count;
+        let mean = if count > 0 { self.vt_exit_sum / count } else { 0 };
+        let max = self.vt_exit_max;
+        self.vt_exit_sum = 0;
+        self.vt_exit_max = 0;
+        self.vt_exit_count = 0;
+        (mean, max, count)
     }
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
     pub(crate) fn twcc_median_stride(&self) -> u16 {
