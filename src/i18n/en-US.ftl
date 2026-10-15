@@ -24,6 +24,7 @@ settings-cloud-host = Cloud host: { $host }
 settings-home-host = Home host: { $host }
 settings-stream-debug-info = Show streaming debug info
 settings-unlock-video-fps = Unlock video to 60 FPS
+settings-latency-test = Latency test (blinking square + stopwatch)
 settings-video-bitrate-cap = Bitrate cap: { $kbps } kbps
 settings-video-h264-profile = H264 profile: { $profile }
 settings-periodic-keyframe = Periodic keyframe (clear artifacts)

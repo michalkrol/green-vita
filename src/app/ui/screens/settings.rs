@@ -37,6 +37,7 @@ enum SettingsRow {
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
     PeriodicKeyframe(bool),
+    LatencyTest(bool),
     Back,
 }
 
@@ -86,6 +87,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::StreamDebug(
         app.settings.show_stream_debug_info,
     ));
+    rows.push(SettingsRow::LatencyTest(app.settings.latency_test_mode));
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
     rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
@@ -273,6 +275,18 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     commands.push(
                         Command::SetShowStreamDebugInfo(!app.settings.show_stream_debug_info)
                             .into(),
+                    );
+                }
+                row_index += 1;
+
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.latency_test_mode,
+                    i18n.text("settings-latency-test"),
+                ) {
+                    commands.push(
+                        Command::SetLatencyTestMode(!app.settings.latency_test_mode).into(),
                     );
                 }
                 row_index += 1;
@@ -499,6 +513,9 @@ impl App {
             SettingsRow::StreamDebug(enabled) => {
                 return self.handle_settings_command(Command::SetShowStreamDebugInfo(!enabled));
             }
+            SettingsRow::LatencyTest(enabled) => {
+                return self.handle_settings_command(Command::SetLatencyTestMode(!enabled));
+            }
             SettingsRow::VideoBitrateCap(current) => {
                 return self.handle_settings_command(Command::SetVideoBitrateCap(
                     next_bitrate_preset(*current),
@@ -595,6 +612,10 @@ impl App {
             }
             Command::SetShowStreamDebugInfo(enabled) => {
                 self.settings.show_stream_debug_info = enabled;
+                self.settings.save();
+            }
+            Command::SetLatencyTestMode(enabled) => {
+                self.settings.latency_test_mode = enabled;
                 self.settings.save();
             }
             Command::SetVideoBitrateCap(kbps) => {
