@@ -8,6 +8,7 @@ mod app;
 mod i18n;
 mod input;
 mod jobs;
+mod latency_test;  // <-- added
 mod safe_memory;
 mod settings;
 mod shell;

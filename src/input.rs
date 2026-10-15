@@ -6,6 +6,7 @@ use sdl2::joystick::Joystick;
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub fn map_keyboard_event(event: &Event) -> Option<AppCommand> {
     let Event::KeyDown {
@@ -479,4 +480,68 @@ fn map_touch_to_stream_pos(
         (local_x / video_rect.width() as f32 * stream_width as f32).round() as u32,
         (local_y / video_rect.height() as f32 * stream_height as f32).round() as u32,
     ))
+}
+
+/// Track previous button state for press-edge detection across polls.
+/// Updated each poll via `detect_and_note_button_press()`.
+/// Starts at 0 (no buttons pressed) and is updated with each poll.
+static PREV_BUTTONS: AtomicU64 = AtomicU64::new(0);
+
+/// Digital button bitmask extracted from a GamepadFrame.
+/// Buttons with value > 0.5 are considered pressed.
+fn buttons_from_frame(frame: &GamepadFrame) -> u64 {
+    let mut bits = 0u64;
+    if frame.a > 0.5 { bits |= 1 << Button::A as u64; }
+    if frame.b > 0.5 { bits |= 1 << Button::B as u64; }
+    if frame.x > 0.5 { bits |= 1 << Button::X as u64; }
+    if frame.y > 0.5 { bits |= 1 << Button::Y as u64; }
+    if frame.dpad_up > 0.5 { bits |= 1 << Button::DPadUp as u64; }
+    if frame.dpad_down > 0.5 { bits |= 1 << Button::DPadDown as u64; }
+    if frame.dpad_left > 0.5 { bits |= 1 << Button::DPadLeft as u64; }
+    if frame.dpad_right > 0.5 { bits |= 1 << Button::DPadRight as u64; }
+    if frame.left_shoulder > 0.5 { bits |= 1 << Button::LeftShoulder as u64; }
+    if frame.right_shoulder > 0.5 { bits |= 1 << Button::RightShoulder as u64; }
+    if frame.menu > 0.5 { bits |= 1 << Button::Start as u64; }
+    if frame.view > 0.5 { bits |= 1 << Button::Back as u64; }
+    if frame.nexus > 0.5 { bits |= 1 << Button::Guide as u64; }
+    bits
+}
+
+/// Detect button press edges (not-pressed → pressed) from the current frame.
+/// If any edge is detected, call `note_button_press()` for latency test measurement.
+/// Must be called each poll after reading the gamepad frame.
+/// Allocation-free; does not alter the gamepad frame contents or timing semantics.
+pub fn detect_and_note_button_press(frame: &GamepadFrame) {
+    let current = buttons_from_frame(frame);
+    let prev = PREV_BUTTONS.load(Ordering::Relaxed);
+    let edges = current & !prev;
+    if !edges.is_zero() {
+        // Button press edge detected - note for latency test
+        crate::latency_test::note_button_press();
+    }
+    // Update previous state for next poll
+    PREV_BUTTONS.store(current, Ordering::Relaxed);
+}
+
+fn map_touch_to_stream_pos(
+    (x, y): (f32, f32),
+    video_rect: sdl2::rect::Rect,
+    (stream_width, stream_height): (u32, u32),
+) -> Option<(u32, u32)> {
+    let local_x = x - video_rect.x() as f32;
+    let local_y = y - video_rect.y() as f32;
+    if video_rect.width() == 0
+        || video_rect.height() == 0
+        || local_x < 0.0
+        || local_y < 0.0
+        || local_x > video_rect.width() as f32
+        || local_y > video_rect.height() as f32
+    {
+        return None;
+    }
+    Some((
+        (local_x / video_rect.width() as f32 * stream_width as f32).round() as u32,
+        (local_y / video_rect.height() as f32 * stream_height as f32).round() as u32,
+    ))
+}
 }

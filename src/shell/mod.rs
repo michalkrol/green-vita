@@ -297,6 +297,10 @@ fn send_stream_gamepad_state(
         return;
     };
 
+    // Detect button press edges for latency test mode (square/stopwatch).
+    // This is intentionally cheap and does not alter the frame contents or timing.
+    crate::input::detect_and_note_button_press(&frame);
+
     // Back is relayed separately after the hold gesture resolves.
     frame.view = f32::from(relay_back_as_view);
     streaming.send_gamepad_frame(frame, settings);
