@@ -22,6 +22,7 @@ pub enum Command {
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
     SetPeriodicKeyframe(bool),
+    SetLatencyTestMode(bool),
 }
 
 #[derive(Clone)]

@@ -515,33 +515,10 @@ pub fn detect_and_note_button_press(frame: &GamepadFrame) {
     let current = buttons_from_frame(frame);
     let prev = PREV_BUTTONS.load(Ordering::Relaxed);
     let edges = current & !prev;
-    if !edges.is_zero() {
+    if edges != 0 {
         // Button press edge detected - note for latency test
         crate::latency_test::note_button_press();
     }
     // Update previous state for next poll
     PREV_BUTTONS.store(current, Ordering::Relaxed);
-}
-
-fn map_touch_to_stream_pos(
-    (x, y): (f32, f32),
-    video_rect: sdl2::rect::Rect,
-    (stream_width, stream_height): (u32, u32),
-) -> Option<(u32, u32)> {
-    let local_x = x - video_rect.x() as f32;
-    let local_y = y - video_rect.y() as f32;
-    if video_rect.width() == 0
-        || video_rect.height() == 0
-        || local_x < 0.0
-        || local_y < 0.0
-        || local_x > video_rect.width() as f32
-        || local_y > video_rect.height() as f32
-    {
-        return None;
-    }
-    Some((
-        (local_x / video_rect.width() as f32 * stream_width as f32).round() as u32,
-        (local_y / video_rect.height() as f32 * stream_height as f32).round() as u32,
-    ))
-}
 }

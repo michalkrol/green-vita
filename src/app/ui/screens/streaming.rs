@@ -2,7 +2,7 @@ use crate::App;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::draw_hold_progress_ring;
 use crate::i18n::I18n;
-use egui::{Area, Frame, RichText, Align2, FontId};
+use egui::FontId;
 
 /// Extract a value after `key` in the status string (e.g. `srcfps:60` → "60").
 fn extract_field(status: &str, key: &str) -> String {
@@ -83,48 +83,59 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
             });
         }
 
-        // Latency test mode: blinking square + stopwatch on button press
+        // Latency test mode: blinking square + stopwatch on button press.
+        // The square flips colour on every button-press edge and the readout shows
+        // ms from that edge to this frame (client-side input -> present delay).
         if app.settings.latency_test_mode {
             let blink = crate::latency_test::BLINK.load(std::sync::atomic::Ordering::Relaxed);
             let age_ms = crate::latency_test::last_press_age_ms();
-            let origin = crate::latency_test::ORIGIN.get();
-            let show = origin.is_some() && age_ms.is_some();
 
-            // 160x160 px square at top-left with 8 px margin
-            // Filled white when blink is on, black when off, with 2px outline in opposite colour
-            let square_size = 160.0;
-            let margin = 8.0;
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(margin, margin),
-                egui::vec2(square_size, square_size),
-            );
-            let painter = ctx.painter();
+            egui::Area::new(egui::Id::new("latency_test_marker"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::LEFT_TOP, egui::vec2(8.0, 8.0))
+                .show(ctx, |ui| {
+                    let painter = ui.painter();
+                    let square = egui::Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(160.0, 160.0),
+                    );
+                    if blink {
+                        painter.rect_filled(square, 0.0, egui::Color32::WHITE);
+                        painter.rect_stroke(
+                            square,
+                            0.0,
+                            egui::Stroke::new(2.0, egui::Color32::BLACK),
+                            egui::StrokeKind::Inside,
+                        );
+                    } else {
+                        painter.rect_filled(square, 0.0, egui::Color32::BLACK);
+                        painter.rect_stroke(
+                            square,
+                            0.0,
+                            egui::Stroke::new(2.0, egui::Color32::WHITE),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
 
-            if blink {
-                // White fill with black outline
-                painter.rect_filled(rect, 0.0, egui::Color32::WHITE);
-                painter.rect_stroke(rect, 2.0, egui::Stroke::new(2.0, egui::Color32::BLACK));
-            } else {
-                // Black fill with white outline
-                painter.rect_filled(rect, 0.0, egui::Color32::BLACK);
-                painter.rect_stroke(rect, 2.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
-            }
+                    let readout = match age_ms {
+                        Some(ms) => format!("+{:.0} ms", ms),
+                        None => "+--- ms".to_owned(),
+                    };
+                    let readout_rect = egui::Rect::from_min_size(
+                        egui::pos2(168.0, 0.0),
+                        egui::vec2(120.0, 40.0),
+                    );
+                    painter.rect_filled(readout_rect, 0.0, egui::Color32::from_black_alpha(200));
+                    painter.text(
+                        readout_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        readout,
+                        FontId::monospace(16.0),
+                        egui::Color32::from_rgb(144, 238, 144),
+                    );
 
-            // Readout next to the square: "+123 ms" or "+--- ms" before first press
-            if show {
-                let readout_text = format!("+{:.0} ms", age_ms.unwrap());
-                let readout_rect = egui::Rect::from_min_size(
-                    egui::pos2(margin + square_size + 8.0, margin),
-                    egui::vec2(100.0, square_size),
-                );
-                painter.rect_filled(readout_rect, 0.0, egui::Color32::from_black_alpha(200));
-                painter.text(
-                    readout_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    RichText::new(readout_text).monospace().size(14.0),
-                    egui::Color32::WHITE,
-                );
-            }
+                    let _ = ui.allocate_space(egui::vec2(296.0, 160.0));
+                });
         }
 
         // Full debug overlay (left side, 2 columns, semi-transparent bg, non-zero hidden)

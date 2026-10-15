@@ -126,6 +126,9 @@ pub struct Settings {
     /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
     /// cost of slightly larger periodic frames and a small bandwidth overhead.
     pub periodic_keyframe: bool,
+    /// Swap L1/L2 with R1/R2 (shoulders and triggers) for every title, not just
+    /// titles with the per-game toggle enabled.
+    pub swap_shoulders_and_triggers: bool,
     /// When true, latency test mode is active - shows a blinking square and stopwatch
     /// on button press to measure glass-to-glass latency with a phone camera.
     pub latency_test_mode: bool,
@@ -163,6 +166,7 @@ impl Default for Settings {
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
             periodic_keyframe: true,
+            swap_shoulders_and_triggers: false,
             latency_test_mode: false,
             game_profiles: HashMap::new(),
         }
