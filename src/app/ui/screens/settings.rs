@@ -14,6 +14,7 @@ pub enum Command {
     ToggleLocaleExpanded,
     SetLocale(Locale),
     SetSwapShouldersAndTriggers { title_id: String, enabled: bool },
+    SetSwapShouldersTriggers(bool),
     SetRearTouchEnabled { title_id: String, enabled: bool },
     SetFrontTouchAuxiliaryButtons { title_id: String, enabled: bool },
     SetUnlockVideoFps(bool),
@@ -30,6 +31,7 @@ enum SettingsRow {
     GameSwap { title_id: String, enabled: bool },
     GameRearTouch { title_id: String, enabled: bool },
     GameFrontTouchAuxiliary { title_id: String, enabled: bool },
+    SwapShouldersTriggers(bool),
     UnlockVideoFps(bool),
     StreamDebug(bool),
     VideoBitrateCap(u32),
@@ -74,6 +76,11 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
             .game_profile(&title_id)
             .is_some_and(|profile| profile.front_touch_auxiliary_buttons);
         rows.push(SettingsRow::GameFrontTouchAuxiliary { title_id, enabled });
+    }
+    // Global swap-shoulders toggle (for xHome, no title_id selected).
+    // Per-game GameSwap above applies when a specific title is selected.
+    if title_id.is_none() {
+        rows.push(SettingsRow::SwapShouldersTriggers(app.settings.swap_shoulders_and_triggers));
     }
     rows.push(SettingsRow::UnlockVideoFps(app.settings.unlock_video_fps));
     rows.push(SettingsRow::StreamDebug(
@@ -207,6 +214,20 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                             }
                             .into(),
                         );
+                    }
+                    row_index += 1;
+                }
+
+                // Global swap-shoulders toggle (all games, no title selected).
+                if title_id.is_none() {
+                    let global_enabled = app.settings.swap_shoulders_and_triggers;
+                    if checkbox_row(
+                        ui,
+                        selected_index == row_index,
+                        global_enabled,
+                        i18n.text("settings-swap-shoulders-global"),
+                    ) {
+                        commands.push(Command::SetSwapShouldersTriggers(!global_enabled).into());
                     }
                     row_index += 1;
                 }
@@ -457,6 +478,9 @@ impl App {
                     enabled: !enabled,
                 });
             }
+            SettingsRow::SwapShouldersTriggers(enabled) => {
+                return self.handle_settings_command(Command::SetSwapShouldersTriggers(!enabled));
+            }
             SettingsRow::GameRearTouch { title_id, enabled } => {
                 return self.handle_settings_command(Command::SetRearTouchEnabled {
                     title_id: title_id.clone(),
@@ -550,6 +574,10 @@ impl App {
             Command::SetSwapShouldersAndTriggers { title_id, enabled } => {
                 self.settings
                     .set_swap_shoulders_and_triggers(title_id, enabled);
+                self.settings.save();
+            }
+            Command::SetSwapShouldersTriggers(enabled) => {
+                self.settings.swap_shoulders_and_triggers = enabled;
                 self.settings.save();
             }
             Command::SetRearTouchEnabled { title_id, enabled } => {

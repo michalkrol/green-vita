@@ -97,11 +97,12 @@ impl StreamingSession {
             self.ignore_confirm_until_release = false;
         }
 
-        let swap_shoulders_and_triggers = self
+        let per_title_swap = self
             .title_id
             .as_deref()
             .and_then(|title_id| settings.game_profile(title_id))
             .is_some_and(|profile| profile.swap_shoulders_and_triggers);
+        let swap_shoulders_and_triggers = per_title_swap || settings.swap_shoulders_and_triggers;
         if swap_shoulders_and_triggers {
             std::mem::swap(&mut frame.left_shoulder, &mut frame.left_trigger);
             std::mem::swap(&mut frame.right_shoulder, &mut frame.right_trigger);

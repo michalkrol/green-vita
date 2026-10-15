@@ -17,6 +17,7 @@ settings-home = Home
 settings-locale = Locale
 settings-game = Game settings
 settings-swap-shoulders-triggers = Swap L1/L2 and R1/R2
+settings-swap-shoulders-global = Swap L1/L2 and R1/R2 (all games)
 settings-front-touch-auxiliary-buttons = Use front touch for L2/R2/L3/R3 instead of mouse
 settings-rear-touch-enabled = Enable rear touch controls
 settings-cloud-host = Cloud host: { $host }
