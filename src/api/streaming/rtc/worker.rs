@@ -46,6 +46,8 @@ enum RtcWorkerCommand {
 
 struct SampledGamepadFrame {
     frame: GamepadFrame,
+    /// Input-path instrumentation: when the app-side snapshot was produced.
+    sampled_at: Instant,
 }
 
 pub struct RtcWorker {
@@ -125,7 +127,10 @@ impl RtcWorker {
 
     pub fn send_gamepad_frame(&self, frame: GamepadFrame) {
         if let Ok(mut latest) = self.latest_gamepad.lock() {
-            *latest = Some(SampledGamepadFrame { frame });
+            *latest = Some(SampledGamepadFrame {
+                frame,
+                sampled_at: Instant::now(),
+            });
         }
     }
 
@@ -260,11 +265,13 @@ async fn run_session<B: super::session::RtcSessionBackend>(
                 // is temporarily suppressed (for example, until Confirm is released).
                 let sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
                     frame: GamepadFrame::default(),
+                    sampled_at: Instant::now(),
                 });
                 send_sampled_gamepad_frame(&mut session, sampled, &mut last_gamepad_sent, true);
             } else if pulse_started || latest.is_some() {
                 let mut sampled = latest.unwrap_or_else(|| SampledGamepadFrame {
                     frame: GamepadFrame::default(),
+                    sampled_at: Instant::now(),
                 });
                 // Guide/Nexus is currently the only pulsed input. Keep it asserted while normal
                 // gamepad frames continue to flow instead of immediately overwriting the press.
@@ -369,11 +376,27 @@ fn send_sampled_gamepad_frame<B: super::session::RtcSessionBackend>(
         return;
     }
 
+    let age_us = sampled.sampled_at.elapsed().as_micros() as u64;
+    let metrics = &crate::streaming::video::metrics::METRICS;
+    metrics
+        .gamepad_age_us
+        .store(age_us, std::sync::atomic::Ordering::Relaxed);
+    metrics
+        .gamepad_age_max_us
+        .fetch_max(age_us, std::sync::atomic::Ordering::Relaxed);
+    metrics
+        .gamepad_sent
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let send_started = Instant::now();
     if session
         .backend
         .send_gamepad_frame(&mut session.peer, sampled.frame.clone())
     {
         *last_sent = Some((sampled.frame, now));
+        let send_us = send_started.elapsed().as_micros() as u64;
+        metrics
+            .gamepad_send_max_us
+            .fetch_max(send_us, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

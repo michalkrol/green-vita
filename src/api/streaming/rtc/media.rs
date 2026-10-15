@@ -471,14 +471,30 @@ impl VideoReceiver {
             None => "slip:none wall:0 media:0".to_string(),
         };
         let (vt_mean, vt_max, vt_n) = self.rtp.take_vt_exit();
+        let gp_age = crate::streaming::video::metrics::METRICS
+            .gamepad_age_us
+            .load(Ordering::Relaxed);
+        let gp_age_max = crate::streaming::video::metrics::METRICS
+            .gamepad_age_max_us
+            .swap(0, Ordering::Relaxed);
+        let gp_sent = crate::streaming::video::metrics::METRICS
+            .gamepad_sent
+            .swap(0, Ordering::Relaxed);
+        let gp_send_max = crate::streaming::video::metrics::METRICS
+            .gamepad_send_max_us
+            .swap(0, Ordering::Relaxed);
         if let Ok(mut buffer) = DRIFT_BUF.lock() {
             buffer.push(format!(
-                "{} {} vt:{}/{}/{} {}",
+                "{} {} vt:{}/{}/{} gp:{}/{}/{}/{} {}",
                 DRIFT_T0.elapsed().as_millis(),
                 slip,
                 vt_mean,
                 vt_max,
                 vt_n,
+                gp_age,
+                gp_age_max,
+                gp_sent,
+                gp_send_max,
                 summary
             ));
         }
