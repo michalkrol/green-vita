@@ -165,22 +165,13 @@ impl XboxRtcProtocol {
         }
     }
 
-    /// Ask the console to reconfigure its video pipeline by asserting a (slightly
-    /// alternating) target resolution. A real parameter change forces an encoder
-    /// rebuild, which drains its internal queue — the only known lever that resets
-    /// accumulated console-side backlog mid-session.
-    fn notify_stream_flush_inner(&mut self, peer: &mut RTCPeerConnection) {
-        let (width, height) = if self.flush_size_toggle {
-            (STREAM_WIDTH, STREAM_HEIGHT)
-        } else {
-            (STREAM_WIDTH - 16, STREAM_HEIGHT - 8)
-        };
+    /// DEAD LEVER: the console ignores mid-session dimensionschanged completely —
+    /// proven when `enc:` stayed 1280x720 across 3817 samples while
+    /// alternating-size flushes fired (~9 per session). Nothing is sent any more;
+    /// the METRICS flush counter still marks when the old trigger would have fired.
+    fn notify_stream_flush_inner(&mut self, _peer: &mut RTCPeerConnection) {
         self.flush_size_toggle = !self.flush_size_toggle;
-        if let Some(mut control_channel) = peer.data_channel(self.channel_ids.control) {
-            let _ =
-                control_channel.send_text(channel::dimensions_changed_message(width, height).to_string());
-        }
-        eprintln!("Requested stream flush via dimensionschanged {width}x{height}");
+        eprintln!("stream flush requested (no-op: console ignores dimensionschanged)");
     }
 
     fn send_input_bytes(&self, peer: &mut RTCPeerConnection, bytes: &[u8]) -> bool {

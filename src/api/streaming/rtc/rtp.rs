@@ -56,6 +56,21 @@ impl AudioRtp {
             return;
         }
 
+        // A/V skew instrumentation: newest audio RTP timestamp (48 kHz) and its
+        // arrival on the shared monotonic origin, so the per-second log can
+        // compare the audio and video media timelines.
+        {
+            let metrics = &crate::streaming::video::metrics::METRICS;
+            metrics.audio_last_ts.store(
+                u64::from(packet.header.timestamp),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            metrics.audio_last_arrival_us.store(
+                crate::api::streaming::rtc::media::DRIFT_T0.elapsed().as_micros() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+
         self.samples.push(packet);
         while audio_packets.len() < MAX_PENDING_AUDIO_PACKETS {
             let Some(sample) = self.samples.pop() else {
@@ -79,10 +94,10 @@ pub(crate) struct VideoRtp {
     /// Drift instrumentation: (arrival, RTP timestamp) of the newest video
     /// packet seen; used by stream_slip() for the accumulation trend.
     latest_rtp: Option<(Instant, u32)>,
-    /// Drift instrumentation: per-window video-timing (extmap id 7) stats:
-    /// console capture→pacer-exit sum/max ms and sample count.
-    vt_exit_sum: u64,
-    vt_exit_max: u64,
+    /// Drift instrumentation: per-window max of each video-timing (extmap id 7)
+    /// stage delta (ms: encode-start, encode-finish, packetization, pacer-exit,
+    /// network, network2) plus the sample count.
+    vt_max: [u64; 6],
     vt_exit_count: u64,
     total_bytes: u64,
     twcc_annotations: Vec<(u16, Instant)>,
@@ -190,8 +205,7 @@ impl VideoRtp {
             waiting_for_keyframe: false,
             stream_clock_anchor: None,
             latest_rtp: None,
-            vt_exit_sum: 0,
-            vt_exit_max: 0,
+            vt_max: [0; 6],
             vt_exit_count: 0,
             total_bytes: 0,
             twcc_annotations: Vec::with_capacity(TWCC_MAX_ANNOTATIONS),
@@ -259,14 +273,17 @@ impl VideoRtp {
             _ => self.latest_rtp = Some((Instant::now(), packet_timestamp)),
         }
 
-        // video-timing extension (extmap id 7, negotiated in the offer): f4 at
-        // payload[7..9] big-endian = console capture→pacer-exit latency in ms.
+        // video-timing extension (extmap id 7, negotiated in the offer): six
+        // big-endian 16-bit stage deltas (ms) starting at payload[1]; we track
+        // the per-window max of each so a growing console-side stage (e.g. an
+        // encode-input queue) cannot hide in a single unread number.
         if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == 7)
             && ext.payload.len() == 13
         {
-            let f4 = u16::from_be_bytes([ext.payload[7], ext.payload[8]]) as u64;
-            self.vt_exit_sum += f4;
-            self.vt_exit_max = self.vt_exit_max.max(f4);
+            for (i, slot) in self.vt_max.iter_mut().enumerate() {
+                let d = u16::from_be_bytes([ext.payload[1 + i * 2], ext.payload[2 + i * 2]]) as u64;
+                *slot = (*slot).max(d);
+            }
             self.vt_exit_count += 1;
         }
 
@@ -467,16 +484,24 @@ impl VideoRtp {
         Some((wall_ms - media_ms, wall_ms, media_ms))
     }
 
-    /// Drift instrumentation: per-window video-timing stats (mean_ms, max_ms,
-    /// samples) for console capture→pacer-exit; resets the window.
-    pub(crate) fn take_vt_exit(&mut self) -> (u64, u64, u64) {
+    /// Drift instrumentation: video media-clock position (ms) at a monotonic
+    /// instant expressed on the shared DRIFT_T0 origin — the media timeline
+    /// advances 1:1 with wall time (verified by the flat slip series).
+    pub(crate) fn media_now_ms(&self, now_us: i64) -> Option<i64> {
+        let (anchor_at, anchor_ts) = self.stream_clock_anchor?;
+        let anchor_rel_us = now_us - anchor_at.elapsed().as_micros() as i64;
+        let media_at_anchor_ms = (anchor_ts as i64) / 90;
+        Some(media_at_anchor_ms + (now_us - anchor_rel_us) / 1000)
+    }
+
+    /// Drift instrumentation: per-window max of each video-timing stage delta
+    /// (ms) plus the sample count; resets the window.
+    pub(crate) fn take_vt(&mut self) -> ([u64; 6], u64) {
+        let out = self.vt_max;
         let count = self.vt_exit_count;
-        let mean = if count > 0 { self.vt_exit_sum / count } else { 0 };
-        let max = self.vt_exit_max;
-        self.vt_exit_sum = 0;
-        self.vt_exit_max = 0;
+        self.vt_max = [0; 6];
         self.vt_exit_count = 0;
-        (mean, max, count)
+        (out, count)
     }
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
     pub(crate) fn twcc_median_stride(&self) -> u16 {

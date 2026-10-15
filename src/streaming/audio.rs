@@ -166,6 +166,13 @@ impl AudioRenderer {
                 }
             }
         }
+
+        // A/V skew instrumentation: bytes queued in the SDL buffer as ms of
+        // playout delay (48000 Hz * 2 ch * 2 B = 192000 B/s).
+        crate::streaming::video::metrics::METRICS.audio_queue_ms.store(
+            self.queue.size() as u64 * 1000 / 192_000,
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     fn restart_decode_worker(&mut self) {

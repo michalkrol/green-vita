@@ -18,6 +18,11 @@ const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
 static DRIFT_BUF: std::sync::LazyLock<std::sync::Mutex<Vec<String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
+/// Shared monotonic origin for cross-module instrumentation timestamps
+/// (video drift, audio arrival, A/V skew).
+pub(crate) static DRIFT_T0: std::sync::LazyLock<Instant> =
+    std::sync::LazyLock::new(Instant::now);
+
 /// Flushes the drift buffer to ux0:data/xcloud-rust/hud.log (append) and clears it.
 pub(crate) fn flush_drift_log() {
     let Ok(mut buffer) = DRIFT_BUF.lock() else {
@@ -463,14 +468,29 @@ impl VideoReceiver {
         // flush_drift_log, called from RtcWorker::drop). No filesystem I/O during the
         // session: per-second writes on the pump thread have caused stalls before
         // (cf. the 0.2.5 CSV regression).
-        static DRIFT_T0: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
         let slip = match self.rtp.stream_slip() {
             Some((slip_ms, wall_ms, media_ms)) => {
                 format!("slip:{slip_ms} wall:{wall_ms} media:{media_ms}")
             }
             None => "slip:none wall:0 media:0".to_string(),
         };
-        let (vt_mean, vt_max, vt_n) = self.rtp.take_vt_exit();
+        let (vt, vt_n) = self.rtp.take_vt();
+        let now_us = DRIFT_T0.elapsed().as_micros() as i64;
+        let av = match self.rtp.media_now_ms(now_us) {
+            Some(video_ms) => {
+                let m = &crate::streaming::video::metrics::METRICS;
+                let audio_ts = m.audio_last_ts.load(Ordering::Relaxed) as i64;
+                let audio_arrival_us = m.audio_last_arrival_us.load(Ordering::Relaxed) as i64;
+                let audio_queue_ms = m.audio_queue_ms.load(Ordering::Relaxed);
+                if audio_arrival_us > 0 {
+                    let audio_ms = audio_ts / 48 + (now_us - audio_arrival_us) / 1000;
+                    format!("av:{}/{}", video_ms - audio_ms, audio_queue_ms)
+                } else {
+                    "av:none/0".to_string()
+                }
+            }
+            None => "av:none/0".to_string(),
+        };
         let gp_age = crate::streaming::video::metrics::METRICS
             .gamepad_age_us
             .load(Ordering::Relaxed);
@@ -485,16 +505,21 @@ impl VideoReceiver {
             .swap(0, Ordering::Relaxed);
         if let Ok(mut buffer) = DRIFT_BUF.lock() {
             buffer.push(format!(
-                "{} {} vt:{}/{}/{} gp:{}/{}/{}/{} {}",
+                "{} {} vt:{}/{}/{}/{}/{}/{}/{} gp:{}/{}/{}/{} {} {}",
                 DRIFT_T0.elapsed().as_millis(),
                 slip,
-                vt_mean,
-                vt_max,
+                vt[0],
+                vt[1],
+                vt[2],
+                vt[3],
+                vt[4],
+                vt[5],
                 vt_n,
                 gp_age,
                 gp_age_max,
                 gp_sent,
                 gp_send_max,
+                av,
                 summary
             ));
         }

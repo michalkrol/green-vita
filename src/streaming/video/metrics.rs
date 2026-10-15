@@ -24,6 +24,11 @@ pub(crate) struct VideoMetrics {
     pub(crate) gamepad_age_max_us: AtomicU64,
     pub(crate) gamepad_sent: AtomicU64,
     pub(crate) gamepad_send_max_us: AtomicU64,
+    /// A/V skew instrumentation: newest audio RTP timestamp (48 kHz), its
+    /// arrival on the shared DRIFT_T0 origin (µs), and the SDL queue depth (ms).
+    pub(crate) audio_last_ts: AtomicU64,
+    pub(crate) audio_last_arrival_us: AtomicU64,
+    pub(crate) audio_queue_ms: AtomicU64,
     pub(crate) rtp_hold_saved: AtomicU64,
     pub(crate) rtp_hold_expired: AtomicU64,
     pub(crate) rtp_gaps: AtomicU64,
@@ -68,6 +73,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     gamepad_age_max_us: AtomicU64::new(0),
     gamepad_sent: AtomicU64::new(0),
     gamepad_send_max_us: AtomicU64::new(0),
+    audio_last_ts: AtomicU64::new(0),
+    audio_last_arrival_us: AtomicU64::new(0),
+    audio_queue_ms: AtomicU64::new(0),
     rtp_hold_saved: AtomicU64::new(0),
     rtp_hold_expired: AtomicU64::new(0),
     rtp_gaps: AtomicU64::new(0),
