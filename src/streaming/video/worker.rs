@@ -122,6 +122,12 @@ impl VideoDecodeWorker {
         })
     }
 
+    /// Number of access units waiting to be decoded.  The deferred-PLI scheduler uses
+    /// this to tell when the receive pipeline has drained.
+    pub fn pending_depth(&self) -> usize {
+        self.access_units.len()
+    }
+
     pub fn submit_access_unit(&self, data: Vec<u8>, source_frame_duration_us: Option<u64>) -> bool {
         if let Some(duration) = source_frame_duration_us
             .filter(|d| (MIN_DECODE_INTERVAL_US..=MAX_DECODE_INTERVAL_US).contains(d))
