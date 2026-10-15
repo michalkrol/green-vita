@@ -9,6 +9,12 @@ use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
 
+/// Build identity compiled in by `build.rs` (see scripts/docker-build.sh, which
+/// passes the host's git sha into the container).
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_COMMIT: &str = env!("GIT_SHA");
+const BUILD_TIMESTAMP: &str = env!("BUILD_TIMESTAMP");
+
 #[derive(Clone, PartialEq)]
 pub enum Command {
     ToggleLocaleExpanded,
@@ -334,6 +340,21 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                         .push(Command::SetPeriodicKeyframe(!app.settings.periodic_keyframe).into());
                 }
                 row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+
+                // Build identity (non-interactive): version | short commit | build date.
+                let version_text = format!(
+                    "v{}  |  {}  |  {}",
+                    APP_VERSION,
+                    &GIT_COMMIT[..8.min(GIT_COMMIT.len())],
+                    BUILD_TIMESTAMP.split('T').next().unwrap_or(BUILD_TIMESTAMP)
+                );
+                ui.add_sized(
+                    egui::vec2(ui.available_width(), 28.0),
+                    egui::Label::new(egui::RichText::new(version_text).size(14.0)),
+                );
 
                 ui.add_space(14.0);
                 ui.separator();
