@@ -302,8 +302,15 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 ui.separator();
                 {
                     let mut args = FluentArgs::new();
-                    args.set("kbps", arg_string(app.settings.video_bitrate_kbps.to_string()));
-                    let label = i18n.text_with("settings-video-bitrate-cap", args);
+                    let label = if app.settings.video_bitrate_kbps == 0 {
+                        i18n.text("settings-video-bitrate-nocap")
+                    } else {
+                        args.set(
+                            "kbps",
+                            arg_string(app.settings.video_bitrate_kbps.to_string()),
+                        );
+                        i18n.text_with("settings-video-bitrate-cap", args)
+                    };
                     if focus_row(ui, selected_index == row_index, label) {
                         let next = next_bitrate_preset(app.settings.video_bitrate_kbps);
                         commands.push(Command::SetVideoBitrateCap(next).into());
@@ -459,14 +466,20 @@ fn host_text(i18n: &I18n, id: &'static str, host: &str) -> String {
     i18n.text_with(id, args)
 }
 
-const BITRATE_PRESETS_KBPS: &[u32] = &[1_000, 1_500, 2_000, 2_500, 5_000, 10_000, 15_000, 20_000, 30_000, 50_000];
+// Preset ladder for the bitrate cap: 500 kbps steps up to 8 Mbps, then 0 = no cap.
+const BITRATE_PRESETS_KBPS: &[u32] = &[
+    500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500, 4_000, 4_500, 5_000, 5_500, 6_000, 6_500, 7_000,
+    7_500, 8_000, 0,
+];
 
 fn next_bitrate_preset(current: u32) -> u32 {
-    BITRATE_PRESETS_KBPS
-        .iter()
-        .copied()
-        .find(|&p| p > current)
-        .unwrap_or(BITRATE_PRESETS_KBPS[0])
+    // Walk the ladder in order, wrapping back to 500; 0 (= no cap) sits at the end and is
+    // reachable from 8 Mbps.  Any value from an older settings file that is not on the
+    // ladder jumps to the first preset.
+    match BITRATE_PRESETS_KBPS.iter().position(|&p| p == current) {
+        Some(index) if index + 1 < BITRATE_PRESETS_KBPS.len() => BITRATE_PRESETS_KBPS[index + 1],
+        _ => BITRATE_PRESETS_KBPS[0],
+    }
 }
 
 impl App {
@@ -641,7 +654,12 @@ impl App {
                 self.settings.save();
             }
             Command::SetVideoBitrateCap(kbps) => {
-                self.settings.video_bitrate_kbps = kbps.min(50_000).max(1_000);
+                // 0 = no cap: keep it, do not clamp up to a minimum.
+                self.settings.video_bitrate_kbps = if kbps == 0 {
+                    0
+                } else {
+                    kbps.min(8_000).max(BITRATE_PRESETS_KBPS[0])
+                };
                 self.settings.save();
             }
             Command::SetVideoH264Profile(profile) => {

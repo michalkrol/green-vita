@@ -101,8 +101,12 @@ pub(super) fn cap_video_bitrate(sdp: &str, max_kbps: u32) -> String {
     for line in lines {
         if line.starts_with("m=") {
             if in_video && video_has_h264 && !injected {
-                output.push(format!("b=AS:{max_kbps}"));
-                output.push(format!("b=TIAS:{}", u64::from(max_kbps) * 1000));
+                // max_kbps == 0 means the user picked "no cap": leave the offer without
+                // bandwidth lines instead of asking for an impossible zero bitrate.
+                if max_kbps > 0 {
+                    output.push(format!("b=AS:{max_kbps}"));
+                    output.push(format!("b=TIAS:{}", u64::from(max_kbps) * 1000));
+                }
                 injected = true;
             }
             in_video = line.starts_with("m=video ");
