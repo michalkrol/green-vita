@@ -464,8 +464,19 @@ impl VideoReceiver {
         // session: per-second writes on the pump thread have caused stalls before
         // (cf. the 0.2.5 CSV regression).
         static DRIFT_T0: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+        let slip = match self.rtp.stream_slip() {
+            Some((slip_ms, wall_ms, media_ms)) => {
+                format!("slip:{slip_ms} wall:{wall_ms} media:{media_ms}")
+            }
+            None => "slip:none wall:0 media:0".to_string(),
+        };
         if let Ok(mut buffer) = DRIFT_BUF.lock() {
-            buffer.push(format!("{} {}", DRIFT_T0.elapsed().as_millis(), summary));
+            buffer.push(format!(
+                "{} {} {}",
+                DRIFT_T0.elapsed().as_millis(),
+                slip,
+                summary
+            ));
         }
         Some(summary)
     }
