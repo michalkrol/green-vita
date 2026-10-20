@@ -520,10 +520,20 @@ impl MsalAuth {
         let primary = self.streaming_token(&gssv_token, "xgpuweb").await;
         let f2p = self.streaming_token(&gssv_token, "xgpuwebf2p").await;
 
-        let (cloud, cloud_f2p) = match (primary, f2p) {
-            (Ok(cloud), f2p) => (cloud, f2p.ok()),
-            (Err(_), Ok(f2p)) => (f2p, None),
-            (Err(error), Err(_)) => return Err(error),
+        let cloud = match primary {
+            Ok(cloud) => cloud,
+            Err(error) => {
+                eprintln!("xCloud token fetch failed (region restriction?); continuing without cloud credentials: {error:#}");
+                EndpointCredentials { host: String::new(), token: String::new() }
+            }
+        };
+
+        let cloud_f2p = match f2p {
+            Ok(cloud_f2p) => Some(cloud_f2p),
+            Err(error) => {
+                eprintln!("xCloud F2P token fetch failed (region restriction?); continuing without cloud F2P credentials: {error:#}");
+                None
+            }
         };
 
         Ok(StreamingCredentials {
