@@ -66,8 +66,16 @@ pub(crate) struct VideoRtp {
     stream_too_large: bool,
     waiting_for_keyframe: bool,
     stream_clock_anchor: Option<(Instant, u32)>,
+    /// Drift instrumentation: (arrival, RTP timestamp) of the newest video
+    /// packet seen; used by stream_slip() for the accumulation trend.
+    latest_rtp: Option<(Instant, u32)>,
+    /// Drift instrumentation: per-window max of each video-timing (extmap id 7)
+    /// stage delta (ms: encode-start, encode-finish, packetization, pacer-exit,
+    /// network, network2) plus the sample count.
+    vt_max: [u64; 6],
+    vt_exit_count: u64,
+    slip_slope_base: Option<(Instant, i64>,
     total_bytes: u64,
-}
 
 struct PendingVideoFrame {
     timestamp: u32,
@@ -166,6 +174,10 @@ impl VideoRtp {
             stream_too_large: false,
             waiting_for_keyframe: false,
             stream_clock_anchor: None,
+            latest_rtp: None,
+            slip_slope_base: None,
+            vt_max: [0; 6],
+            vt_exit_count: 0,
             total_bytes: 0,
         }
     }
@@ -195,6 +207,19 @@ impl VideoRtp {
         self.total_bytes += 12 + packet.payload.len() as u64;
 
         let packet_timestamp = packet.header.timestamp;
+
+        // Drift instrumentation (log only, no behaviour change): establish the
+        // session media-clock anchor on the first video packet and track the
+        // newest-timestamp arrival so stream_slip() can trend arrival-vs-media
+        // drift for the latency-accumulation investigation.
+        if self.stream_clock_anchor.is_none() {
+            self.stream_clock_anchor = Some((Instant::now(), packet_timestamp));
+        }
+        match self.latest_rtp {
+            Some((_, last_ts)) if !timestamp_is_newer(packet_timestamp, last_ts) => {}
+            _ => self.latest_rtp = Some((Instant::now(), packet_timestamp)),
+        }
+
         if let Some(pending) = &self.pending
             && pending.timestamp != packet_timestamp
         {
@@ -258,6 +283,29 @@ impl VideoRtp {
         crate::streaming::video::metrics::METRICS
             .rtp_assembly_max_us
             .fetch_max(assembly_us, Ordering::Relaxed);
+
+        // Drift instrumentation: accumulate slip metric from the latest video packet.
+        if let Some(slip) = self.stream_slip() {
+            let (slip_ms, _wall_ms, media_ms) = slip;
+            // Current slip (updated every packet; HUD reads this value).
+            METRICS.stream_slip_us.store(slip_ms as u64, Ordering::Relaxed);
+            // Maximum slip observed during the session (max of positive slips).
+            if slip_ms > 0 {
+                METRICS.stream_slip_max_us.fetch_max(slip_ms as u64, Ordering::Relaxed);
+            }
+        }
+
+        // Video-timing census (extmap id=7): parse six 16-bit stage deltas.
+        if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == 7)
+            && ext.payload.len() == 13
+        {
+            for (i, slot) in self.vt_max.iter_mut().enumerate() {
+                let d = u16::from_be_bytes([ext.payload[1 + i * 2], ext.payload[2 + i * 2]]) as u64;
+                *slot = (*slot).max(d);
+            }
+            self.vt_exit_count += 1;
+        }
+
         self.next_sequence = Some(marker_sequence.wrapping_add(1));
         stats.source_frame_duration_us = self.last_frame_timestamp.map(|previous| {
             u64::from(completed.timestamp.wrapping_sub(previous)) * 1_000_000
@@ -355,6 +403,17 @@ impl VideoRtp {
     
     pub(crate) fn flush_expired(&mut self, _worker: &VideoDecodeWorker, _kr: &mut bool, _stats: &mut crate::api::streaming::rtc::rtp::VideoSampleStats) {}
     pub(crate) fn reset_lag_anchor(&mut self) { self.stream_clock_anchor = None; }
+    /// Drift instrumentation: (slip_ms, wall_ms, media_ms).  slip = wall time
+    /// since the session anchor minus media time (RTP clock at 90 kHz) advanced
+    /// since the anchor.  A flat slope means arrivals keep pace with the media
+    /// timeline; a growing slope means they increasingly fall behind.
+    pub(crate) fn stream_slip(&self) -> Option<(i64, i64, i64)> {
+        let (anchor_at, anchor_ts) = self.stream_clock_anchor?;
+        let (arrival_at, arrival_ts) = self.latest_rtp?;
+        let wall_ms = arrival_at.duration_since(anchor_at).as_millis() as i64;
+        let media_ms = (arrival_ts.wrapping_sub(anchor_ts) as i64) * 1000 / 90;
+        Some((wall_ms - media_ms, wall_ms, media_ms))
+    }
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
     pub(crate) fn twcc_median_stride(&self) -> u16 { 0 }
     pub(crate) fn take_twcc_report(&mut self, _media_ssrc: u32) -> Option<TwccReport> { None }

@@ -258,6 +258,37 @@ impl VideoReceiver {
         let stats_window = now.duration_since(self.last_stats_report);
         self.last_stats_report = now;
 
+        // Drain all per-second metrics into a snapshot (HUD + CSV read the same snapshot).
+        let snapshot = drain_metrics();
+
+        // Build receiver-level extras for the CSV row.
+        let extras = super::metrics_log::RowExtras {
+            src_fps: if stats_window.as_secs_f64() > 0.0 {
+                (1.0 / stats_window.as_secs_f64()).round() as u64
+            } else {
+                0
+            },
+            enc_width: STREAM_WIDTH,
+            enc_height: STREAM_HEIGHT,
+            waiting_keyframe: self.waiting_for_keyframe(),
+            drops: self.stats.dropped,
+            decode_errors: self.stats.decode_errors,
+        };
+
+        // Write the row to the RAM-buffered CSV log (no file I/O during the session).
+        if let Some(log) = crate::streaming::video::METRICS_CSV_LOG.lock().ok() {
+            if let Some(log) = log.as_ref() {
+                let _ = log.write_row(&snapshot, &extras);
+            }
+        }
+
+
+
+        // Compute audio queue depth in ms from pending packets.
+        // 48 kHz, 16-bit stereo: 1s = 192000 bytes.
+        let pending_bytes: usize = self.packets.iter().map(|p| p.len()).sum();
+        let queue_ms = (pending_bytes.saturating_mul(1000) / 192000) as u64;
+        METRICS.audio_queue_ms.store(queue_ms, Ordering::Relaxed);
         // Publish TWCC stride forensics (median sequence gap between annotated
         // packets) into the summary line rendered below.
         crate::streaming::video::metrics::METRICS
