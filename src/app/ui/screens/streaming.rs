@@ -52,9 +52,16 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
         let tw_s = f("tw:");
         let st = f("stride:");
         let pick = f("pick:");
+        let enc = f("enc:");
+        let err = f("err:");
+        let cs = f("cs:");
 
         const LABEL_WIDTH: usize = 16;
         const VALUE_WIDTH: usize = 8;
+
+        let res = if enc.is_empty() { "?".to_string() } else { enc };
+        let err_val = if err.is_empty() { "0".to_string() } else { err };
+        let color_val = if cs.is_empty() { "BT.709".to_string() } else { cs };
 
         let new_rows: Vec<String> = vec![
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Dec/Pres:{}", dp), format!("Dec/Pip:{}ms", da)),
@@ -64,6 +71,8 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Resync:{}", rs), format!("Flush:{}", fl)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("TWCC:{}", tw_s), format!("Strd:{}", st)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Pick:{}us", pick), ""),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", "Decoder:avcdec", format!("Res:{}", res)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Color:{}", color_val), format!("Err:{}", err_val)),
         ];
 
         // Free any previously cached rows and store the new ones.
@@ -326,3 +335,68 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
             });
     }
 }
+<<<<<<< HEAD
+=======
+
+/// Extract a value after `key` in the status string (e.g. `srcfps:60` → "60").
+fn extract_field(status: &str, key: &str) -> String {
+    if let Some(pos) = status.find(key) {
+        let start = pos + key.len();
+        let mut val = String::new();
+        for ch in status[start..].chars() {
+            if ch.is_ascii_alphanumeric() || ch == '/' || ch == '.' || ch == '%' {
+                val.push(ch);
+            } else {
+                break;
+            }
+        }
+        val
+    } else {
+        String::new()
+    }
+}
+
+/// Build curated debug rows (2 columns, fixed positions, permanently exclude always-zero fields).
+fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(String, Option<String>)> {
+    let f = |key: &str| extract_field(status, key);
+    let dp = f("d/p:");
+    let da = f("d/a:");
+    let repl = f("repl:");
+    let skip = f("skip:");
+    let hwb = f("hwb:");
+    let lag = f("lag:");
+    let bw = f("bw:");
+    let lagmax = f("lagMax:");
+    let fl = f("fl:");
+    let rs = f("rs:");
+    let tw_s = f("tw:");
+    let st = f("st:");
+    let pick = f("pick:");
+    let enc = f("enc:");
+    let err = f("err:");
+    let cs = f("cs:");
+
+    use crate::settings::H264Profile;
+    let profile_label = match settings.video_h264_profile {
+        H264Profile::Baseline => "Base",
+        H264Profile::Main => "Main",
+        H264Profile::High => "High",
+    };
+
+    let res = if enc.is_empty() { "?".to_string() } else { enc };
+    let err_val = if err.is_empty() { "0".to_string() } else { err };
+    let color_val = if cs.is_empty() { "BT.709".to_string() } else { cs };
+
+    vec![
+        (format!("Dec/Pres:{}", dp),        Some(format!("Dec/Pip:{}ms", da))),
+        (format!("Repl:{}", repl),           Some(format!("Skip:{}", skip))),
+        (format!("HWbuf:{}", hwb),           Some(format!("Lag:{}ms", lag))),
+        (format!("BW:{}kbps", bw),           Some(format!("LagMx:{}ms", lagmax))),
+        (format!("Resync:{}", rs),           Some(format!("Flush:{}", fl))),
+        (format!("TWCC:{}", tw_s),           Some(format!("Strd:{}", st))),
+        (format!("Pick:{}us", pick),         Some(format!("Prof:{}", profile_label))),
+        (format!("Decoder:avcdec"),          Some(format!("Res:{}", res))),
+        (format!("Color:{}", color_val),     Some(format!("Err:{}", err_val))),
+    ]
+}
+>>>>>>> 91f4449 (Add some avcdec specific metrics to debug)

@@ -26,7 +26,7 @@ settings-unlock-video-fps = Unlock video to 60 FPS
 action-back = Back
 
 mode-select-cloud-subtitle = Stream Xbox Cloud Gaming titles
-mode-select-home-subtitle = Not implemented yet — use xVita for now
+mode-select-home-subtitle = Stream your Xbox Console
 
 paused-resume = Return to game
 paused-xbox-button = Xbox button
