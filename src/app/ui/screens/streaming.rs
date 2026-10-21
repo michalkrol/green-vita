@@ -150,21 +150,30 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(
     let tw_s = f("tw:");
     let st = f("st:");
     let pick = f("pick:");
+    let enc = f("enc:");
+    let err = f("err:");
+    let cs = f("cs:");
 
-use crate::settings::H264Profile;
+    use crate::settings::H264Profile;
     let profile_label = match settings.video_h264_profile {
         H264Profile::Baseline => "Base",
         H264Profile::Main => "Main",
         H264Profile::High => "High",
     };
 
+    let res = if enc.is_empty() { "?".to_string() } else { enc };
+    let err_val = if err.is_empty() { "0".to_string() } else { err };
+    let color_val = if cs.is_empty() { "BT.709".to_string() } else { cs };
+
     vec![
-        (format!("Dec/Pres:{}", dp),   Some(format!("Dec/Pip:{}ms", da))),
-        (format!("Repl:{}", repl),      Some(format!("Skip:{}", skip))),
-        (format!("HWbuf:{}", hwb),      Some(format!("Lag:{}ms", lag))),
-        (format!("BW:{}kbps", bw),      Some(format!("LagMx:{}ms", lagmax))),
-        (format!("Resync:{}", rs),      Some(format!("Flush:{}", fl))),
-        (format!("TWCC:{}", tw_s),      Some(format!("Strd:{}", st))),
-        (format!("Pick:{}us", pick),    Some(format!("Prof:{}", profile_label))),
+        (format!("Dec/Pres:{}", dp),        Some(format!("Dec/Pip:{}ms", da))),
+        (format!("Repl:{}", repl),           Some(format!("Skip:{}", skip))),
+        (format!("HWbuf:{}", hwb),           Some(format!("Lag:{}ms", lag))),
+        (format!("BW:{}kbps", bw),           Some(format!("LagMx:{}ms", lagmax))),
+        (format!("Resync:{}", rs),           Some(format!("Flush:{}", fl))),
+        (format!("TWCC:{}", tw_s),           Some(format!("Strd:{}", st))),
+        (format!("Pick:{}us", pick),         Some(format!("Prof:{}", profile_label))),
+        (format!("Decoder:avcdec"),          Some(format!("Res:{}", res))),
+        (format!("Color:{}", color_val),     Some(format!("Err:{}", err_val))),
     ]
 }
