@@ -187,8 +187,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                 let n_right = if two_columns { n - n_left } else { 0 };
 
                 let cell_px_width = (LABEL_WIDTH + VALUE_WIDTH) as f32 * 6.0; // approx 6px per char at 10pt monospace
-                const COLUMN_GAP: usize = 8;     // 3-4 extra space cells at 6px/char ≈ 18-24px
-                const CELL_RIGHT_MARGIN: usize = 2;  // 2 spare cells of right margin per cell
+                const COLUMN_GAP: usize = 32;      // 5+ extra space cells at 6px/char ≈ 96-192px
+                const CELL_RIGHT_MARGIN: usize = 8;  // 8 spare cells of right margin per cell
                 let panel_w = if two_columns {
                     cell_px_width * 2.0 + COLUMN_GAP as f32 + 24.0 + CELL_RIGHT_MARGIN as f32 * 6.0
                 } else {
@@ -221,7 +221,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                                     ""
                                 };
                                 // Draw label in right column, right-aligned within cell width
-                                let x = cell_px_width + COLUMN_GAP as f32 + 8.0;
+                                let x = cell_px_width + COLUMN_GAP as f32 + 32.0;
                                 painter.text(
                                     egui::pos2(x, y), egui::Align2::RIGHT_TOP,
                                     label_part,
@@ -229,7 +229,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                                     theme.text.gamma_multiply(0.85),
                                 );
                                 // Draw value right-aligned within cell width
-                                let value_x = x - cell_px_width + 8.0 - CELL_RIGHT_MARGIN as f32 * 6.0;
+                                let value_x = x - cell_px_width + 32.0 - CELL_RIGHT_MARGIN as f32 * 6.0;
                                 painter.text(
                                     egui::pos2(value_x + cell_px_width, y), egui::Align2::RIGHT_TOP,
                                     value_part,
@@ -256,7 +256,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                                 theme.text.gamma_multiply(0.85),
                             );
                             // Draw value right-aligned within cell width
-                            let value_x = x + LABEL_WIDTH as f32 * 6.0;
+                            let value_x = x + LABEL_WIDTH as f32 * 6.0 + 48.0;
                             painter.text(
                                 egui::pos2(value_x, y), egui::Align2::RIGHT_TOP,
                                 value_part,
