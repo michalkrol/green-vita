@@ -279,15 +279,23 @@ impl VideoReceiver {
             );
         }
 
+        // Compute source fps and negotiated resolution before building extras.
+        let source_fps = self
+            .stats
+            .last_sample_duration_us
+            .filter(|duration| *duration > 0)
+            .map(|duration| 1_000_000 / duration)
+            .unwrap_or(0);
+        let (enc_width, enc_height) = self
+            .stats
+            .encoded_resolution
+            .unwrap_or((STREAM_WIDTH, STREAM_HEIGHT));
+
         // Build receiver-level extras for the CSV row.
         let extras = crate::streaming::video::metrics_log::RowExtras {
-            src_fps: if stats_window.as_secs_f64() > 0.0 {
-                (1.0 / stats_window.as_secs_f64()).round() as u64
-            } else {
-                0
-            },
-            enc_width: STREAM_WIDTH,
-            enc_height: STREAM_HEIGHT,
+            src_fps: source_fps,
+            enc_width,
+            enc_height,
             waiting_keyframe: self.rtp.waiting_for_keyframe(),
             drops: self.stats.dropped,
             decode_errors: self.stats.decode_errors,
@@ -333,12 +341,6 @@ impl VideoReceiver {
             self.last_bw_bytes = total;
         }
 
-        let source_fps = self
-            .stats
-            .last_sample_duration_us
-            .filter(|duration| *duration > 0)
-            .map(|duration| 1_000_000 / duration)
-            .unwrap_or(0);
         let encoded_resolution = self
             .stats
             .encoded_resolution
