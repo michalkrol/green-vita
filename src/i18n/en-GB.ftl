@@ -80,3 +80,7 @@ error-stream-state = Failed to check stream state
 error-webrtc-session = WebRTC session failed
 error-stream-ended = Stream session ended
 error-technical-details = Technical details: { $error }
+
+settings-video-bitrate-cap = Bitrate cap: { $kbps } kbps
+settings-video-bitrate-nocap = Bitrate cap: none (unlimited)
+settings-swap-shoulders-global = Swap L1/L2 and R1/R2 (all games)
