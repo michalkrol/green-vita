@@ -1,5 +1,5 @@
 use std::sync::{Arc, LazyLock, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 /// Snapshot of per-second metrics drained from METRICS at status() time.
 /// Readings are zeroed after drain so the next status() call starts fresh.
@@ -120,13 +120,13 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     stream_slip_max_us: AtomicU64::new(0),
     stream_slip_slope_mpm: AtomicI64::new(0),
     audio_queue_ms: AtomicU64::new(0),
-    vt_exit_count: u64::new(0),
-    vt_max_0: u64::new(0),
-    vt_max_1: u64::new(0),
-    vt_max_2: u64::new(0),
-    vt_max_3: u64::new(0),
-    vt_max_4: u64::new(0),
-    vt_max_5: u64::new(0),
+    vt_exit_count: 0,
+    vt_max_0: 0,
+    vt_max_1: 0,
+    vt_max_2: 0,
+    vt_max_3: 0,
+    vt_max_4: 0,
+    vt_max_5: 0,
     rtp_hold_saved: AtomicU64::new(0),
     rtp_hold_expired: AtomicU64::new(0),
     rtp_gaps: AtomicU64::new(0),
@@ -150,7 +150,7 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
 /// RAM-buffered CSV log for a streaming session.
 /// Rows are accumulated at 1 Hz from status() and flushed once at session end.
 /// Owned by the video module; flushed from RtcWorker::drop.
-static METRICS_CSV_LOG: LazyLock<Mutex<Option<crate::streaming::video::MetricsCsvLog>>> =
+pub(crate) static METRICS_CSV_LOG: LazyLock<Mutex<Option<crate::streaming::video::metrics_log::MetricsCsvLog>>> =
     LazyLock::new(|| Mutex::new(None));
 
 /// Initialize the RAM-buffered CSV log for a new streaming session.
@@ -158,9 +158,12 @@ static METRICS_CSV_LOG: LazyLock<Mutex<Option<crate::streaming::video::MetricsCs
 /// Called once from RtcSession::new so the first CSV rows cannot report
 /// the previous session's values.
 pub(crate) fn init_csv_log() {
-    *METRICS_CSV_LOG.get_or_init(|| Mutex::new(Some(crate::streaming::video::MetricsCsvLog::new()))) = {
-        crate::streaming::video::Mutex::new(Some(crate::streaming::video::MetricsCsvLog::new()))
-    };
+    // Use Mutex::new(None) as the initial value; the first call will replace it
+    // with a fresh MetricsCsvLog. This avoids the need for LazyLock::get_or_init.
+    let mut log_mut = METRICS_CSV_LOG.lock().unwrap();
+    if log_mut.is_none() {
+        *log_mut = Some(crate::streaming::video::metrics_log::MetricsCsvLog::new());
+    }
 }
 
 pub fn video_performance_summary() -> String {
@@ -209,14 +212,14 @@ pub fn video_performance_summary() -> String {
     );
     // HUD vt segment: vt_max_0..5 and vt_exit_count
     let vt_segment = format!(
-        " vt_max:{}/{}/{}/{}/{}/{}/{} vt_exit:{}",
-        METRICS.vt_max_0.load(Ordering::Relaxed),
-        METRICS.vt_max_1.load(Ordering::Relaxed),
-        METRICS.vt_max_2.load(Ordering::Relaxed),
-        METRICS.vt_max_3.load(Ordering::Relaxed),
-        METRICS.vt_max_4.load(Ordering::Relaxed),
-        METRICS.vt_max_5.load(Ordering::Relaxed),
-        METRICS.vt_exit_count.load(Ordering::Relaxed),
+        " vt_max:{}/{}/{}/{}/{}/{} vt_exit:{}",
+        METRICS.vt_max_0,
+        METRICS.vt_max_1,
+        METRICS.vt_max_2,
+        METRICS.vt_max_3,
+        METRICS.vt_max_4,
+        METRICS.vt_max_5,
+        METRICS.vt_exit_count,
     );
     format!("{line1}\n{line2}{vt_segment}")
 }
@@ -248,12 +251,12 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         stream_slip_slope_mpm: METRICS.stream_slip_slope_mpm.swap(0, Ordering::Relaxed),
         audio_queue_ms: METRICS.audio_queue_ms.swap(0, Ordering::Relaxed),
         vt_exit_count: METRICS.vt_exit_count,
-        vt_max_0: METRICS.vt_max_0.load(Ordering::Relaxed),
-        vt_max_1: METRICS.vt_max_1.load(Ordering::Relaxed),
-        vt_max_2: METRICS.vt_max_2.load(Ordering::Relaxed),
-        vt_max_3: METRICS.vt_max_3.load(Ordering::Relaxed),
-        vt_max_4: METRICS.vt_max_4.load(Ordering::Relaxed),
-        vt_max_5: METRICS.vt_max_5.load(Ordering::Relaxed),
+        vt_max_0: METRICS.vt_max_0,
+        vt_max_1: METRICS.vt_max_1,
+        vt_max_2: METRICS.vt_max_2,
+        vt_max_3: METRICS.vt_max_3,
+        vt_max_4: METRICS.vt_max_4,
+        vt_max_5: METRICS.vt_max_5,
         rtp_hold_saved: METRICS.rtp_hold_saved.swap(0, Ordering::Relaxed),
         rtp_hold_expired: METRICS.rtp_hold_expired.swap(0, Ordering::Relaxed),
         rtp_gaps: METRICS.rtp_gaps.swap(0, Ordering::Relaxed),
@@ -318,10 +321,10 @@ pub(crate) fn reset_session_metrics() {
     /// Called from RtcWorker::drop after session teardown; no filesystem I/O during session.
     /// Sets the global log to None after flush so a new session starts clean.
     pub(crate) fn flush_csv_log() {
-        let log = METRICS_CSV_LOG.lock().unwrap();
+        let mut log = METRICS_CSV_LOG.lock().unwrap();
         if let Some(log) = log.as_ref() {
             log.flush();
         }
-        *METRICS_CSV_LOG.get_mut().unwrap() = None;
+        *log = None;
     }
 

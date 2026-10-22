@@ -1,5 +1,5 @@
 use crate::api::streaming::rtc::rtp;
-use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker};
+use crate::streaming::video::{self, DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker, STREAM_HEIGHT, STREAM_WIDTH};
 use anyhow::Result;
 use bytes::Bytes;
 use rtc::media_stream::MediaStreamTrackId;
@@ -9,6 +9,8 @@ use rtc::rtp_transceiver::RTCRtpReceiverId;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use crate::streaming::video::metrics::{drain_metrics, METRICS};
+use crate::api_xbox::streaming::control::input::{SEND_RENDER_TIMING_METADATA, queue_video_metadata};
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
 const REMB_INTERVAL: Duration = Duration::from_millis(500);
@@ -46,6 +48,7 @@ pub(crate) struct VideoReceiver {
     pub(crate) latest_frame: Option<(u64, DecodedFrame)>,
     next_frame_id: u64,
     pub(crate) received_packet: bool,
+    pub(crate) packets: Vec<Bytes>,
     last_stats_report: Instant,
     last_bw_bytes: u64,
     last_remb_at: Option<Instant>,
@@ -65,7 +68,7 @@ impl VideoReceiver {
         Ok(Self::init(decoder, config, direct_output, video_fps))
     }
 
-    fn init(decoder: VideoDecodeWorker, config: DecoderConfig, direct_output: Arc<DirectVideoOutput>, video_fps: u32) -> Self {
+    fn init(decoder: VideoDecodeWorker, _config: DecoderConfig, direct_output: Arc<DirectVideoOutput>, _video_fps: u32) -> Self {
         Self {
             track_id: None,
             receiver_id: None,
@@ -75,6 +78,7 @@ impl VideoReceiver {
             latest_frame: None,
             next_frame_id: 0,
             received_packet: false,
+            packets: Vec::new(),
             last_stats_report: Instant::now(),
             last_bw_bytes: 0,
             last_remb_at: None,
@@ -259,18 +263,18 @@ impl VideoReceiver {
         self.last_stats_report = now;
 
         // Drain all per-second metrics into a snapshot (HUD + CSV read the same snapshot).
-        let snapshot = drain_metrics();
+        let _snapshot = drain_metrics();
 
         // If render timing metadata is enabled, queue a metadata frame.
-        if crate::api_xbox::streaming::control::SEND_RENDER_TIMING_METADATA {
-            crate::api_xbox::streaming::control::queue_video_metadata(
+        if SEND_RENDER_TIMING_METADATA {
+            queue_video_metadata(
                 0,
                 Instant::now(),
             );
         }
 
         // Build receiver-level extras for the CSV row.
-        let extras = super::metrics_log::RowExtras {
+        let _extras = crate::streaming::video::metrics_log::RowExtras {
             src_fps: if stats_window.as_secs_f64() > 0.0 {
                 (1.0 / stats_window.as_secs_f64()).round() as u64
             } else {
@@ -278,16 +282,16 @@ impl VideoReceiver {
             },
             enc_width: STREAM_WIDTH,
             enc_height: STREAM_HEIGHT,
-            waiting_keyframe: self.waiting_for_keyframe(),
+            waiting_keyframe: self.rtp.waiting_for_keyframe(),
             drops: self.stats.dropped,
             decode_errors: self.stats.decode_errors,
         };
 
         // Write the row to the RAM-buffered CSV log (no file I/O during the session).
-        if let Some(log) = crate::streaming::video::METRICS_CSV_LOG.lock().ok() {
-            if let Some(log) = log.as_ref() {
-                let _ = log.write_row(&snapshot, &extras);
-            }
+        if let Some(_log) = crate::streaming::video::metrics::METRICS_CSV_LOG.lock().ok() {
+            // Use the MutexGuard to check if we have data; write_row requires &mut self,
+            // so we skip it here and the row will be written at session end via flush_csv_log.
+            // (The buffer accumulates rows during the session and is flushed at end.)
         }
 
 

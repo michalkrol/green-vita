@@ -100,14 +100,14 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     ) -> Result<Self> {
         let transport =
             RtcTransport::bind(&mut peer, config.stun_server, config.route_probe).await?;
-        let video = VideoReceiver::new(config.decoder, direct_output, config.video_fps)?;
+        let mut video = VideoReceiver::new(config.decoder, direct_output, config.video_fps)?;
         // Fresh session: clear the per-session metrics and the slip anchor so the first
         // CSV rows cannot report the previous session's values.
-        crate::streaming::video::reset_session_metrics();
+        crate::streaming::video::metrics::reset_session_metrics();
         // Initialize the RAM-buffered metrics CSV log for this session.
         // It outlives the session so the flush at end sees all rows.
-        crate::streaming::video::init_csv_log();
-        video.reset_slip_anchor();
+        crate::streaming::video::metrics::init_csv_log();
+        video.reset_lag_anchor();
 
         Ok(Self {
             peer,

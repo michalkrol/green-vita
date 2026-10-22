@@ -26,11 +26,13 @@ fn extract_field(status: &str, key: &str) -> String {
 /// Uses static cached rows; the matrix is recomputed no more than once per 250 ms window.
 fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(String, Option<String>)> {
     static LAST_REBUILD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    static CACHED_ROWS: std::sync::atomic::AtomicPtr<Vec<(String, Option<String>)>> = std::sync::atomic::AtomicPtr::new(std::ptr::null());
+    static CACHED_ROWS: std::sync::atomic::AtomicPtr<Vec<(String, Option<String>)>> = std::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
-    let now_ms = std::time::Instant::now().duration_since(std::time::UNIX_EPOCH).as_millis() as u64;
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
     let last = LAST_REBUILD.load(std::sync::atomic::Ordering::Relaxed);
-    let mut cached_ptr = CACHED_ROWS.load(std::sync::atomic::Ordering::Relaxed);
+    let cached_ptr = CACHED_ROWS.load(std::sync::atomic::Ordering::Relaxed);
 
     // Rebuild if no cached rows or if 250 ms has elapsed since last rebuild.
     if cached_ptr.is_null() || now_ms.saturating_sub(last) > 250 {
@@ -62,7 +64,7 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(
         // Free any previously cached rows and store the new ones.
         let _ = CACHED_ROWS.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
         let _ = LAST_REBUILD.store(now_ms, std::sync::atomic::Ordering::Relaxed);
-        let _boxed = Box::into_raw(Box::new(new_rows));
+        let _boxed = Box::into_raw(Box::new(new_rows.clone()));
         CACHED_ROWS.store(_boxed, std::sync::atomic::Ordering::Relaxed);
 
         new_rows

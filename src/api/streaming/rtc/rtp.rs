@@ -1,4 +1,4 @@
-use crate::streaming::video::{STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker};
+use crate::streaming::video::{self, STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker, metrics::METRICS};
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
@@ -238,6 +238,17 @@ impl VideoRtp {
                 stats.dropped = stats.dropped.saturating_add(1);
             }
         }
+        // Video-timing census (extmap id=7): parse six 16-bit stage deltas.
+        if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == 7)
+            && ext.payload.len() == 13
+        {
+            for (i, slot) in self.vt_max.iter_mut().enumerate() {
+                let d = u16::from_be_bytes([ext.payload[1 + i * 2], ext.payload[2 + i * 2]]) as u64;
+                *slot = (*slot).max(d);
+            }
+            self.vt_exit_count += 1;
+        }
+
         if self.pending.is_none() {
             if self
                 .last_frame_timestamp
@@ -296,7 +307,7 @@ impl VideoRtp {
             }
             // One-shot base slope: capture once when wall-time since anchor ≥ 60 s.
             let anchor_age_secs = self.stream_clock_anchor
-                .map_or(0, |(anchor_at, _)| anchor_at.elapsed().as_secs_f64());
+                .map_or(0.0, |(anchor_at, _)| anchor_at.elapsed().as_secs_f64());
             if METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) == 0
                 && anchor_age_secs >= 60.0
             {
@@ -309,22 +320,11 @@ impl VideoRtp {
                 let base_slip = METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) as u64;
                 let elapsed_s = anchor_age_secs - 60.0; // seconds after the 60s base point
                 if elapsed_s > 1.0 {
-                    let delta_us = slip_us as i64 - base_slip as i64;
+                    let delta_us = slip_ms as i64 - base_slip as i64;
                     let slope_mpm = (delta_us as f64 * 60.0) / (1000.0 * elapsed_s);
                     METRICS.stream_slip_slope_mpm.store(slope_mpm.round() as i64, Ordering::Relaxed);
                 }
             }
-        }
-
-        // Video-timing census (extmap id=7): parse six 16-bit stage deltas.
-        if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == 7)
-            && ext.payload.len() == 13
-        {
-            for (i, slot) in self.vt_max.iter_mut().enumerate() {
-                let d = u16::from_be_bytes([ext.payload[1 + i * 2], ext.payload[2 + i * 2]]) as u64;
-                *slot = (*slot).max(d);
-            }
-            self.vt_exit_count += 1;
         }
 
         self.next_sequence = Some(marker_sequence.wrapping_add(1));
