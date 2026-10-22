@@ -76,6 +76,7 @@ pub(crate) struct VideoRtp {
     vt_exit_count: u64,
     slip_slope_base: Option<(Instant, i64)>,
     total_bytes: u64,
+}
 
 struct PendingVideoFrame {
     timestamp: u32,
