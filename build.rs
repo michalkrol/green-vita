@@ -22,7 +22,7 @@ fn main() {
         command_output("git", &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".to_owned())
     });
     let build_timestamp = non_empty_env("BUILD_TIMESTAMP")
-        .unwrap_or_else(|| command_output("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"]).unwrap_or_else(|| "unknown".to_owned()));
+        .unwrap_or_else(|| command_output("date", &["-u", "+%Y-%m-%d %H:%M"]).unwrap_or_else(|| "unknown".to_owned()));
 
     println!("cargo:rustc-env=GIT_SHA={}", git_sha);
     println!("cargo:rustc-env=BUILD_TIMESTAMP={}", build_timestamp);

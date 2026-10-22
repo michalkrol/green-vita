@@ -356,7 +356,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     "v{}  |  {}  |  {}",
                     APP_VERSION,
                     &GIT_COMMIT[..8.min(GIT_COMMIT.len())],
-                    BUILD_TIMESTAMP.split('T').next().unwrap_or(BUILD_TIMESTAMP)
+                    BUILD_TIMESTAMP
                 );
                 ui.add_sized(
                     egui::vec2(ui.available_width(), 28.0),
