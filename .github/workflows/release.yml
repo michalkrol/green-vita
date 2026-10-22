@@ -68,9 +68,19 @@ jobs:
 
       - name: Build VPK
         if: github.event_name == 'workflow_dispatch' || steps.release.outputs.exists == 'false'
+        shell: bash
         env:
           RUSTFLAGS: "-C target-feature=-neon"
-        run: cargo vita build vpk --release
+        run: |
+          # Bake the build identity into the binary (settings page reads it via
+          # build.rs). checkout only registers safe.directory in a temporary
+          # config for its own step, so build.rs' `git rev-parse` fallback fails
+          # here with "dubious ownership" and would bake `unknown`. Resolve both
+          # explicitly, matching what scripts/docker-build.sh does for local
+          # container builds.
+          export GIT_SHA="${GITHUB_SHA:0:7}"
+          export BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cargo vita build vpk --release
 
       - name: Upload test VPK
         if: github.event_name == 'workflow_dispatch'
