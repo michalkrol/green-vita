@@ -300,7 +300,10 @@ impl VideoRtp {
         if let Some(slip) = self.stream_slip() {
             let (slip_ms, _wall_ms, media_ms) = slip;
             // Current slip (updated every packet; HUD reads this value).
-            METRICS.stream_slip_us.store(slip_ms as u64, Ordering::Relaxed);
+            // Use max(0, ...) to avoid u64 wrap when slip_ms is negative
+            // (media outpaces wall clock). The slip is absolute since the
+            // first video AU, never re-anchored per session design.
+            METRICS.stream_slip_us.store(slip_ms.max(0) as u64, Ordering::Relaxed);
             // Maximum slip observed during the session (max of positive slips).
             if slip_ms > 0 {
                 METRICS.stream_slip_max_us.fetch_max(slip_ms as u64, Ordering::Relaxed);
