@@ -24,6 +24,7 @@ pub(crate) struct VideoSampleStats {
     pub dropped: u32,
     pub source_frame_duration_us: Option<u64>,
     pub encoded_resolution: Option<(u32, u32)>,
+    pub color: Option<u8>,
     pub nack_requests: Vec<(u16, u16)>,
 }
 
@@ -346,6 +347,7 @@ impl VideoRtp {
 
         let unit = inspect_h264_access_unit(&data);
         stats.encoded_resolution = unit.resolution;
+        stats.color = unit.color;
         let sample_too_large = unit
             .resolution
             .is_some_and(|(width, height)| width > STREAM_WIDTH || height > STREAM_HEIGHT);
@@ -443,6 +445,40 @@ impl VideoRtp {
     pub(crate) fn take_twcc_report(&mut self, _media_ssrc: u32) -> Option<TwccReport> { None }
 }
 
+pub(crate) fn color_matrix_label(code: u8) -> String {
+    match code {
+        0 => "GBR".to_owned(),
+        1 => "BT.709".to_owned(),
+        2 => "Unspec".to_owned(),
+        5 => "BT.470BG".to_owned(),
+        6 => "BT.601".to_owned(),
+        7 => "BT.601".to_owned(),
+        9 => "BT.2020".to_owned(),
+        10 => "BT.2020".to_owned(),
+        _ => format!("m{}", code),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_color_matrix_label() {
+        assert_eq!(color_matrix_label(0), "GBR");
+        assert_eq!(color_matrix_label(1), "BT.709");
+        assert_eq!(color_matrix_label(2), "Unspec");
+        assert_eq!(color_matrix_label(5), "BT.470BG");
+        assert_eq!(color_matrix_label(6), "BT.601");
+        assert_eq!(color_matrix_label(7), "BT.601");
+        assert_eq!(color_matrix_label(9), "BT.2020");
+        assert_eq!(color_matrix_label(10), "BT.2020");
+        // Anything else gets "m{code}" format
+        assert_eq!(color_matrix_label(3), "m3");
+        assert_eq!(color_matrix_label(255), "m255");
+    }
+}
+
 pub(crate) struct TwccReport {
     pub media_ssrc: u32,
     pub base_sequence_number: u16,
@@ -462,12 +498,14 @@ fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
 struct AccessUnitInfo {
     has_idr: bool,
     resolution: Option<(u32, u32)>,
+    color: Option<u8>,
 }
 
 fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
     let mut info = AccessUnitInfo {
         has_idr: false,
         resolution: None,
+        color: None,
     };
     let mut reader = AnnexBReader::accumulate(|nal: RefNal<'_>| {
         let Ok(header) = nal.header() else {
@@ -480,9 +518,19 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
             }
             UnitType::SeqParameterSet => {
                 if nal.is_complete() {
-                    info.resolution = SeqParameterSet::from_bits(nal.rbsp_bits())
-                        .and_then(|sps| sps.pixel_dimensions())
-                        .ok();
+                    if let Ok(sps) = SeqParameterSet::from_bits(nal.rbsp_bits()) {
+                        info.resolution = sps.pixel_dimensions().ok();
+                        // Per H.264: if SPS parsed, extract color from VUI;
+                        // if VUI/video_signal_type/colour_description absent,
+                        // matrix_coefficients defaults to Unspecified (2).
+                        let color = sps.vui_parameters
+                            .as_ref()
+                            .and_then(|v| v.video_signal_type.as_ref())
+                            .and_then(|v| v.colour_description.as_ref())
+                            .map(|c| c.matrix_coefficients)
+                            .unwrap_or(2);
+                        info.color = Some(color);
+                    }
                 }
                 NalInterest::Buffer
             }

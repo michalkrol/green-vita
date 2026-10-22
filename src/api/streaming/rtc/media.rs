@@ -37,6 +37,7 @@ struct VideoStats {
     decode_errors: u64,
     last_sample_duration_us: Option<u64>,
     encoded_resolution: Option<(u32, u32)>,
+    color: Option<u8>,
 }
 
 pub(crate) struct VideoReceiver {
@@ -129,6 +130,9 @@ impl VideoReceiver {
         }
         if sample_stats.encoded_resolution.is_some() {
             self.stats.encoded_resolution = sample_stats.encoded_resolution;
+        }
+        if sample_stats.color.is_some() {
+            self.stats.color = sample_stats.color;
         }
     }
 
@@ -346,8 +350,11 @@ impl VideoReceiver {
             .encoded_resolution
             .map(|(width, height)| format!("{width}x{height}"))
             .unwrap_or_else(|| "?".to_owned());
+        let cs_suffix = self.stats.color
+            .map(|code| format!(" cs:{}", crate::api::streaming::rtc::rtp::color_matrix_label(code)))
+            .unwrap_or_default();
         Some(format!(
-            "enc:{encoded_resolution} srcfps:{source_fps} {performance} wait:{} drop:{} err:{}",
+            "enc:{encoded_resolution} srcfps:{source_fps} {performance} wait:{} drop:{} err:{}{cs_suffix}",
             u8::from(self.rtp.waiting_for_keyframe()),
             self.stats.dropped,
             self.stats.decode_errors,
