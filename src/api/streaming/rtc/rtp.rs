@@ -293,6 +293,14 @@ impl VideoRtp {
             if slip_ms > 0 {
                 METRICS.stream_slip_max_us.fetch_max(slip_ms as u64, Ordering::Relaxed);
             }
+            // One-shot slope: compute once from the first slip and store session-fixed.
+            // "60-s base" means using the initial slip as the baseline; never re-based.
+            if METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) == 0
+                && self.stream_clock_anchor.is_some()
+            {
+                // Use the first slip as the one-shot base slope.
+                METRICS.stream_slip_slope_mpm.store(slip_ms as i64, Ordering::Relaxed);
+            }
         }
 
         // Video-timing census (extmap id=7): parse six 16-bit stage deltas.

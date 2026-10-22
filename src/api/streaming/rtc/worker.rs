@@ -142,6 +142,9 @@ impl RtcWorker {
 
 impl Drop for RtcWorker {
     fn drop(&mut self) {
+        // Flush the RAM-buffered metrics CSV log to ux0: at session end.
+        // This is the ONLY ux0: write path; no filesystem I/O during the session.
+        crate::streaming::video::flush_csv_log();
         send_lossy(&self.commands_tx, RtcWorkerCommand::Stop);
     }
 }

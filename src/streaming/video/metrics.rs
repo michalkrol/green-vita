@@ -157,7 +157,18 @@ pub fn video_performance_summary() -> String {
         METRICS.display_pickup_us.load(Ordering::Relaxed),
         METRICS.display_pickup_max_us.swap(0, Ordering::Relaxed),
     );
-    format!("{line1}\n{line2}")
+    // HUD vt segment: vt_max_0..5 and vt_exit_count
+    let vt_segment = format!(
+        " vt_max:{}/{}/{}/{}/{}/{}/{} vt_exit:{}",
+        METRICS.vt_max_0.load(Ordering::Relaxed),
+        METRICS.vt_max_1.load(Ordering::Relaxed),
+        METRICS.vt_max_2.load(Ordering::Relaxed),
+        METRICS.vt_max_3.load(Ordering::Relaxed),
+        METRICS.vt_max_4.load(Ordering::Relaxed),
+        METRICS.vt_max_5.load(Ordering::Relaxed),
+        METRICS.vt_exit_count.load(Ordering::Relaxed),
+    );
+    format!("{line1}\n{line2}{vt_segment}")
 }
 
 /// Reset all per-second session metrics to zero.  Called at session start

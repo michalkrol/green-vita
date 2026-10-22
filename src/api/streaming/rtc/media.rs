@@ -25,7 +25,7 @@ const TWCC_INTERVAL: Duration = Duration::from_millis(100);
 ///
 /// Next step: derive this from the bitrate-cap setting (clamped, no-cap ceiling) and
 /// from measured delivered throughput.
-const REMB_BITRATE_BPS: f32 = 2_500_000.0;
+const REMB_BITRATE_BPS: f32 = 15_000_000.0;
 /// Arbitrary stable local RTCP sender SSRC (we transmit no RTP of our own).
 const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
 
@@ -261,6 +261,14 @@ impl VideoReceiver {
         // Drain all per-second metrics into a snapshot (HUD + CSV read the same snapshot).
         let snapshot = drain_metrics();
 
+        // If render timing metadata is enabled, queue a metadata frame.
+        if crate::api_xbox::streaming::control::SEND_RENDER_TIMING_METADATA {
+            crate::api_xbox::streaming::control::queue_video_metadata(
+                0,
+                Instant::now(),
+            );
+        }
+
         // Build receiver-level extras for the CSV row.
         let extras = super::metrics_log::RowExtras {
             src_fps: if stats_window.as_secs_f64() > 0.0 {
@@ -285,6 +293,8 @@ impl VideoReceiver {
 
 
         // Compute audio queue depth in ms from pending packets.
+// RTP-queue proxy: this tracks the inbound RTP packet queue depth in milliseconds,
+// derived from pending packet sizes at 48 kHz 16-bit stereo (192000 bytes/sec).
         // 48 kHz, 16-bit stereo: 1s = 192000 bytes.
         let pending_bytes: usize = self.packets.iter().map(|p| p.len()).sum();
         let queue_ms = (pending_bytes.saturating_mul(1000) / 192000) as u64;

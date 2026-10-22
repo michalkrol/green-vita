@@ -103,12 +103,17 @@ fn uptime_ms_u32_since(at: Instant) -> u32 {
 }
 
 /// Called by the video assembly path for every access unit accepted by the decoder.
+/// Gated by SEND_RENDER_TIMING_METADATA flag at the call site.
 pub(crate) fn queue_video_metadata(server_data_key: u32, arrival: Instant) {
     let mut queue = METADATA_QUEUE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if queue.len() >= 240 {
         queue.pop_front();
     }
     queue.push_back(QueuedVideoMetadata { server_data_key, arrival });
+    // Increment the metadata sent counter for HUD display.
+    crate::streaming::video::metrics::METRICS
+        .video_metadata_sent
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn drain_video_metadata() -> Vec<MetadataFrame> {

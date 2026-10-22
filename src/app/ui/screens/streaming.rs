@@ -22,32 +22,58 @@ fn extract_field(status: &str, key: &str) -> String {
     }
 }
 
-/// Build curated debug rows (2 columns, fixed positions, permanently exclude always-zero fields).
+/// Build cached debug rows (rebuild ≤ every 250 ms to avoid per-frame overhead).
+/// Uses static cached rows; the matrix is recomputed no more than once per 250 ms window.
 fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(String, Option<String>)> {
-    let f = |key: &str| extract_field(status, key);
-    let dp = f("d/p:");
-    let da = f("d/a:");
-    let repl = f("repl:");
-    let skip = f("skip:");
-    let hwb = f("hwb:");
-    let lag = f("lag:");
-    let bw = f("bw:");
-    let lagmax = f("lagMax:");
-    let fl = f("fl:");
-    let rs = f("rs:");
-    let tw_s = f("tw:");
-    let st = f("st:");
-    let pick = f("pick:");
+    static LAST_REBUILD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static CACHED_ROWS: std::sync::atomic::AtomicPtr<Vec<(String, Option<String>)>> = std::sync::atomic::AtomicPtr::new(std::ptr::null());
 
-    vec![
-        (format!("Dec/Pres:{}", dp), Some(format!("Dec/Pip:{}ms", da))),
-        (format!("Repl:{}", repl), Some(format!("Skip:{}", skip))),
-        (format!("HWbuf:{}", hwb), Some(format!("Lag:{}ms", lag))),
-        (format!("BW:{}kbps", bw), Some(format!("LagMx:{}ms", lagmax))),
-        (format!("Resync:{}", rs), Some(format!("Flush:{}", fl))),
-        (format!("TWCC:{}", tw_s), Some(format!("Strd:{}", st))),
-        (format!("Pick:{}us", pick), Some("".to_owned())),
-    ]
+    let now_ms = std::time::Instant::now().duration_since(std::time::UNIX_EPOCH).as_millis() as u64;
+    let last = LAST_REBUILD.load(std::sync::atomic::Ordering::Relaxed);
+    let mut cached_ptr = CACHED_ROWS.load(std::sync::atomic::Ordering::Relaxed);
+
+    // Rebuild if no cached rows or if 250 ms has elapsed since last rebuild.
+    if cached_ptr.is_null() || now_ms.saturating_sub(last) > 250 {
+        let f = |key: &str| extract_field(status, key);
+        let dp = f("d/p:");
+        let da = f("d/a:");
+        let repl = f("repl:");
+        let skip = f("skip:");
+        let hwb = f("hwb:");
+        let lag = f("lag:");
+        let bw = f("bw:");
+        let lagmax = f("lagMax:");
+        let fl = f("fl:");
+        let rs = f("rs:");
+        let tw_s = f("tw:");
+        let st = f("st:");
+        let pick = f("pick:");
+
+        let new_rows: Vec<(String, Option<String>)> = vec![
+            (format!("Dec/Pres:{}", dp), Some(format!("Dec/Pip:{}ms", da))),
+            (format!("Repl:{}", repl), Some(format!("Skip:{}", skip))),
+            (format!("HWbuf:{}", hwb), Some(format!("Lag:{}ms", lag))),
+            (format!("BW:{}kbps", bw), Some(format!("LagMx:{}ms", lagmax))),
+            (format!("Resync:{}", rs), Some(format!("Flush:{}", fl))),
+            (format!("TWCC:{}", tw_s), Some(format!("Strd:{}", st))),
+            (format!("Pick:{}us", pick), Some("".to_owned())),
+        ];
+
+        // Free any previously cached rows and store the new ones.
+        let _ = CACHED_ROWS.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
+        let _ = LAST_REBUILD.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+        let _boxed = Box::into_raw(Box::new(new_rows));
+        CACHED_ROWS.store(_boxed, std::sync::atomic::Ordering::Relaxed);
+
+        new_rows
+    } else {
+        // Return a clone of the cached rows.
+        if !cached_ptr.is_null() {
+            unsafe { (*cached_ptr).clone() }
+        } else {
+            build_debug_rows(status, settings)
+        }
+    }
 }
 
 /// Fullscreen video view with debug overlays.
