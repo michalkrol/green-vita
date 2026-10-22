@@ -24,9 +24,11 @@ fn extract_field(status: &str, key: &str) -> String {
 
 /// Build cached debug rows (rebuild ≤ every 250 ms to avoid per-frame overhead).
 /// Uses static cached rows; the matrix is recomputed no more than once per 250 ms window.
-fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(String, Option<String>)> {
+/// Each row is a fixed-width cell: padded label + right-aligned value, so when a value's
+/// width changes only that cell's interior shifts and nothing layout-shifts.
+fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<String> {
     static LAST_REBUILD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    static CACHED_ROWS: std::sync::atomic::AtomicPtr<Vec<(String, Option<String>)>> = std::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+    static CACHED_ROWS: std::sync::atomic::AtomicPtr<Vec<String>> = std::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -51,14 +53,17 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<(
         let st = f("st:");
         let pick = f("pick:");
 
-        let new_rows: Vec<(String, Option<String>)> = vec![
-            (format!("Dec/Pres:{}", dp), Some(format!("Dec/Pip:{}ms", da))),
-            (format!("Repl:{}", repl), Some(format!("Skip:{}", skip))),
-            (format!("HWbuf:{}", hwb), Some(format!("Lag:{}ms", lag))),
-            (format!("BW:{}kbps", bw), Some(format!("LagMx:{}ms", lagmax))),
-            (format!("Resync:{}", rs), Some(format!("Flush:{}", fl))),
-            (format!("TWCC:{}", tw_s), Some(format!("Strd:{}", st))),
-            (format!("Pick:{}us", pick), Some("".to_owned())),
+        const LABEL_WIDTH: usize = 16;
+        const VALUE_WIDTH: usize = 8;
+
+        let new_rows: Vec<String> = vec![
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Dec/Pres:{}", dp), format!("Dec/Pip:{}ms", da)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Repl:{}", repl), format!("Skip:{}", skip)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("HWbuf:{}", hwb), format!("Lag:{}ms", lag)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("BW:{}kbps", bw), format!("LagMx:{}ms", lagmax)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Resync:{}", rs), format!("Flush:{}", fl)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("TWCC:{}", tw_s), format!("Strd:{}", st)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Pick:{}us", pick), ""),
         ];
 
         // Free any previously cached rows and store the new ones.
@@ -166,16 +171,28 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                 });
         }
 
-        // Full debug overlay (left side, 2 columns, semi-transparent bg, non-zero hidden)
+        // Full debug overlay (fixed-width columns, semi-transparent bg, non-zero hidden)
         if app.settings.show_stream_debug_info && !streaming.status.is_empty() {
             let rows = build_debug_rows(&streaming.status, &app.settings);
 
             if !rows.is_empty() {
-                let row_h = 13.0_f32;
-                let col_w = 185.0_f32;
+                const ROW_HEIGHT: f32 = 13.0_f32;
+                const LABEL_WIDTH: usize = 16;
+                const VALUE_WIDTH: usize = 8;
                 let n = rows.len();
-                let panel_h = row_h * n as f32 + 16.0_f32;
-                let panel_w = col_w * 2.0_f32 + 24.0_f32;
+
+                // Two-column layout when many rows (>10), otherwise single column
+                let two_columns = n > 10;
+                let n_left = if two_columns { n / 2 } else { n };
+                let n_right = if two_columns { n - n_left } else { 0 };
+
+                let cell_px_width = (LABEL_WIDTH + VALUE_WIDTH) as f32 * 6.0; // approx 6px per char at 10pt monospace
+                let panel_w = if two_columns {
+                    cell_px_width * 2.0 + 24.0
+                } else {
+                    cell_px_width + 16.0
+                };
+                let panel_h = ROW_HEIGHT * n as f32 + 16.0;
 
                 egui::Area::new(egui::Id::new("debug_overlay"))
                     .order(egui::Order::Foreground)
@@ -188,45 +205,111 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                         );
                         painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(200));
 
-                        // Draw rows from build_debug_rows
-                        for (i, (left, right)) in rows.iter().enumerate() {
-                            let y = 8.0 + i as f32 * row_h;
-                            painter.text(
-                                egui::pos2(8.0, y), egui::Align2::LEFT_TOP,
-                                left,
-                                FontId::monospace(10.0),
-                                theme.text.gamma_multiply(0.85),
-                            );
-                            if let Some(r) = right {
+                        // Draw rows from build_debug_rows (fixed-width cells)
+                        for (i, cell_text) in rows.iter().enumerate() {
+                            let y = 8.0 + i as f32 * ROW_HEIGHT;
+
+                            if two_columns && i >= n_left {
+                                // Right column: split cell text into label and value
+                                // Cell format: "LABEL:       VALUE" (label left-padded to LABEL_WIDTH, value right-aligned)
+                                let label_part = &cell_text[..std::cmp::min(LABEL_WIDTH, cell_text.len())];
+                                let value_part = if cell_text.len() > LABEL_WIDTH {
+                                    &cell_text[LABEL_WIDTH..]
+                                } else {
+                                    ""
+                                };
+                                // Draw label in right column, right-aligned within cell width
+                                let x = cell_px_width + 8.0;
                                 painter.text(
-                                    egui::pos2(8.0 + col_w, y), egui::Align2::LEFT_TOP,
-                                    r,
+                                    egui::pos2(x, y), egui::Align2::RIGHT_TOP,
+                                    label_part,
                                     FontId::monospace(10.0),
                                     theme.text.gamma_multiply(0.85),
                                 );
+                                // Draw value right-aligned within cell width
+                                let value_x = x - cell_px_width + 8.0;
+                                painter.text(
+                                    egui::pos2(value_x + cell_px_width, y), egui::Align2::RIGHT_TOP,
+                                    value_part,
+                                    FontId::monospace(10.0),
+                                    theme.text.gamma_multiply(0.85),
+                                );
+                                continue;
                             }
+
+                            // Left column (or single column)
+                            let label_part = &cell_text[..std::cmp::min(LABEL_WIDTH, cell_text.len())];
+                            let value_part = if cell_text.len() > LABEL_WIDTH {
+                                &cell_text[LABEL_WIDTH..]
+                            } else {
+                                ""
+                            };
+
+                            let x = 8.0;
+                            // Draw label left-aligned at start of cell
+                            painter.text(
+                                egui::pos2(x, y), egui::Align2::LEFT_TOP,
+                                label_part,
+                                FontId::monospace(10.0),
+                                theme.text.gamma_multiply(0.85),
+                            );
+                            // Draw value right-aligned within cell width
+                            let value_x = x + LABEL_WIDTH as f32 * 6.0;
+                            painter.text(
+                                egui::pos2(value_x, y), egui::Align2::RIGHT_TOP,
+                                value_part,
+                                FontId::monospace(10.0),
+                                theme.text.gamma_multiply(0.85),
+                            );
                         }
 
-                        // Additional row: current input→present latency
-                        let lat_age = crate::latency_test::last_press_age_ms();
-                        let lat_label = if lat_age.is_some() {
-                            format!("lat:{} ms", lat_age.unwrap())
-                        } else {
-                            "lat:--- ms".to_owned()
-                        };
-                        let y = 8.0 + rows.len() as f32 * row_h;
-                        painter.text(
-                            egui::pos2(8.0, y), egui::Align2::LEFT_TOP,
-                            "lat:",
-                            FontId::monospace(10.0),
-                            theme.text.gamma_multiply(0.85),
-                        );
-                        painter.text(
-                            egui::pos2(8.0 + 30.0, y), egui::Align2::LEFT_TOP,
-                            &lat_label,
-                            FontId::monospace(10.0),
-                            theme.text.gamma_multiply(0.85),
-                        );
+                        // Additional row: current input→present latency (single column only, below all debug rows)
+                        if !two_columns {
+                            let lat_age = crate::latency_test::last_press_age_ms();
+                            let lat_label = if lat_age.is_some() {
+                                format!("lat:{} ms", lat_age.unwrap())
+                            } else {
+                                "lat:--- ms".to_owned()
+                            };
+                            let y = 8.0 + n as f32 * ROW_HEIGHT;
+                            painter.text(
+                                egui::pos2(8.0, y), egui::Align2::LEFT_TOP,
+                                "lat:",
+                                FontId::monospace(10.0),
+                                theme.text.gamma_multiply(0.85),
+                            );
+                            let val_x = 8.0 + LABEL_WIDTH as f32 * 6.0;
+                            painter.text(
+                                egui::pos2(val_x, y), egui::Align2::RIGHT_TOP,
+                                &lat_label,
+                                FontId::monospace(10.0),
+                                theme.text.gamma_multiply(0.85),
+                            );
+                        }
+
+                        // In two-column mode, draw the latency row at the bottom of the overlay
+                        if two_columns {
+                            let lat_age = crate::latency_test::last_press_age_ms();
+                            let lat_label = if lat_age.is_some() {
+                                format!("lat:{} ms", lat_age.unwrap())
+                            } else {
+                                "lat:--- ms".to_owned()
+                            };
+                            let y = 8.0 + n as f32 * ROW_HEIGHT;
+                            painter.text(
+                                egui::pos2(8.0, y), egui::Align2::LEFT_TOP,
+                                "lat:",
+                                FontId::monospace(10.0),
+                                theme.text.gamma_multiply(0.85),
+                            );
+                            let val_x = 8.0 + LABEL_WIDTH as f32 * 6.0;
+                            painter.text(
+                                egui::pos2(val_x, y), egui::Align2::RIGHT_TOP,
+                                &lat_label,
+                                FontId::monospace(10.0),
+                                theme.text.gamma_multiply(0.85),
+                            );
+                        }
                     });
             }
         }
