@@ -9,12 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 // Keep only one compressed frame queued at the default 30 FPS to minimize glass-to-glass
-// latency.  Faster streams may still use a slightly larger burst buffer, but the ceiling
-// stays small on purpose: the queue's depth is the worst-case stale content a burst can
-// put on screen (~1 frame per 16.7 ms), and the overflow path skips straight to the
-// freshest frame instead of replaying it.
+// latency. Faster streams may still use a larger burst buffer.
 const MIN_PENDING_ACCESS_UNITS: usize = 1;
-const MAX_PENDING_ACCESS_UNITS: usize = 3;
+const MAX_PENDING_ACCESS_UNITS: usize = 6;
 /// Target decoder pace range: 14-20ms (50-71 fps). Wider than the console's
 /// typical 58-62 fps so brief excursions don't clip.
 const MIN_DECODE_INTERVAL_US: u64 = 14_000;
