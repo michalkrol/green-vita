@@ -1,6 +1,56 @@
 use std::sync::{Arc, LazyLock, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Snapshot of per-second metrics drained from METRICS at status() time.
+/// Readings are zeroed after drain so the next status() call starts fresh.
+#[derive(Debug, Clone)]
+pub(crate) struct MetricsSnapshot {
+    pub(crate) rtp_assembly_sum_us: u64,
+    pub(crate) rtp_assembly_count: u64,
+    pub(crate) rtp_assembly_max_us: u64,
+    pub(crate) decode_us: u64,
+    pub(crate) pipeline_age_us: u64,
+    pub(crate) decoded: u64,
+    pub(crate) skipped: u64,
+    pub(crate) rate_limited: u64,
+    pub(crate) presented: u64,
+    pub(crate) replaced: u64,
+    pub(crate) queue_full: u64,
+    pub(crate) resyncs: u64,
+    pub(crate) resets: u64,
+    pub(crate) hw_buffered: u64,
+    pub(crate) pipeline_age_max_us: u64,
+    pub(crate) stream_lag_us: u64,
+    pub(crate) stream_lag_max_us: u64,
+    pub(crate) stream_slip_us: u64,
+    pub(crate) stream_slip_max_us: u64,
+    pub(crate) stream_slip_slope_mpm: i64,
+    pub(crate) audio_queue_ms: u64,
+    pub(crate) vt_exit_count: u64,
+    pub(crate) vt_max_0: u64,
+    pub(crate) vt_max_1: u64,
+    pub(crate) vt_max_2: u64,
+    pub(crate) vt_max_3: u64,
+    pub(crate) vt_max_4: u64,
+    pub(crate) vt_max_5: u64,
+    pub(crate) rtp_hold_saved: u64,
+    pub(crate) rtp_hold_expired: u64,
+    pub(crate) rtp_gaps: u64,
+    pub(crate) rtp_abandons: u64,
+    pub(crate) rtp_wait_drops: u64,
+    pub(crate) rtp_invalid: u64,
+    pub(crate) dec_queue_full: u64,
+    pub(crate) flushes: u64,
+    pub(crate) twcc_sent: u64,
+    pub(crate) twcc_samples: u64,
+    pub(crate) rtp_ext_any: u64,
+    pub(crate) twcc_stride: u64,
+    pub(crate) video_metadata_sent: u64,
+    pub(crate) video_bandwidth_kbps: u64,
+    pub(crate) display_pickup_us: u64,
+    pub(crate) display_pickup_max_us: u64,
+}
+
 pub(crate) struct VideoMetrics {
     pub(crate) rtp_assembly_sum_us: AtomicU64,
     pub(crate) rtp_assembly_count: AtomicU64,
@@ -169,6 +219,58 @@ pub fn video_performance_summary() -> String {
         METRICS.vt_exit_count.load(Ordering::Relaxed),
     );
     format!("{line1}\n{line2}{vt_segment}")
+}
+
+/// Drain all per-second metrics into a snapshot, zeroing METRICS so the next
+/// status() call starts clean.  The snapshot is shared with metrics_log.rs
+/// for CSV row generation.
+pub(crate) fn drain_metrics() -> MetricsSnapshot {
+    MetricsSnapshot {
+        rtp_assembly_sum_us: METRICS.rtp_assembly_sum_us.swap(0, Ordering::Relaxed),
+        rtp_assembly_count: METRICS.rtp_assembly_count.swap(0, Ordering::Relaxed),
+        rtp_assembly_max_us: METRICS.rtp_assembly_max_us.swap(0, Ordering::Relaxed),
+        decode_us: METRICS.decode_us.swap(0, Ordering::Relaxed),
+        pipeline_age_us: METRICS.pipeline_age_us.swap(0, Ordering::Relaxed),
+        decoded: METRICS.decoded.swap(0, Ordering::Relaxed),
+        skipped: METRICS.skipped.swap(0, Ordering::Relaxed),
+        rate_limited: METRICS.rate_limited.swap(0, Ordering::Relaxed),
+        presented: METRICS.presented.swap(0, Ordering::Relaxed),
+        replaced: METRICS.replaced.swap(0, Ordering::Relaxed),
+        queue_full: METRICS.queue_full.swap(0, Ordering::Relaxed),
+        resyncs: METRICS.resyncs.swap(0, Ordering::Relaxed),
+        resets: METRICS.resets.swap(0, Ordering::Relaxed),
+        hw_buffered: METRICS.hw_buffered.swap(0, Ordering::Relaxed),
+        pipeline_age_max_us: METRICS.pipeline_age_max_us.swap(0, Ordering::Relaxed),
+        stream_lag_us: METRICS.stream_lag_us.swap(0, Ordering::Relaxed),
+        stream_lag_max_us: METRICS.stream_lag_max_us.swap(0, Ordering::Relaxed),
+        stream_slip_us: METRICS.stream_slip_us.swap(0, Ordering::Relaxed),
+        stream_slip_max_us: METRICS.stream_slip_max_us.swap(0, Ordering::Relaxed),
+        stream_slip_slope_mpm: METRICS.stream_slip_slope_mpm.swap(0, Ordering::Relaxed),
+        audio_queue_ms: METRICS.audio_queue_ms.swap(0, Ordering::Relaxed),
+        vt_exit_count: METRICS.vt_exit_count,
+        vt_max_0: METRICS.vt_max_0.load(Ordering::Relaxed),
+        vt_max_1: METRICS.vt_max_1.load(Ordering::Relaxed),
+        vt_max_2: METRICS.vt_max_2.load(Ordering::Relaxed),
+        vt_max_3: METRICS.vt_max_3.load(Ordering::Relaxed),
+        vt_max_4: METRICS.vt_max_4.load(Ordering::Relaxed),
+        vt_max_5: METRICS.vt_max_5.load(Ordering::Relaxed),
+        rtp_hold_saved: METRICS.rtp_hold_saved.swap(0, Ordering::Relaxed),
+        rtp_hold_expired: METRICS.rtp_hold_expired.swap(0, Ordering::Relaxed),
+        rtp_gaps: METRICS.rtp_gaps.swap(0, Ordering::Relaxed),
+        rtp_abandons: METRICS.rtp_abandons.swap(0, Ordering::Relaxed),
+        rtp_wait_drops: METRICS.rtp_wait_drops.swap(0, Ordering::Relaxed),
+        rtp_invalid: METRICS.rtp_invalid.swap(0, Ordering::Relaxed),
+        dec_queue_full: METRICS.dec_queue_full.swap(0, Ordering::Relaxed),
+        flushes: METRICS.flushes.swap(0, Ordering::Relaxed),
+        twcc_sent: METRICS.twcc_sent.swap(0, Ordering::Relaxed),
+        twcc_samples: METRICS.twcc_samples.swap(0, Ordering::Relaxed),
+        rtp_ext_any: METRICS.rtp_ext_any.swap(0, Ordering::Relaxed),
+        twcc_stride: METRICS.twcc_stride.swap(0, Ordering::Relaxed),
+        video_metadata_sent: METRICS.video_metadata_sent.swap(0, Ordering::Relaxed),
+        video_bandwidth_kbps: METRICS.video_bandwidth_kbps.swap(0, Ordering::Relaxed),
+        display_pickup_us: METRICS.display_pickup_us.swap(0, Ordering::Relaxed),
+        display_pickup_max_us: METRICS.display_pickup_max_us.swap(0, Ordering::Relaxed),
+    }
 }
 
 /// Reset all per-second session metrics to zero.  Called at session start

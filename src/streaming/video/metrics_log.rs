@@ -97,6 +97,14 @@ impl MetricsCsvLog {
             snapshot.stream_slip_us,
             snapshot.stream_slip_max_us,
             snapshot.audio_queue_ms,
+            // vt census (extmap id=7)
+            snapshot.vt_exit_count,
+            snapshot.vt_max_0,
+            snapshot.vt_max_1,
+            snapshot.vt_max_2,
+            snapshot.vt_max_3,
+            snapshot.vt_max_4,
+            snapshot.vt_max_5,
             // Receiver-level values from extras
             extras.src_fps,
             u64::from(extras.enc_width),
@@ -132,7 +140,7 @@ impl MetricsCsvLog {
             .open(path)
         {
             // Write header
-            let header = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,asm_avg_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors";
+            let header = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,asm_avg_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5";
             let _ = writeln!(file, "{header}");
 
             // Write all accumulated rows

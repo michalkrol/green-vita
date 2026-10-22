@@ -74,7 +74,7 @@ pub(crate) struct VideoRtp {
     /// network, network2) plus the sample count.
     vt_max: [u64; 6],
     vt_exit_count: u64,
-    slip_slope_base: Option<(Instant, i64>,
+    slip_slope_base: Option<(Instant, i64)>,
     total_bytes: u64,
 
 struct PendingVideoFrame {
@@ -293,13 +293,25 @@ impl VideoRtp {
             if slip_ms > 0 {
                 METRICS.stream_slip_max_us.fetch_max(slip_ms as u64, Ordering::Relaxed);
             }
-            // One-shot slope: compute once from the first slip and store session-fixed.
-            // "60-s base" means using the initial slip as the baseline; never re-based.
+            // One-shot base slope: capture once when wall-time since anchor ≥ 60 s.
+            let anchor_age_secs = self.stream_clock_anchor
+                .map_or(0, |(anchor_at, _)| anchor_at.elapsed().as_secs_f64());
             if METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) == 0
-                && self.stream_clock_anchor.is_some()
+                && anchor_age_secs >= 60.0
             {
-                // Use the first slip as the one-shot base slope.
+                // Session-fixed base: never re-based for the duration of this session.
                 METRICS.stream_slip_slope_mpm.store(slip_ms as i64, Ordering::Relaxed);
+            } else if METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) != 0
+            {
+                // Compute running slope relative to the base captured at ~60 s.
+                // slope in ms/min: (delta_us * 60) / (1000 * elapsed_s)
+                let base_slip = METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) as u64;
+                let elapsed_s = anchor_age_secs - 60.0; // seconds after the 60s base point
+                if elapsed_s > 1.0 {
+                    let delta_us = slip_us as i64 - base_slip as i64;
+                    let slope_mpm = (delta_us as f64 * 60.0) / (1000.0 * elapsed_s);
+                    METRICS.stream_slip_slope_mpm.store(slope_mpm.round() as i64, Ordering::Relaxed);
+                }
             }
         }
 
