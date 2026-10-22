@@ -136,11 +136,6 @@ impl VideoDecodeWorker {
         let pending_limit = MIN_PENDING_ACCESS_UNITS + extra_capacity as usize;
         if self.access_units.len() >= pending_limit {
             metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
-            // The decoder is behind: arm the catch-up so it drops everything already
-            // queued and decodes only the freshest frame.  Rejecting just the new frame
-            // would pin playback at the buffer's content age and the lag would never
-            // come back down.  (The try_send arm below covers a racing fill.)
-            self.flush_requested.store(true, Ordering::Relaxed);
             return false;
         }
 
