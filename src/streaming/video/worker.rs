@@ -42,10 +42,6 @@ pub struct VideoDecodeWorker {
     pub(crate) result_ready: Arc<tokio::sync::Notify>,
     /// Updated from RTP timestamps to pace the decoder to the console's encoder rate.
     pub(crate) last_source_duration_us: Arc<AtomicU64>,
-    /// Set when an access unit had to be dropped because the queue was full.  The
-    /// decode thread then discards everything still queued, so playback skips
-    /// forward to the freshest frame instead of replaying stale ones.
-    flush_requested: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl VideoDecodeWorker {
@@ -88,8 +84,6 @@ impl VideoDecodeWorker {
         let worker_direct_output = Arc::clone(&direct_output);
         let source_duration = Arc::new(AtomicU64::new(DEFAULT_DECODE_INTERVAL_US));
         let worker_source_duration = Arc::clone(&source_duration);
-        let flush_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_flush_requested = Arc::clone(&flush_requested);
 
         std::thread::Builder::new()
             .name("green-vita-video-decode".to_owned())
@@ -106,7 +100,6 @@ impl VideoDecodeWorker {
                     config,
                     worker_direct_output,
                     worker_source_duration,
-                    worker_flush_requested,
                 )
             })
             .context("failed to spawn video decode worker")?;
@@ -118,7 +111,6 @@ impl VideoDecodeWorker {
             latest_result,
             result_ready,
             last_source_duration_us: source_duration,
-            flush_requested,
         })
     }
 
@@ -164,11 +156,6 @@ impl VideoDecodeWorker {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
                 metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
-                // The decoder is behind: have it drop what is already queued so the
-                // display can skip ahead to the newest frame.  Rejecting only the new
-                // frame would pin the pipeline at the full queue depth (up to ~100 ms)
-                // and the lag would never come back down.
-                self.flush_requested.store(true, Ordering::Relaxed);
                 false
             }
             Err(TrySendError::Disconnected(_)) => false,
@@ -217,7 +204,6 @@ fn run_decode_loop(
     config: DecoderConfig,
     direct_output: Arc<DirectVideoOutput>,
     _source_duration: Arc<AtomicU64>,
-    flush_requested: Arc<std::sync::atomic::AtomicBool>,
 ) {
     use std::thread::sleep;
     // Pace the decoder at roughly 62 fps (13 ms sleep + ~3 ms decode per frame)
@@ -238,12 +224,6 @@ fn run_decode_loop(
             },
             recv(access_units) -> access_unit => {
                 let Ok(access_unit) = access_unit else { break };
-                // Catch up: when the queue overflowed, throw away everything still
-                // queued and decode only the freshest frame, so the displayed image
-                // jumps forward instead of replaying stale ones.
-                if flush_requested.swap(false, Ordering::Relaxed) {
-                    while access_units.try_recv().is_ok() {}
-                }
                 decode_queued_access_unit(
                     &mut decoder,
                     config,
