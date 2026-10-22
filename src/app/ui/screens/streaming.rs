@@ -50,7 +50,7 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
         let fl = f("fl:");
         let rs = f("rs:");
         let tw_s = f("tw:");
-        let st = f("st:");
+        let st = f("stride:");
         let pick = f("pick:");
 
         const LABEL_WIDTH: usize = 16;
