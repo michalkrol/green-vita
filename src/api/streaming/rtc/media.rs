@@ -263,7 +263,7 @@ impl VideoReceiver {
         self.last_stats_report = now;
 
         // Drain all per-second metrics into a snapshot (HUD + CSV read the same snapshot).
-        let _snapshot = drain_metrics();
+        let snapshot = drain_metrics();
 
         // If render timing metadata is enabled, queue a metadata frame.
         if SEND_RENDER_TIMING_METADATA {
@@ -274,7 +274,7 @@ impl VideoReceiver {
         }
 
         // Build receiver-level extras for the CSV row.
-        let _extras = crate::streaming::video::metrics_log::RowExtras {
+        let extras = crate::streaming::video::metrics_log::RowExtras {
             src_fps: if stats_window.as_secs_f64() > 0.0 {
                 (1.0 / stats_window.as_secs_f64()).round() as u64
             } else {
@@ -288,10 +288,11 @@ impl VideoReceiver {
         };
 
         // Write the row to the RAM-buffered CSV log (no file I/O during the session).
-        if let Some(_log) = crate::streaming::video::metrics::METRICS_CSV_LOG.lock().ok() {
-            // Use the MutexGuard to check if we have data; write_row requires &mut self,
-            // so we skip it here and the row will be written at session end via flush_csv_log.
-            // (The buffer accumulates rows during the session and is flushed at end.)
+        if let Ok(mut guard) = crate::streaming::video::metrics::METRICS_CSV_LOG.lock() {
+            if let Some(log) = guard.as_mut() {
+                let wrote = log.write_row(&snapshot, &extras);
+                let _ = wrote;
+            }
         }
 
 

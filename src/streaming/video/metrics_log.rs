@@ -1,6 +1,6 @@
 //! Append-only CSV logging of the once-per-second metrics snapshot, so a
 //! streaming session can be analysed offline.
-//! 
+//!
 //! This version buffers rows in RAM and flushes once at session end,
 //! avoiding filesystem I/O during the hot path.
 //!
@@ -10,7 +10,6 @@
 use super::metrics::{MetricsSnapshot, drain_metrics, reset_session_metrics};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-
 
 
 /// Extra per-tick values that live on the video receiver rather than in METRICS.
@@ -93,11 +92,15 @@ impl MetricsCsvLog {
             snapshot.video_bandwidth_kbps,
             snapshot.display_pickup_us,
             snapshot.display_pickup_max_us,
-            // New M0 fields
             snapshot.stream_slip_us,
             snapshot.stream_slip_max_us,
             snapshot.audio_queue_ms,
-            // vt census (extmap id=7)
+            extras.src_fps,
+            u64::from(extras.enc_width),
+            u64::from(extras.enc_height),
+            u64::from(extras.waiting_keyframe),
+            extras.drops,
+            extras.decode_errors,
             snapshot.vt_exit_count,
             snapshot.vt_max_0,
             snapshot.vt_max_1,
@@ -105,13 +108,6 @@ impl MetricsCsvLog {
             snapshot.vt_max_3,
             snapshot.vt_max_4,
             snapshot.vt_max_5,
-            // Receiver-level values from extras
-            extras.src_fps,
-            u64::from(extras.enc_width),
-            u64::from(extras.enc_height),
-            u64::from(extras.waiting_keyframe),
-            extras.drops,
-            extras.decode_errors,
         ];
         let row = cols
             .iter()
@@ -124,46 +120,53 @@ impl MetricsCsvLog {
 
     /// Flush the entire buffer to ux0:data/xcloud-rust/metrics.csv.
     /// Must be called once at session end (from RtcWorker::drop).
-    /// Truncates the file, writes header, all rows, and a footer line.
     /// Tolerant of path being unavailable (off-device: silently skip).
     pub(crate) fn flush(&self) {
         let buffer = self.rows.lock().unwrap_or_else(|_| panic!("metrics_csv_log flush mutex poisoned"));
         let path = std::path::Path::new("ux0:data/xcloud-rust/metrics.csv");
         // Ensure directory exists (no-op if already exists on-device; off-device will fail)
         let _ = std::fs::create_dir_all("ux0:data/xcloud-rust");
-        // Use OpenOptions for flexibility: truncate + write, create if needed
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)
-        {
-            // Write header
-            let header = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5";
-            let _ = writeln!(file, "{header}");
-
-            // Write all accumulated rows
-            for row in buffer.iter() {
-                let _ = writeln!(file, "{row}");
+        // Build the full CSV content once: header + all rows + footer
+        let header = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5";
+        let rows_content: String = buffer
+            .iter()
+            .map(|row| format!("{row}\n"))
+            .collect();
+        let duration_s = self.started_at.elapsed().as_secs();
+        let footer = format!(
+            "// session_duration_s={}, total_rows={}, dropped_rows={}",
+            duration_s,
+            buffer.len(),
+            self.dropped_rows
+        );
+        let content = format!("{header}\n{rows_content}{footer}\n");
+        // Try writing the full content; on failure, fallback to OpenOptions then eprintln
+        match std::fs::write(path, &content) {
+            Ok(()) => {
+                eprintln!("Metrics CSV flushed: {} rows + {} dropped", buffer.len(), self.dropped_rows);
             }
-
-            // Write footer with session metadata
-            let duration_s = self.started_at.elapsed().as_secs();
-            let footer = format!(
-                "// session_duration_s={}, total_rows={}, dropped_rows={}",
-                duration_s,
-                buffer.len(),
-                self.dropped_rows
-            );
-            let _ = writeln!(file, "{footer}");
-
-            let _ = file.sync_data();
-            eprintln!("Metrics CSV flushed: {} rows + {} dropped", buffer.len(), self.dropped_rows);
-        } else {
-            // Path unavailable (off-device): silently skip, log once
-            eprintln!("Metrics CSV: path unavailable, skipping flush (off-device build)");
+            Err(e1) => {
+                // Fallback: try OpenOptions path
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(path)
+                {
+                    let _ = writeln!(file, "{header}");
+                    for row in buffer.iter() {
+                        let _ = writeln!(file, "{row}");
+                    }
+                    let _ = writeln!(file, "// session_duration_s={}, total_rows={}, dropped_rows={}", duration_s, buffer.len(), self.dropped_rows);
+                    let _ = file.sync_data();
+                    eprintln!("Metrics CSV flushed: {} rows + {} dropped (via fallback)", buffer.len(), self.dropped_rows);
+                } else {
+                    eprintln!("Metrics CSV: path unavailable, skipping flush (off-device build); write error: {e1}");
+                }
+            }
         }
     }
 }
 
+// end of metrics_log.rs

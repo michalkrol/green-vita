@@ -158,12 +158,11 @@ pub(crate) static METRICS_CSV_LOG: LazyLock<Mutex<Option<crate::streaming::video
 /// Called once from RtcSession::new so the first CSV rows cannot report
 /// the previous session's values.
 pub(crate) fn init_csv_log() {
-    // Use Mutex::new(None) as the initial value; the first call will replace it
-    // with a fresh MetricsCsvLog. This avoids the need for LazyLock::get_or_init.
-    let mut log_mut = METRICS_CSV_LOG.lock().unwrap();
-    if log_mut.is_none() {
-        *log_mut = Some(crate::streaming::video::metrics_log::MetricsCsvLog::new());
+    // Flush any previous session's log that never got flushed, then replace with a fresh log.
+    if let Some(old) = METRICS_CSV_LOG.lock().unwrap().take() {
+        old.flush();
     }
+    *METRICS_CSV_LOG.lock().unwrap() = Some(crate::streaming::video::metrics_log::MetricsCsvLog::new());
 }
 
 pub fn video_performance_summary() -> String {

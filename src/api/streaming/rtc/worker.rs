@@ -102,6 +102,7 @@ impl RtcWorker {
                         );
                     }
                 }
+                crate::streaming::video::metrics::flush_csv_log();
             })
             .context("failed to spawn RTC worker thread")?;
 
