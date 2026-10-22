@@ -15,13 +15,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-/// Compile-time toggle: defer keyframe (PLI) requests until the receive pipeline has
-/// drained, so the IDR the console sends does not land on the congestion that caused the
-/// damage.  The request still fires no later than `KEYFRAME_DEFER_MAX` after it was raised.
-/// Set to `false` to restore the old immediate-PLI behaviour.
-const DEFER_KEYFRAME_PLI: bool = true;
-/// Upper bound on how long a deferred keyframe request may wait for a quiet moment.
-const KEYFRAME_DEFER_MAX: Duration = Duration::from_millis(1500);
 const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(300);
 const PERIODIC_KEYFRAME_INTERVAL: Duration = Duration::from_millis(200);
 /// Sustained keyframe demand means recovery is failing; spamming PLI/IDR requests
@@ -88,10 +81,6 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     pub(crate) audio: AudioReceiver,
     last_keyframe_request: Option<Instant>,
     recent_keyframe_requests: Vec<Instant>,
-    /// Deferred-PLI state: a keyframe is wanted, but the PLI is held until the receive
-    /// pipeline is drained (or `KEYFRAME_DEFER_MAX` elapses).
-    keyframe_pending: bool,
-    keyframe_pending_since: Option<Instant>,
     lag_high_since: Option<Instant>,
     last_lag_flush: Option<Instant>,
     drops_at_last_flush: u64,
@@ -129,8 +118,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             audio: AudioReceiver::new(config.audio_sample_rate, config.audio_payload_type),
             last_keyframe_request: None,
             recent_keyframe_requests: Vec::new(),
-            keyframe_pending: false,
-            keyframe_pending_since: None,
             lag_high_since: None,
             last_lag_flush: None,
             drops_at_last_flush: 0,
@@ -191,7 +178,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             keyframe_requested = true;
         }
         self.request_keyframe(keyframe_requested, now);
-        self.poll_keyframe_request(now);
         if self.periodic_keyframe_enabled {
             self.periodic_keyframe(now);
         }
@@ -316,41 +302,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         if !requested || SUPPRESS_KEYFRAME_REQUESTS {
             return;
         }
-        if DEFER_KEYFRAME_PLI {
-            // Remember the request; `poll_keyframe_request` sends it at the first quiet
-            // moment (or when the deadline expires) so the console's IDR does not add to
-            // the congestion that caused the damage.
-            if !self.keyframe_pending {
-                self.keyframe_pending_since = Some(now);
-            }
-            self.keyframe_pending = true;
-            return;
-        }
-        self.send_keyframe_request(now);
-    }
-
-    /// Sends a pending (possibly deferred) keyframe request once the receive pipeline is
-    /// drained, or once `KEYFRAME_DEFER_MAX` has elapsed since it was raised.
-    fn poll_keyframe_request(&mut self, now: Instant) {
-        if !self.keyframe_pending {
-            return;
-        }
-        let overdue = self
-            .keyframe_pending_since
-            .is_some_and(|raised| now.duration_since(raised) >= KEYFRAME_DEFER_MAX);
-        let quiet = self.video.decoder.pending_depth() == 0;
-        if !(overdue || quiet) {
-            return;
-        }
-        if self.send_keyframe_request(now) {
-            self.keyframe_pending = false;
-            self.keyframe_pending_since = None;
-        }
-    }
-
-    /// True when a keyframe request was actually written.  Cooldown/storm guards can
-    /// refuse, in which case a deferred request stays pending and is retried.
-    fn send_keyframe_request(&mut self, now: Instant) -> bool {
         self.recent_keyframe_requests
             .retain(|at| now.duration_since(*at) < KEYFRAME_STORM_WINDOW);
         let cooldown = if self.recent_keyframe_requests.len() >= KEYFRAME_STORM_THRESHOLD {
@@ -362,14 +313,13 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             now.duration_since(requested_at) >= cooldown
         });
         if !cooldown_elapsed {
-            return false;
+            return;
         }
 
         self.recent_keyframe_requests.push(now);
         self.last_keyframe_request = Some(now);
         self.backend.notify_keyframe_requested(&mut self.peer);
         self.video.request_keyframe(&mut self.peer);
-        true
     }
 
     fn periodic_keyframe(&mut self, now: Instant) {
