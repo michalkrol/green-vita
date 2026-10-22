@@ -166,48 +166,51 @@ pub(crate) fn init_csv_log() {
 }
 
 pub fn video_performance_summary() -> String {
-    let rtp_sum = METRICS.rtp_assembly_sum_us.swap(0, Ordering::Relaxed);
-    let rtp_count = METRICS.rtp_assembly_count.swap(0, Ordering::Relaxed);
+    // Use load() instead of swap(0) to read current metrics without draining.
+    // The actual draining is handled by drain_metrics() in the status() method.
+    let rtp_sum = METRICS.rtp_assembly_sum_us.load(Ordering::Relaxed);
+    let rtp_count = METRICS.rtp_assembly_count.load(Ordering::Relaxed);
     let rtp_average = rtp_sum.checked_div(rtp_count).unwrap_or(0);
-    let rtp_max = METRICS.rtp_assembly_max_us.swap(0, Ordering::Relaxed);
+    let rtp_max = METRICS.rtp_assembly_max_us.load(Ordering::Relaxed);
     // Two lines: the HUD label clips long single-line output on the Vita panel.
     let line1 = format!(
         "d/p:{}/{} d/a:{}/{} skip:{} cap:{} repl:{} q:{} hwb:{} ageMax:{} lag:{} lagMax:{} bw:{} aq:{} slip:{} slipS:{}",
-        METRICS.decoded.swap(0, Ordering::Relaxed),
-        METRICS.presented.swap(0, Ordering::Relaxed),
+        METRICS.decoded.load(Ordering::Relaxed),
+        METRICS.presented.load(Ordering::Relaxed),
         METRICS.stream_slip_us.load(Ordering::Relaxed),
-        METRICS.stream_slip_max_us.swap(0, Ordering::Relaxed),
+        METRICS.stream_slip_max_us.load(Ordering::Relaxed),
         METRICS.decode_us.load(Ordering::Relaxed),
         METRICS.pipeline_age_us.load(Ordering::Relaxed),
-        METRICS.skipped.swap(0, Ordering::Relaxed),
-        METRICS.rate_limited.swap(0, Ordering::Relaxed),
-        METRICS.replaced.swap(0, Ordering::Relaxed),
-        METRICS.queue_full.swap(0, Ordering::Relaxed),
-        METRICS.hw_buffered.swap(0, Ordering::Relaxed),
-        METRICS.pipeline_age_max_us.swap(0, Ordering::Relaxed),
+        METRICS.skipped.load(Ordering::Relaxed),
+        METRICS.rate_limited.load(Ordering::Relaxed),
+        METRICS.replaced.load(Ordering::Relaxed),
+        METRICS.queue_full.load(Ordering::Relaxed),
+        METRICS.hw_buffered.load(Ordering::Relaxed),
+        METRICS.pipeline_age_max_us.load(Ordering::Relaxed),
         METRICS.audio_queue_ms.load(Ordering::Relaxed),
         METRICS.stream_lag_us.load(Ordering::Relaxed),
-        METRICS.stream_lag_max_us.swap(0, Ordering::Relaxed),METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed),
+        METRICS.stream_lag_max_us.load(Ordering::Relaxed),
+        METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed),
     );
     let line2 = format!(
         "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} st:{} md:{} pick:{} pickMax:{}",
         METRICS.resyncs.load(Ordering::Relaxed),
         METRICS.resets.load(Ordering::Relaxed),
-        METRICS.rtp_wait_drops.swap(0, Ordering::Relaxed),
-        METRICS.rtp_abandons.swap(0, Ordering::Relaxed),
-        METRICS.rtp_hold_saved.swap(0, Ordering::Relaxed),
-        METRICS.rtp_hold_expired.swap(0, Ordering::Relaxed),
-        METRICS.rtp_gaps.swap(0, Ordering::Relaxed),
-        METRICS.rtp_invalid.swap(0, Ordering::Relaxed),
-        METRICS.dec_queue_full.swap(0, Ordering::Relaxed),
+        METRICS.rtp_wait_drops.load(Ordering::Relaxed),
+        METRICS.rtp_abandons.load(Ordering::Relaxed),
+        METRICS.rtp_hold_saved.load(Ordering::Relaxed),
+        METRICS.rtp_hold_expired.load(Ordering::Relaxed),
+        METRICS.rtp_gaps.load(Ordering::Relaxed),
+        METRICS.rtp_invalid.load(Ordering::Relaxed),
+        METRICS.dec_queue_full.load(Ordering::Relaxed),
         METRICS.flushes.load(Ordering::Relaxed),
         METRICS.twcc_sent.load(Ordering::Relaxed),
-        METRICS.twcc_samples.swap(0, Ordering::Relaxed),
-        METRICS.rtp_ext_any.swap(0, Ordering::Relaxed),
-        METRICS.twcc_stride.swap(0, Ordering::Relaxed),
-        METRICS.video_metadata_sent.swap(0, Ordering::Relaxed),
+        METRICS.twcc_samples.load(Ordering::Relaxed),
+        METRICS.rtp_ext_any.load(Ordering::Relaxed),
+        METRICS.twcc_stride.load(Ordering::Relaxed),
+        METRICS.video_metadata_sent.load(Ordering::Relaxed),
         METRICS.display_pickup_us.load(Ordering::Relaxed),
-        METRICS.display_pickup_max_us.swap(0, Ordering::Relaxed),
+        METRICS.display_pickup_max_us.load(Ordering::Relaxed),
     );
     // HUD vt segment: vt_max_0..5 and vt_exit_count
     let vt_segment = format!(

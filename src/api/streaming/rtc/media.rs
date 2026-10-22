@@ -262,7 +262,13 @@ impl VideoReceiver {
         let stats_window = now.duration_since(self.last_stats_report);
         self.last_stats_report = now;
 
-        // Drain all per-second metrics into a snapshot (HUD + CSV read the same snapshot).
+        // Read current metrics for HUD display first (without draining).
+        // The actual draining happens later for CSV logging.
+        let performance = crate::streaming::video::video_performance_summary();
+
+        // Drain all per-second metrics into a snapshot for CSV logging.
+        // Since video_performance_summary() uses load() (not swap), the metrics
+        // are still intact and will be properly captured by drain_metrics().
         let snapshot = drain_metrics();
 
         // If render timing metadata is enabled, queue a metadata frame.
@@ -327,7 +333,6 @@ impl VideoReceiver {
             self.last_bw_bytes = total;
         }
 
-        let performance = crate::streaming::video::video_performance_summary();
         let source_fps = self
             .stats
             .last_sample_duration_us
