@@ -4,7 +4,7 @@ pub(crate) mod rtc;
 
 use crate::Stream;
 use crate::api_xbox::streaming::backend::XboxStreamingBackend;
-use crate::settings::H264Profile;
+use crate::settings::{H264Profile, ColorProfile};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use anyhow::Result;
@@ -29,6 +29,7 @@ impl PlaybackBackend {
         unlock_video_fps: bool,
         video_bitrate_kbps: u32,
         video_h264_profile: H264Profile,
+        video_color_profile: ColorProfile,
         periodic_keyframe: bool,
     ) -> Result<Self> {
         Ok(Self::Xbox(XboxStreamingBackend::start(
@@ -36,6 +37,7 @@ impl PlaybackBackend {
             unlock_video_fps,
             video_bitrate_kbps,
             video_h264_profile,
+            video_color_profile,
             periodic_keyframe,
         )?))
     }

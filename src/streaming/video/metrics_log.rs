@@ -108,6 +108,15 @@ impl MetricsCsvLog {
             snapshot.vt_max_3,
             snapshot.vt_max_4,
             snapshot.vt_max_5,
+            snapshot.pli_submit,
+            snapshot.pli_gap,
+            snapshot.pli_expired,
+            snapshot.pli_too_large,
+            snapshot.pli_wait_idr,
+            snapshot.pli_decode_err,
+            snapshot.pli_watchdog,
+            snapshot.pli_periodic,
+            snapshot.pli_sent,
         ];
         let row = cols
             .iter()
@@ -127,7 +136,7 @@ impl MetricsCsvLog {
         // Ensure directory exists (no-op if already exists on-device; off-device will fail)
         let _ = std::fs::create_dir_all("ux0:data/xcloud-rust");
         // Build the full CSV content once: header + all rows + footer
-        let header = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5";
+        let header = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,pli_submit,pli_gap,pli_expired,pli_too_large,pli_wait_idr,pli_decode_err,pli_watchdog,pli_periodic,pli_sent";
         let rows_content: String = buffer
             .iter()
             .map(|row| format!("{row}\n"))

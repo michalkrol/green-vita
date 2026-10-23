@@ -4,7 +4,7 @@ use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::smooth_scroll_area;
 use crate::i18n::{I18n, arg_string};
-use crate::settings::H264Profile;
+use crate::settings::{H264Profile, ColorProfile};
 use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
@@ -27,6 +27,7 @@ pub enum Command {
     SetShowStreamDebugInfo(bool),
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
+    SetColorProfile(ColorProfile),
     SetPeriodicKeyframe(bool),
     SetLatencyTestMode(bool),
 }
@@ -43,6 +44,7 @@ enum SettingsRow {
     StreamDebug(bool),
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
+    ColorProfile(ColorProfile),
     PeriodicKeyframe(bool),
     LatencyTest(bool),
     Back,
@@ -97,6 +99,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::LatencyTest(app.settings.latency_test_mode));
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
+    rows.push(SettingsRow::ColorProfile(app.settings.video_color_profile));
     rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
     rows.push(SettingsRow::Back);
     rows
@@ -337,6 +340,23 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                {
+                    let label = format!("Color profile: {}", match app.settings.video_color_profile {
+                        ColorProfile::Rgb565 => "16-bit RGB565 (fast)",
+                        ColorProfile::Rgba8888 => "32-bit RGBA8888 (quality)",
+                    });
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.video_color_profile {
+                            ColorProfile::Rgb565 => ColorProfile::Rgba8888,
+                            ColorProfile::Rgba8888 => ColorProfile::Rgb565,
+                        };
+                        commands.push(Command::SetColorProfile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
@@ -563,6 +583,13 @@ impl App {
                 };
                 return self.handle_settings_command(Command::SetVideoH264Profile(next));
             }
+            SettingsRow::ColorProfile(profile) => {
+                let next = match profile {
+                    ColorProfile::Rgb565 => ColorProfile::Rgba8888,
+                    ColorProfile::Rgba8888 => ColorProfile::Rgb565,
+                };
+                return self.handle_settings_command(Command::SetColorProfile(next));
+            }
             SettingsRow::PeriodicKeyframe(enabled) => {
                 return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
             }
@@ -670,6 +697,10 @@ impl App {
             }
             Command::SetVideoH264Profile(profile) => {
                 self.settings.video_h264_profile = profile;
+                self.settings.save();
+            }
+            Command::SetColorProfile(profile) => {
+                self.settings.video_color_profile = profile;
                 self.settings.save();
             }
             Command::SetPeriodicKeyframe(enabled) => {

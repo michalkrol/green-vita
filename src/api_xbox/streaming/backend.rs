@@ -3,7 +3,7 @@ use crate::api::streaming::PlaybackBackendEvent;
 use crate::api::streaming::rtc::worker::{RtcWorker, RtcWorkerEvent};
 use crate::api_xbox::streaming::rtc::worker;
 use crate::jobs::{PollJob, poll_job};
-use crate::settings::H264Profile;
+use crate::settings::{H264Profile, ColorProfile};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use anyhow::Result;
@@ -34,6 +34,7 @@ impl XboxStreamingBackend {
         unlock_video_fps: bool,
         video_bitrate_kbps: u32,
         video_h264_profile: H264Profile,
+        video_color_profile: ColorProfile,
         periodic_keyframe: bool,
     ) -> Result<Self> {
         let worker = worker::spawn(
@@ -41,6 +42,7 @@ impl XboxStreamingBackend {
             unlock_video_fps,
             video_bitrate_kbps,
             video_h264_profile,
+            video_color_profile,
             periodic_keyframe,
         )?;
         Ok(Self {

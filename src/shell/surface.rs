@@ -1,6 +1,7 @@
 use crate::app::StreamingSession;
 use crate::shell::egui_painter::SdlEguiPainter;
 use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget, NUM_TEXTURES};
+use crate::settings::ColorProfile;
 use anyhow::{Context, Result};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{Canvas, Texture};
@@ -112,18 +113,32 @@ impl VitaSurface {
 
         self.detach_direct_video_output();
         let (width, height) = (output.width, output.height);
+        let pixel_format = match output.color_profile {
+            ColorProfile::Rgb565 => PixelFormatEnum::BGR565,
+            ColorProfile::Rgba8888 => PixelFormatEnum::ABGR8888, // memory order R,G,B,A — matches decoder RGBA8888 (see comment);
+        };
+        // SCE decoder names components LSB→MSB while SDL names them MSB→LSB
+        // (little-endian ARM), so they mirror. Decoder RGBA565 ⟷ SDL BGR565 at 16-bit;
+        // decoder RGBA8888 ⟷ SDL ABGR8888 at 32-bit. If red appears blue on device, the format
+        // is a one-line flip.
         let create_texture = || {
             self.canvas
-                .create_texture_streaming(PixelFormatEnum::BGR565, width, height)
+                .create_texture_streaming(pixel_format, width, height)
                 .map_err(anyhow::Error::msg)
-                .context("failed to create direct SDL BGR565 video texture")
+                .context("failed to create direct SDL video texture")
         };
         let mut textures: [_; NUM_TEXTURES] = [
             create_texture()?,
             create_texture()?,
             create_texture()?,
+            create_texture()?,
         ];
         let mut targets: [_; NUM_TEXTURES] = [
+            VideoTextureTarget {
+                ptr: 0,
+                pitch: 0,
+                capacity: 0,
+            },
             VideoTextureTarget {
                 ptr: 0,
                 pitch: 0,
@@ -208,6 +223,15 @@ impl VitaSurface {
             textures_delta,
         )?;
         self.canvas.present();
+        // Display present timing HUD
+        egui::Window::new("Present timing")
+            .fixed_size([200.0, 50.0])
+            .resizable(false)
+            .show(&self.egui_painter.ctx, |ui| {
+                ui.label(format!("present_us: {} (max: {})",
+                    METRICS.display_pickup_us.load(Ordering::Relaxed),
+                    METRICS.display_pickup_max_us.load(Ordering::Relaxed)));
+            });
         Ok(())
     }
 

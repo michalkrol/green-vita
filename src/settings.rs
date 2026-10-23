@@ -102,6 +102,13 @@ pub enum H264Profile {
     Main,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ColorProfile {
+    #[default]
+    Rgb565,
+    Rgba8888,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -122,6 +129,10 @@ pub struct Settings {
     /// by the Vita's HW decoder. Main and High may produce artifacts or fail entirely
     /// depending on tile/bitstream compatibility.
     pub video_h264_profile: H264Profile,
+    /// Video decode output pixel format. RGB565 is 16-bit fast (current behaviour), RGBA8888
+    /// is 32-bit with no banding in dark scenes. Applied at next stream start (decoder + textures
+    /// are created once per session).
+    pub video_color_profile: ColorProfile,
     /// When true, a keyframe (IDR) is requested from the console every 200 ms via
     /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
     /// cost of slightly larger periodic frames and a small bandwidth overhead.
@@ -165,6 +176,7 @@ impl Default for Settings {
             home_console_ip: None,
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
+            video_color_profile: ColorProfile::default(),
             periodic_keyframe: true,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,

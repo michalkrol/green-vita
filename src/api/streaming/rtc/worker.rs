@@ -69,8 +69,9 @@ impl RtcWorker {
         let worker_latest_gamepad = Arc::clone(&latest_gamepad);
         let gamepad_pulses = Arc::new(Mutex::new(VecDeque::new()));
         let worker_gamepad_pulses = Arc::clone(&gamepad_pulses);
+        let cfg = provider.session_config();
         let direct_video_output =
-            Arc::new(DirectVideoOutput::new(HW_OUTPUT_WIDTH, HW_OUTPUT_HEIGHT));
+            Arc::new(DirectVideoOutput::new(cfg.decoder.output_width, cfg.decoder.output_height, cfg.decoder.color_profile));
         let worker_direct_video_output = Arc::clone(&direct_video_output);
 
         std::thread::Builder::new()

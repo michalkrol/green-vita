@@ -236,6 +236,7 @@ impl App {
                     self.settings.unlock_video_fps,
                     self.settings.video_bitrate_kbps,
                     self.settings.video_h264_profile,
+                    self.settings.video_color_profile,
                     self.settings.periodic_keyframe,
                 ) {
                     Ok(streaming) => Ok(AppState::Streaming(streaming)),

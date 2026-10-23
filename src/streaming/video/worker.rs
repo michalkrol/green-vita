@@ -8,15 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-// Keep only one compressed frame queued at the default 30 FPS to minimize glass-to-glass
-// latency. Faster streams may still use a larger burst buffer.
-const MIN_PENDING_ACCESS_UNITS: usize = 1;
-const MAX_PENDING_ACCESS_UNITS: usize = 6;
-/// Target decoder pace range: 14-20ms (50-71 fps). Wider than the console's
-/// typical 58-62 fps so brief excursions don't clip.
-const MIN_DECODE_INTERVAL_US: u64 = 14_000;
-const MAX_DECODE_INTERVAL_US: u64 = 20_000;
-const DEFAULT_DECODE_INTERVAL_US: u64 = 16_667;
+/// Maximum number of access units queued before rejecting new ones.
+const AU_QUEUE_MAX: usize = 8;
+/// Maximum age (in ms) an access unit can remain in the queue before being rejected.
+const AU_QUEUE_MAX_AGE: u64 = 150;
 
 struct QueuedAccessUnit {
     data: Vec<u8>,
@@ -39,6 +34,9 @@ pub struct VideoDecodeWorker {
     pub(crate) result_ready: Arc<tokio::sync::Notify>,
     /// Updated from RTP timestamps to pace the decoder to the console's encoder rate.
     pub(crate) last_source_duration_us: Arc<AtomicU64>,
+    /// Marker for the oldest access unit in the queue, used for age-bound rejection.
+    /// Set when the queue is empty (pre-push len==0); compared against when queue has AUs.
+    oldest_au_marker: Option<Instant>,
 }
 
 impl VideoDecodeWorker {
@@ -70,7 +68,7 @@ impl VideoDecodeWorker {
         }
         let decoder = decoder.expect("decoder created after retry loop");
         direct_output.decoder_ready.store(true, Ordering::Release);
-        let (access_units, worker_access_units) = bounded(MAX_PENDING_ACCESS_UNITS);
+        let (access_units, worker_access_units) = bounded(AU_QUEUE_MAX);
         let (commands, worker_commands) = unbounded();
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&generation);
@@ -108,6 +106,7 @@ impl VideoDecodeWorker {
             latest_result,
             result_ready,
             last_source_duration_us: source_duration,
+            oldest_au_marker: None,
         })
     }
 
@@ -117,30 +116,46 @@ impl VideoDecodeWorker {
         {
             self.last_source_duration_us.store(duration, Ordering::Relaxed);
         }
-        let source_fps = source_frame_duration_us
-            .filter(|duration| *duration > 0)
-            .map(|duration| 1_000_000 / duration)
-            .unwrap_or(30);
-        let extra_capacity = source_fps
-            .saturating_sub(30)
-            .min(25)
-            .saturating_mul((MAX_PENDING_ACCESS_UNITS - MIN_PENDING_ACCESS_UNITS) as u64)
-            .saturating_add(12)
-            / 25;
-        let pending_limit = MIN_PENDING_ACCESS_UNITS + extra_capacity as usize;
-        if self.access_units.len() >= pending_limit {
-            metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
-            return false;
-        }
-
         let access_unit = QueuedAccessUnit {
             data,
             queued_at: Instant::now(),
             generation: self.generation.load(Ordering::Acquire),
         };
+
+        // Single-thread marker: track oldest AU age for age-bound rejection.
+        // Pre-push len==0 → record Instant (this AU becomes oldest).
+        // len>0 → compare age vs marker; reset marker when queue observed empty.
+        let was_empty = self.access_units.len() == 0;
+
+        if self.access_units.len() >= AU_QUEUE_MAX {
+            metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+
+        // Check age bound: if oldest AU in queue exceeds AU_QUEUE_MAX_AGE, reject.
+        let age_exceeded = match self.oldest_au_marker {
+            Some(marker) => {
+                let age = marker.elapsed().as_millis() as u64;
+                age > AU_QUEUE_MAX_AGE
+            }
+            None => false,
+        };
+
+        if age_exceeded {
+            metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
+            self.oldest_au_marker = None;
+            return false;
+        }
+
+        // If queue was empty, this AU becomes the marker.
+        if was_empty {
+            self.oldest_au_marker = Some(Instant::now());
+        }
+
         match self.access_units.try_send(access_unit) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
+                // Queue filled after our len check - treat as reject
                 metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
                 false
             }
@@ -191,12 +206,6 @@ fn run_decode_loop(
     direct_output: Arc<DirectVideoOutput>,
     _source_duration: Arc<AtomicU64>,
 ) {
-    use std::thread::sleep;
-    // Pace the decoder at roughly 62 fps (13 ms sleep + ~3 ms decode per frame)
-    // to keep up with the console's 60 fps encoder rate.  This prevents the
-    // access-unit queue from filling (which delays frames and causes drift).
-    const DECODE_PACE_SLEEP: Duration = Duration::from_micros(13_000);
-
     let mut decoder = Some(initial_decoder);
 
     loop {
@@ -219,7 +228,6 @@ fn run_decode_loop(
                     access_unit,
                     &direct_output,
                 );
-                sleep(DECODE_PACE_SLEEP);
             }
         }
     }

@@ -39,6 +39,9 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) rtp_abandons: u64,
     pub(crate) rtp_wait_drops: u64,
     pub(crate) rtp_invalid: u64,
+    pub(crate) gap_hole: u64,
+    pub(crate) gap_au: u64,
+    pub(crate) gap_unknown: u64,
     pub(crate) dec_queue_full: u64,
     pub(crate) flushes: u64,
     pub(crate) twcc_sent: u64,
@@ -49,6 +52,16 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) video_bandwidth_kbps: u64,
     pub(crate) display_pickup_us: u64,
     pub(crate) display_pickup_max_us: u64,
+    /// PLI (Picture Loss Indicator) counters per trigger
+    pub(c) pli_submit: u64,
+    pub(c) pli_gap: u64,
+    pub(c) pli_expired: u64,
+    pub(c) pli_too_large: u64,
+    pub(c) pli_wait_idr: u64,
+    pub(c) pli_decode_err: u64,
+    pub(c) pli_watchdog: u64,
+    pub(c) pli_periodic: u64,
+    pub(c) pli_sent: u64,
 }
 
 pub(crate) struct VideoMetrics {
@@ -86,6 +99,9 @@ pub(crate) struct VideoMetrics {
     pub(crate) rtp_abandons: AtomicU64,
     pub(crate) rtp_wait_drops: AtomicU64,
     pub(crate) rtp_invalid: AtomicU64,
+    pub(crate) gap_hole: AtomicU64,
+    pub(crate) gap_au: AtomicU64,
+    pub(crate) gap_unknown: AtomicU64,
     pub(crate) dec_queue_full: AtomicU64,
     pub(crate) flushes: AtomicU64,
     pub(crate) twcc_sent: AtomicU64,
@@ -133,6 +149,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     rtp_abandons: AtomicU64::new(0),
     rtp_wait_drops: AtomicU64::new(0),
     rtp_invalid: AtomicU64::new(0),
+    pub(crate) gap_hole: AtomicU64::new(0),
+    pub(crate) gap_au: AtomicU64::new(0),
+    pub(crate) gap_unknown: AtomicU64::new(0),
     dec_queue_full: AtomicU64::new(0),
     flushes: AtomicU64::new(0),
     twcc_sent: AtomicU64::new(0),
@@ -143,6 +162,16 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     video_bandwidth_kbps: AtomicU64::new(0),
     display_pickup_us: AtomicU64::new(0),
     display_pickup_max_us: AtomicU64::new(0),
+    /// PLI (Picture Loss Indicator) counters per trigger
+    pli_submit: AtomicU64::new(0),
+    pli_gap: AtomicU64::new(0),
+    pli_expired: AtomicU64::new(0),
+    pli_too_large: AtomicU64::new(0),
+    pli_wait_idr: AtomicU64::new(0),
+    pli_decode_err: AtomicU64::new(0),
+    pli_watchdog: AtomicU64::new(0),
+    pli_periodic: AtomicU64::new(0),
+    pli_sent: AtomicU64::new(0),
 };
 
 
@@ -211,6 +240,10 @@ pub fn video_performance_summary() -> String {
         METRICS.video_metadata_sent.load(Ordering::Relaxed),
         METRICS.display_pickup_us.load(Ordering::Relaxed),
         METRICS.display_pickup_max_us.load(Ordering::Relaxed),
+        pli: { METRICS.pli_sent.load(Ordering::Relaxed) },
+        plf: { METRICS.pli_periodic.load(Ordering::Relaxed) },
+        pv: { METRICS.pli_gap.load(Ordering::Relaxed) },
+        pvM: { METRICS.pli_expired.load(Ordering::Relaxed) },
     );
     // HUD vt segment: vt_max_0..5 and vt_exit_count
     let vt_segment = format!(
@@ -275,6 +308,18 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         video_bandwidth_kbps: METRICS.video_bandwidth_kbps.swap(0, Ordering::Relaxed),
         display_pickup_us: METRICS.display_pickup_us.swap(0, Ordering::Relaxed),
         display_pickup_max_us: METRICS.display_pickup_max_us.swap(0, Ordering::Relaxed),
+        pli_submit: METRICS.pli_submit.swap(0, Ordering::Relaxed),
+        pli_gap: METRICS.pli_gap.swap(0, Ordering::Relaxed),
+        pli_expired: METRICS.pli_expired.swap(0, Ordering::Relaxed),
+        pli_too_large: METRICS.pli_too_large.swap(0, Ordering::Relaxed),
+        pli_wait_idr: METRICS.pli_wait_idr.swap(0, Ordering::Relaxed),
+        pli_decode_err: METRICS.pli_decode_err.swap(0, Ordering::Relaxed),
+        pli_watchdog: METRICS.pli_watchdog.swap(0, Ordering::Relaxed),
+        pli_periodic: METRICS.pli_periodic.swap(0, Ordering::Relaxed),
+        pli_sent: METRICS.pli_sent.swap(0, Ordering::Relaxed),
+        gap_hole: METRICS.gap_hole.swap(0, Ordering::Relaxed),
+        gap_au: METRICS.gap_au.swap(0, Ordering::Relaxed),
+        gap_unknown: METRICS.gap_unknown.swap(0, Ordering::Relaxed),
     }
 }
 
@@ -317,6 +362,18 @@ pub(crate) fn reset_session_metrics() {
     METRICS.video_bandwidth_kbps.store(0, Ordering::Relaxed);
     METRICS.display_pickup_us.store(0, Ordering::Relaxed);
     METRICS.display_pickup_max_us.store(0, Ordering::Relaxed);
+    METRICS.pli_submit.store(0, Ordering::Relaxed);
+    METRICS.pli_gap.store(0, Ordering::Relaxed);
+    METRICS.pli_expired.store(0, Ordering::Relaxed);
+    METRICS.pli_too_large.store(0, Ordering::Relaxed);
+    METRICS.pli_wait_idr.store(0, Ordering::Relaxed);
+    METRICS.pli_decode_err.store(0, Ordering::Relaxed);
+    METRICS.pli_watchdog.store(0, Ordering::Relaxed);
+    METRICS.pli_periodic.store(0, Ordering::Relaxed);
+    METRICS.pli_sent.store(0, Ordering::Relaxed);
+    METRICS.gap_hole.store(0, Ordering::Relaxed);
+    METRICS.gap_au.store(0, Ordering::Relaxed);
+    METRICS.gap_unknown.store(0, Ordering::Relaxed);
 }
 
     /// Flush the RAM-buffered metrics CSV log to disk once at session end.

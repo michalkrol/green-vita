@@ -1,6 +1,6 @@
 //! PS Vita hardware H.264 decoder (`sceVideodec`/`sceAvcdec`).
 use super::memory::{CdramBlock, release_reserved_decoder_cdram};
-use super::{DecoderConfig, VideoTextureTarget};
+use super::{DecoderConfig, VideoTextureTarget, ColorProfile};
 use anyhow::{Result, bail};
 use std::os::raw::c_void;
 use vitasdk_sys::*;
@@ -10,8 +10,9 @@ use vitasdk_sys::*;
 const AVCDEC_NUM_REF_FRAMES: u32 = 1;
 // AVCDEC and SDL's Vita GXM renderer both support RGB565 natively. At 960x544 this halves the
 // decoder-to-texture traffic from roughly 2 MiB to 1 MiB per frame, which matters at 60 FPS.
-const OUTPUT_BYTES_PER_PIXEL: u32 = 2;
-const OUTPUT_PIXEL_FORMAT: u32 = SCE_AVCDEC_PIXELFORMAT_RGBA565 as u32;
+const RGB565_PIXEL_FORMAT: u32 = SCE_AVCDEC_PIXELFORMAT_RGBA565 as u32;
+const RGB565_BYTES_PER_PIXEL: u32 = 2;
+const RGBA8888_BYTES_PER_PIXEL: u32 = 4;
 
 struct AvcdecLibrary {
     module_loaded: bool,
@@ -84,6 +85,8 @@ pub struct HwVideoDecoder {
     _library: AvcdecLibrary,
     width: u32,
     height: u32,
+    output_pixel_format: u32,
+    bytes_per_pixel: u32,
 }
 
 impl HwVideoDecoder {
@@ -122,12 +125,19 @@ impl HwVideoDecoder {
             }
             let decoder = AvcdecDecoder(decoder_control);
 
+            let (output_pixel_format, bytes_per_pixel) = match config.color_profile {
+                ColorProfile::Rgb565 => (RGB565_PIXEL_FORMAT, RGB565_BYTES_PER_PIXEL),
+                ColorProfile::Rgba8888 => (SCE_AVCDEC_PIXELFORMAT_RGBA8888 as u32, RGBA8888_BYTES_PER_PIXEL),
+            };
+
             Ok(Self {
                 decoder,
                 _frame_memory: frame_memory,
                 _library: library,
                 width: config.output_width,
                 height: config.output_height,
+                output_pixel_format,
+                bytes_per_pixel,
             })
         }
     }
@@ -155,7 +165,7 @@ impl HwVideoDecoder {
             };
 
             let output_ptr = direct_target.ptr as *mut u8;
-            let output_pitch = direct_target.pitch / OUTPUT_BYTES_PER_PIXEL;
+            let output_pitch = direct_target.pitch / self.bytes_per_pixel;
             let output_capacity = direct_target.capacity;
             if output_pitch < self.width {
                 bail!(
@@ -167,7 +177,7 @@ impl HwVideoDecoder {
             let mut picture = SceAvcdecPicture {
                 size: size_of::<SceAvcdecPicture>() as u32,
                 frame: SceAvcdecFrame {
-                    pixelType: OUTPUT_PIXEL_FORMAT,
+                    pixelType: self.output_pixel_format,
                     framePitch: output_pitch,
                     frameWidth: self.width,
                     frameHeight: self.height,
@@ -208,7 +218,7 @@ impl HwVideoDecoder {
             let row_bytes = picture
                 .frame
                 .framePitch
-                .checked_mul(OUTPUT_BYTES_PER_PIXEL)
+                .checked_mul(self.bytes_per_pixel)
                 .ok_or_else(|| {
                     anyhow::anyhow!("video frame pitch overflow: {}", picture.frame.framePitch)
                 })?;
