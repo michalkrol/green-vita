@@ -10,7 +10,7 @@ pub const HW_OUTPUT_WIDTH: u32 = 960;
 pub const HW_OUTPUT_HEIGHT: u32 = 544;
 pub(crate) const DEFAULT_VIDEO_FPS: u32 = 30;
 pub(crate) const UNLOCKED_VIDEO_FPS: u32 = 60;
-pub(crate) const NUM_TEXTURES: usize = 4;
+pub(crate) const NUM_TEXTURES: usize = 3;
 
 pub use memory::reserve_decoder_cdram;
 pub use metrics::video_performance_summary;
@@ -19,6 +19,12 @@ pub use worker::VideoDecodeWorker;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+// With double buffering (2 textures), the decoder writes into one texture while
+// the renderer displays the other.  It must wait up to one VSYNC interval for the
+// renderer to finish with the pending texture.  16.7ms matches 60 Hz VSYNC.
+const MAX_PENDING_TEXTURE_WAIT: Duration = Duration::from_micros(16_700);
+
 use crate::settings::ColorProfile;
 
 #[derive(Clone, Copy)]
@@ -118,18 +124,34 @@ impl DirectVideoOutput {
         let mut state = self.state.lock().ok()?;
         let targets = state.targets?;
 
-        // With 4 textures (displayed, last_displayed, pending, decode-target),
-        // there is always a free texture available. The decoder writes into the
-        // decode-target slot without blocking.
+        // Fast path: find a texture that is neither displayed nor pending.
+        // Also skip the most-recently-displayed texture: the GXM GPU may still
+        // be DMA-reading it from the previous VSYNC cycle.  Waiting one full
+        // display interval before recycling that slot prevents texture-race
+        // artifacts that appear as blocky corruption.
         let free = (0..NUM_TEXTURES).find(|&i| {
             state.displayed != Some(i)
                 && state.last_displayed != Some(i)
                 && state.pending.as_ref().map(|(idx, _)| *idx) != Some(i)
         });
 
-        debug_assert!(free.is_some(), "With 4 textures, a free slot should always exist");
-
-        let index = free.unwrap();
+        let index = if let Some(i) = free {
+            i
+        } else {
+            // All NUM_TEXTURES are busy (should be impossible with > 2).
+            // Fall through to the old condvar wait path.
+            let (waited, _) = self
+                .frame_displayed
+                .wait_timeout_while(state, MAX_PENDING_TEXTURE_WAIT, |s| {
+                    s.targets.is_some() && s.pending.is_some()
+                })
+                .ok()?;
+            state = waited;
+            (0..NUM_TEXTURES).find(|&i| {
+                state.displayed != Some(i)
+                    && state.pending.as_ref().map(|(idx, _)| *idx) != Some(i)
+            })?
+        };
 
         Some(DirectVideoTargetGuard {
             state,

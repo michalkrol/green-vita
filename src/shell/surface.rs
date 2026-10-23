@@ -131,14 +131,8 @@ impl VitaSurface {
             create_texture()?,
             create_texture()?,
             create_texture()?,
-            create_texture()?,
         ];
         let mut targets: [_; NUM_TEXTURES] = [
-            VideoTextureTarget {
-                ptr: 0,
-                pitch: 0,
-                capacity: 0,
-            },
             VideoTextureTarget {
                 ptr: 0,
                 pitch: 0,
