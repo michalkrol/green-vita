@@ -165,6 +165,7 @@ impl VideoReceiver {
                     eprintln!("Failed to decode H264 video frame: {error}");
                     decode_errors = decode_errors.saturating_add(1);
                     *keyframe_requested = true;
+                    METRICS.pli_decode_err.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -190,6 +191,7 @@ impl VideoReceiver {
                 sender_ssrc: 0,
                 media_ssrc: ssrc,
             };
+            METRICS.pli_sent.fetch_add(1, Ordering::Relaxed);
             let _ = receiver.write_rtcp(vec![Box::new(pli)]);
         }
     }

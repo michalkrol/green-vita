@@ -234,6 +234,7 @@ impl VideoRtp {
                     .map(|sequence| sequence.wrapping_add(1));
                 self.depacketizer = H264Packet::default();
                 *keyframe_requested = true;
+                METRICS.pli_gap.fetch_add(1, Ordering::Relaxed);
                 self.record_damage(worker);
                 frame_was_damaged = true;
                 stats.dropped = stats.dropped.saturating_add(1);
@@ -275,6 +276,7 @@ impl VideoRtp {
                 self.pending = None;
                 self.next_sequence = None;
                 *keyframe_requested = true;
+                METRICS.pli_too_large.fetch_add(1, Ordering::Relaxed);
                 self.record_damage(worker);
                 stats.dropped = stats.dropped.saturating_add(1);
                 return stats;
@@ -360,6 +362,7 @@ impl VideoRtp {
             // Flush queued decoder work once, then wait for a compatible IDR instead of feeding
             // frames that the Vita hardware cannot decode.
             *keyframe_requested = true;
+                METRICS.pli_too_large.fetch_add(1, Ordering::Relaxed);
             if !self.waiting_for_keyframe {
                 worker.begin_resync();
             }
@@ -370,6 +373,7 @@ impl VideoRtp {
         if self.stream_too_large {
             if unit.resolution.is_none() || !unit.has_idr {
                 *keyframe_requested = true;
+                METRICS.pli_wait_idr.fetch_add(1, Ordering::Relaxed);
                 self.waiting_for_keyframe = true;
                 stats.dropped = stats.dropped.saturating_add(1);
                 return stats;
@@ -380,6 +384,7 @@ impl VideoRtp {
             // Later keyframes may contain only IDR; AVCDEC retains SPS/PPS across resyncs.
             if !unit.has_idr {
                 *keyframe_requested = true;
+                METRICS.pli_expired.fetch_add(1, Ordering::Relaxed);
                 stats.dropped = stats.dropped.saturating_add(1);
                 return stats;
             }
@@ -392,6 +397,7 @@ impl VideoRtp {
         if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
             eprintln!("Video decoder queue is full; continuing while requesting a keyframe");
             *keyframe_requested = true;
+            METRICS.pli_submit.fetch_add(1, Ordering::Relaxed);
             stats.dropped = stats.dropped.saturating_add(1);
         }
         stats

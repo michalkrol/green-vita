@@ -1,6 +1,7 @@
 use std::sync::{Arc, LazyLock, Mutex};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
+
 /// Snapshot of per-second metrics drained from METRICS at status() time.
 /// Readings are zeroed after drain so the next status() call starts fresh.
 #[derive(Debug, Clone)]
@@ -53,15 +54,15 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) display_pickup_us: u64,
     pub(crate) display_pickup_max_us: u64,
     /// PLI (Picture Loss Indicator) counters per trigger
-    pub(c) pli_submit: u64,
-    pub(c) pli_gap: u64,
-    pub(c) pli_expired: u64,
-    pub(c) pli_too_large: u64,
-    pub(c) pli_wait_idr: u64,
-    pub(c) pli_decode_err: u64,
-    pub(c) pli_watchdog: u64,
-    pub(c) pli_periodic: u64,
-    pub(c) pli_sent: u64,
+    pub(crate) pli_submit: u64,
+    pub(crate) pli_gap: u64,
+    pub(crate) pli_expired: u64,
+    pub(crate) pli_too_large: u64,
+    pub(crate) pli_wait_idr: u64,
+    pub(crate) pli_decode_err: u64,
+    pub(crate) pli_watchdog: u64,
+    pub(crate) pli_periodic: u64,
+    pub(crate) pli_sent: u64,
 }
 
 pub(crate) struct VideoMetrics {
@@ -112,6 +113,15 @@ pub(crate) struct VideoMetrics {
     pub(crate) video_bandwidth_kbps: AtomicU64,
     pub(crate) display_pickup_us: AtomicU64,
     pub(crate) display_pickup_max_us: AtomicU64,
+    pub(crate) pli_submit: AtomicU64,
+    pub(crate) pli_gap: AtomicU64,
+    pub(crate) pli_expired: AtomicU64,
+    pub(crate) pli_too_large: AtomicU64,
+    pub(crate) pli_wait_idr: AtomicU64,
+    pub(crate) pli_decode_err: AtomicU64,
+    pub(crate) pli_watchdog: AtomicU64,
+    pub(crate) pli_periodic: AtomicU64,
+    pub(crate) pli_sent: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {

@@ -1,7 +1,7 @@
 use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver};
 use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
-use crate::streaming::video::{DecoderConfig, DirectVideoOutput};
+use crate::streaming::video::{DecoderConfig, DirectVideoOutput, metrics::METRICS};
 use anyhow::{Context, Result};
 use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use rtc::peer_connection::event::{RTCDataChannelEvent, RTCPeerConnectionEvent, RTCTrackEvent};
@@ -176,6 +176,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         if !SUPPRESS_KEYFRAME_REQUESTS && self.initial_video_keyframe_due(now) {
             eprintln!("No initial video RTP after WebRTC connected; requesting a keyframe");
             keyframe_requested = true;
+            METRICS.pli_watchdog.fetch_add(1, Ordering::Relaxed);
         }
         self.request_keyframe(keyframe_requested, now);
         if self.periodic_keyframe_enabled {
@@ -330,6 +331,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             return;
         }
         self.last_periodic_keyframe = Some(now);
+        METRICS.pli_periodic.fetch_add(1, Ordering::Relaxed);
         self.video.request_keyframe(&mut self.peer);
     }
 
