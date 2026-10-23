@@ -102,11 +102,29 @@ pub enum H264Profile {
     Main,
 }
 
+impl H264Profile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Baseline => "baseline",
+            Self::Main => "main",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ColorProfile {
     #[default]
     Rgb565,
     Rgba8888,
+}
+
+impl ColorProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rgb565 => "rgb565",
+            Self::Rgba8888 => "rgba8888",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

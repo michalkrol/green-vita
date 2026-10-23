@@ -45,6 +45,7 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
                 color_profile: self.video_color_profile,
             },
             periodic_keyframe_enabled: self.periodic_keyframe,
+            h264_profile: self.video_h264_profile,
         }
     }
 

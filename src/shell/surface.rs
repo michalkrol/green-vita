@@ -223,15 +223,6 @@ impl VitaSurface {
             textures_delta,
         )?;
         self.canvas.present();
-        // Display present timing HUD
-        egui::Window::new("Present timing")
-            .fixed_size([200.0, 50.0])
-            .resizable(false)
-            .show(&self.egui_painter.ctx, |ui| {
-                ui.label(format!("present_us: {} (max: {})",
-                    METRICS.display_pickup_us.load(Ordering::Relaxed),
-                    METRICS.display_pickup_max_us.load(Ordering::Relaxed)));
-            });
         Ok(())
     }
 

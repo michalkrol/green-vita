@@ -1,6 +1,8 @@
 use std::sync::{Arc, LazyLock, Mutex};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
+use crate::settings::{ColorProfile, H264Profile};
+
 
 /// Snapshot of per-second metrics drained from METRICS at status() time.
 /// Readings are zeroed after drain so the next status() call starts fresh.
@@ -159,9 +161,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     rtp_abandons: AtomicU64::new(0),
     rtp_wait_drops: AtomicU64::new(0),
     rtp_invalid: AtomicU64::new(0),
-    pub(crate) gap_hole: AtomicU64::new(0),
-    pub(crate) gap_au: AtomicU64::new(0),
-    pub(crate) gap_unknown: AtomicU64::new(0),
+    gap_hole: AtomicU64::new(0),
+    gap_au: AtomicU64::new(0),
+    gap_unknown: AtomicU64::new(0),
     dec_queue_full: AtomicU64::new(0),
     flushes: AtomicU64::new(0),
     twcc_sent: AtomicU64::new(0),
@@ -196,12 +198,17 @@ pub(crate) static METRICS_CSV_LOG: LazyLock<Mutex<Option<crate::streaming::video
 /// Sets the global static to a freshly opened log (header-on-open semantics).
 /// Called once from RtcSession::new so the first CSV rows cannot report
 /// the previous session's values.
-pub(crate) fn init_csv_log() {
+pub(crate) fn init_csv_log(
+    color_profile: crate::settings::ColorProfile,
+    h264_profile: crate::settings::H264Profile,
+) {
     // Flush any previous session's log that never got flushed, then replace with a fresh log.
     if let Some(old) = METRICS_CSV_LOG.lock().unwrap().take() {
         old.flush();
     }
-    *METRICS_CSV_LOG.lock().unwrap() = Some(crate::streaming::video::metrics_log::MetricsCsvLog::new());
+    *METRICS_CSV_LOG.lock().unwrap() = Some(
+        crate::streaming::video::metrics_log::MetricsCsvLog::new(color_profile, h264_profile)
+    );
 }
 
 pub fn video_performance_summary() -> String {
@@ -232,7 +239,7 @@ pub fn video_performance_summary() -> String {
         METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed),
     );
     let line2 = format!(
-        "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{}",
+        "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{} pli:{} plf:{} pv:{} pvM:{}",
         METRICS.resyncs.load(Ordering::Relaxed),
         METRICS.resets.load(Ordering::Relaxed),
         METRICS.rtp_wait_drops.load(Ordering::Relaxed),
@@ -250,10 +257,10 @@ pub fn video_performance_summary() -> String {
         METRICS.video_metadata_sent.load(Ordering::Relaxed),
         METRICS.display_pickup_us.load(Ordering::Relaxed),
         METRICS.display_pickup_max_us.load(Ordering::Relaxed),
-        pli: { METRICS.pli_sent.load(Ordering::Relaxed) },
-        plf: { METRICS.pli_periodic.load(Ordering::Relaxed) },
-        pv: { METRICS.pli_gap.load(Ordering::Relaxed) },
-        pvM: { METRICS.pli_expired.load(Ordering::Relaxed) },
+        METRICS.pli_sent.load(Ordering::Relaxed),
+        METRICS.pli_periodic.load(Ordering::Relaxed),
+        METRICS.pli_gap.load(Ordering::Relaxed),
+        METRICS.pli_expired.load(Ordering::Relaxed),
     );
     // HUD vt segment: vt_max_0..5 and vt_exit_count
     let vt_segment = format!(

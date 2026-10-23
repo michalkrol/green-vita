@@ -2,6 +2,7 @@ use crate::api::streaming::rtc::media::{AudioReceiver, VideoReceiver};
 use crate::api::streaming::rtc::transport::RtcTransport;
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecoderConfig, DirectVideoOutput, metrics::METRICS};
+use crate::settings::H264Profile;
 use anyhow::{Context, Result};
 use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use rtc::peer_connection::event::{RTCDataChannelEvent, RTCPeerConnectionEvent, RTCTrackEvent};
@@ -45,6 +46,7 @@ pub(crate) struct RtcSessionConfig {
     pub video_fps: u32,
     pub decoder: DecoderConfig,
     pub periodic_keyframe_enabled: bool,
+    pub h264_profile: H264Profile,
 }
 
 /// Provider-specific hooks invoked by the reusable RTC session.
@@ -106,7 +108,10 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         crate::streaming::video::metrics::reset_session_metrics();
         // Initialize the RAM-buffered metrics CSV log for this session.
         // It outlives the session so the flush at end sees all rows.
-        crate::streaming::video::metrics::init_csv_log();
+        crate::streaming::video::metrics::init_csv_log(
+        config.decoder.color_profile,
+        config.h264_profile,
+    );
         video.reset_lag_anchor();
 
         Ok(Self {

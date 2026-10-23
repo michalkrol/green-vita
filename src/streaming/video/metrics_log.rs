@@ -11,6 +11,11 @@ use super::metrics::{MetricsSnapshot, drain_metrics, reset_session_metrics};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
+use crate::settings::{ColorProfile, H264Profile};
+
+const GIT_SHA: &str = env!("GIT_SHA");
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 
 /// Extra per-tick values that live on the video receiver rather than in METRICS.
 pub(crate) struct RowExtras {
@@ -34,15 +39,20 @@ pub(crate) struct MetricsCsvLog {
     dropped_rows: usize,
     /// Session start time, for timestamp computation.
     started_at: std::time::Instant,
+    // Session metadata (written as leading CSV columns)
+    color_profile: &'static str,
+    h264_profile: &'static str,
 }
 
 impl MetricsCsvLog {
     /// Creates a new RAM-buffered log.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(color_profile: ColorProfile, h264_profile: H264Profile) -> Self {
         Self {
             rows: Arc::new(Mutex::new(Vec::new())),
             dropped_rows: 0,
             started_at: std::time::Instant::now(),
+            color_profile: color_profile.as_str(),
+            h264_profile: h264_profile.as_str(),
         }
     }
 
@@ -57,7 +67,7 @@ impl MetricsCsvLog {
         let t_s = self.started_at.elapsed().as_secs();
         // Fixed-size array so the column count is compiler-enforced and can never
         // drift out of sync with HEADER. Order MUST match HEADER below.
-        let cols: [u64; 50] = [
+        let cols: [u64; 59] = [
             t_s,
             snapshot.rtp_assembly_sum_us,
             snapshot.rtp_assembly_count,
@@ -118,11 +128,16 @@ impl MetricsCsvLog {
             snapshot.pli_periodic,
             snapshot.pli_sent,
         ];
-        let row = cols
+        let meta_prefix = format!(
+            "{},{},{},{}",
+            self.color_profile, self.h264_profile, GIT_SHA, APP_VERSION
+        );
+        let numeric_part = cols
             .iter()
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
             .join(",");
+        let row = format!("{meta_prefix},{numeric_part}");
         buffer.push(row);
         true
     }
@@ -136,7 +151,10 @@ impl MetricsCsvLog {
         // Ensure directory exists (no-op if already exists on-device; off-device will fail)
         let _ = std::fs::create_dir_all("ux0:data/xcloud-rust");
         // Build the full CSV content once: header + all rows + footer
-        let header = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,pli_submit,pli_gap,pli_expired,pli_too_large,pli_wait_idr,pli_decode_err,pli_watchdog,pli_periodic,pli_sent";
+        let header = format!(
+            "color_profile,h264_profile,git_sha,app_version,{header_orig}",
+            header_orig = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,pli_submit,pli_gap,pli_expired,pli_too_large,pli_wait_idr,pli_decode_err,pli_watchdog,pli_periodic,pli_sent"
+        );
         let rows_content: String = buffer
             .iter()
             .map(|row| format!("{row}\n"))

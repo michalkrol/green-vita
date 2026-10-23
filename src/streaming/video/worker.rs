@@ -12,6 +12,12 @@ use std::time::{Duration, Instant};
 const AU_QUEUE_MAX: usize = 8;
 /// Maximum age (in ms) an access unit can remain in the queue before being rejected.
 const AU_QUEUE_MAX_AGE: u64 = 150;
+/// Default decode interval in microseconds (≈60fps).
+const DEFAULT_DECODE_INTERVAL_US: u64 = 16_667;
+/// Minimum valid source frame duration in microseconds.
+const MIN_DECODE_INTERVAL_US: u64 = 14_000;
+/// Maximum valid source frame duration in microseconds.
+const MAX_DECODE_INTERVAL_US: u64 = 20_000;
 
 struct QueuedAccessUnit {
     data: Vec<u8>,
@@ -36,7 +42,7 @@ pub struct VideoDecodeWorker {
     pub(crate) last_source_duration_us: Arc<AtomicU64>,
     /// Marker for the oldest access unit in the queue, used for age-bound rejection.
     /// Set when the queue is empty (pre-push len==0); compared against when queue has AUs.
-    oldest_au_marker: Option<Instant>,
+    oldest_au_marker: std::sync::Mutex<Option<Instant>>,
 }
 
 impl VideoDecodeWorker {
@@ -106,7 +112,7 @@ impl VideoDecodeWorker {
             latest_result,
             result_ready,
             last_source_duration_us: source_duration,
-            oldest_au_marker: None,
+            oldest_au_marker: std::sync::Mutex::new(None),
         })
     }
 
@@ -133,23 +139,26 @@ impl VideoDecodeWorker {
         }
 
         // Check age bound: if oldest AU in queue exceeds AU_QUEUE_MAX_AGE, reject.
-        let age_exceeded = match self.oldest_au_marker {
-            Some(marker) => {
-                let age = marker.elapsed().as_millis() as u64;
-                age > AU_QUEUE_MAX_AGE
+        let age_exceeded = {
+            let marker_guard = self.oldest_au_marker.lock().unwrap_or_else(|e| e.into_inner());
+            match *marker_guard {
+                Some(marker) => {
+                    let age = marker.elapsed().as_millis() as u64;
+                    age > AU_QUEUE_MAX_AGE
+                }
+                None => false,
             }
-            None => false,
         };
 
         if age_exceeded {
             metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
-            self.oldest_au_marker = None;
+            *self.oldest_au_marker.lock().unwrap_or_else(|e| e.into_inner()) = None;
             return false;
         }
 
         // If queue was empty, this AU becomes the marker.
         if was_empty {
-            self.oldest_au_marker = Some(Instant::now());
+            *self.oldest_au_marker.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         }
 
         match self.access_units.try_send(access_unit) {
