@@ -73,8 +73,8 @@ pub(crate) struct VideoRtp {
     /// Drift instrumentation: per-window max of each video-timing (extmap id 7)
     /// stage delta (ms: encode-start, encode-finish, packetization, pacer-exit,
     /// network, network2) plus the sample count.
-    vt_max: [u64; 6],
-    vt_exit_count: u64,
+    pub(crate) vt_max: [u64; 6],
+    pub(crate) vt_exit_count: u64,
     slip_slope_base: Option<(Instant, i64)>,
     total_bytes: u64,
 }
@@ -303,10 +303,10 @@ impl VideoRtp {
         if let Some(slip) = self.stream_slip() {
             let (slip_ms, _wall_ms, media_ms) = slip;
             // Current slip (updated every packet; HUD reads this value).
-            // Use max(0, ...) to avoid u64 wrap when slip_ms is negative
-            // (media outpaces wall clock). The slip is absolute since the
-            // first video AU, never re-anchored per session design.
-            METRICS.stream_slip_us.store(slip_ms.max(0) as u64, Ordering::Relaxed);
+            // Store as u64 using wrapping arithmetic so negative values
+            // are represented as two's-complement (analyzer _unwrap_slip()
+            // converts values > 2^63 back to signed ms).
+            METRICS.stream_slip_us.store(slip_ms as u64, Ordering::Relaxed);
             // Maximum slip observed during the session (max of positive slips).
             if slip_ms > 0 {
                 METRICS.stream_slip_max_us.fetch_max(slip_ms as u64, Ordering::Relaxed);

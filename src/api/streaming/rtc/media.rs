@@ -268,14 +268,49 @@ impl VideoReceiver {
         let stats_window = now.duration_since(self.last_stats_report);
         self.last_stats_report = now;
 
-        // Read current metrics for HUD display first (without draining).
-        // The actual draining happens later for CSV logging.
-        let performance = crate::streaming::video::video_performance_summary();
+// Copy video-timing RTP extension census (ext id 7) into METRICS
+// for this second's CSV row, then reset the per-window census so values
+// do not accumulate across seconds.
+    crate::streaming::video::metrics::METRICS.vt_max_0.store(
+        self.rtp.vt_max[0],
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    crate::streaming::video::metrics::METRICS.vt_max_1.store(
+        self.rtp.vt_max[1],
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    crate::streaming::video::metrics::METRICS.vt_max_2.store(
+        self.rtp.vt_max[2],
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    crate::streaming::video::metrics::METRICS.vt_max_3.store(
+        self.rtp.vt_max[3],
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    crate::streaming::video::metrics::METRICS.vt_max_4.store(
+        self.rtp.vt_max[4],
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    crate::streaming::video::metrics::METRICS.vt_max_5.store(
+        self.rtp.vt_max[5],
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    crate::streaming::video::metrics::METRICS.vt_exit_count.store(
+        self.rtp.vt_exit_count,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    // Reset the per-window census so the next status() call starts fresh.
+    self.rtp.vt_max = [0; 6];
+    self.rtp.vt_exit_count = 0;
 
-        // Drain all per-second metrics into a snapshot for CSV logging.
-        // Since video_performance_summary() uses load() (not swap), the metrics
-        // are still intact and will be properly captured by drain_metrics().
-        let snapshot = drain_metrics();
+// Read current metrics for HUD display first (without draining).
+// The actual draining happens later for CSV logging.
+    let performance = crate::streaming::video::video_performance_summary();
+
+// Drain all per-second metrics into a snapshot for CSV logging.
+// Since video_performance_summary() uses load() (not swap), the metrics
+// are still intact and will be properly captured by drain_metrics().
+    let snapshot = drain_metrics();
 
         // If render timing metadata is enabled, queue a metadata frame.
         if SEND_RENDER_TIMING_METADATA {
@@ -317,13 +352,6 @@ impl VideoReceiver {
 
 
 
-        // Compute audio queue depth in ms from pending packets.
-// RTP-queue proxy: this tracks the inbound RTP packet queue depth in milliseconds,
-// derived from pending packet sizes at 48 kHz 16-bit stereo (192000 bytes/sec).
-        // 48 kHz, 16-bit stereo: 1s = 192000 bytes.
-        let pending_bytes: usize = self.packets.iter().map(|p| p.len()).sum();
-        let queue_ms = (pending_bytes.saturating_mul(1000) / 192000) as u64;
-        METRICS.audio_queue_ms.store(queue_ms, Ordering::Relaxed);
         // Publish TWCC stride forensics (median sequence gap between annotated
         // packets) into the summary line rendered below.
         crate::streaming::video::metrics::METRICS

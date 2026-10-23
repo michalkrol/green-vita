@@ -166,6 +166,10 @@ impl AudioRenderer {
                 }
             }
         }
+        crate::streaming::video::metrics::METRICS.audio_queue_ms.store(
+            (self.queue.size() as u64).saturating_mul(1000) / 192_000,
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     fn restart_decode_worker(&mut self) {
@@ -180,7 +184,6 @@ impl AudioRenderer {
             Err(error) => eprintln!("Failed to restart audio decode worker: {error:#}"),
         }
     }
-}
 
 fn spawn_decode_worker() -> Result<(SyncSender<Bytes>, Receiver<Vec<i16>>)> {
     let (packets_tx, packets_rx) = sync_channel::<Bytes>(MAX_PENDING_OPUS_PACKETS);

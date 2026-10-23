@@ -89,13 +89,13 @@ pub(crate) struct VideoMetrics {
     pub(crate) stream_slip_max_us: AtomicU64,
     pub(crate) stream_slip_slope_mpm: AtomicI64,
     pub(crate) audio_queue_ms: AtomicU64,
-    pub(crate) vt_exit_count: u64,
-    pub(crate) vt_max_0: u64,
-    pub(crate) vt_max_1: u64,
-    pub(crate) vt_max_2: u64,
-    pub(crate) vt_max_3: u64,
-    pub(crate) vt_max_4: u64,
-    pub(crate) vt_max_5: u64,
+    pub(crate) vt_exit_count: AtomicU64,
+    pub(crate) vt_max_0: AtomicU64,
+    pub(crate) vt_max_1: AtomicU64,
+    pub(crate) vt_max_2: AtomicU64,
+    pub(crate) vt_max_3: AtomicU64,
+    pub(crate) vt_max_4: AtomicU64,
+    pub(crate) vt_max_5: AtomicU64,
     pub(crate) rtp_hold_saved: AtomicU64,
     pub(crate) rtp_hold_expired: AtomicU64,
     pub(crate) rtp_gaps: AtomicU64,
@@ -148,13 +148,13 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     stream_slip_max_us: AtomicU64::new(0),
     stream_slip_slope_mpm: AtomicI64::new(0),
     audio_queue_ms: AtomicU64::new(0),
-    vt_exit_count: 0,
-    vt_max_0: 0,
-    vt_max_1: 0,
-    vt_max_2: 0,
-    vt_max_3: 0,
-    vt_max_4: 0,
-    vt_max_5: 0,
+    vt_exit_count: AtomicU64::new(0),
+    vt_max_0: AtomicU64::new(0),
+    vt_max_1: AtomicU64::new(0),
+    vt_max_2: AtomicU64::new(0),
+    vt_max_3: AtomicU64::new(0),
+    vt_max_4: AtomicU64::new(0),
+    vt_max_5: AtomicU64::new(0),
     rtp_hold_saved: AtomicU64::new(0),
     rtp_hold_expired: AtomicU64::new(0),
     rtp_gaps: AtomicU64::new(0),
@@ -265,13 +265,13 @@ pub fn video_performance_summary() -> String {
     // HUD vt segment: vt_max_0..5 and vt_exit_count
     let vt_segment = format!(
         " vt_max:{}/{}/{}/{}/{}/{} vt_exit:{}",
-        METRICS.vt_max_0,
-        METRICS.vt_max_1,
-        METRICS.vt_max_2,
-        METRICS.vt_max_3,
-        METRICS.vt_max_4,
-        METRICS.vt_max_5,
-        METRICS.vt_exit_count,
+        METRICS.vt_max_0.load(Ordering::Relaxed),
+        METRICS.vt_max_1.load(Ordering::Relaxed),
+        METRICS.vt_max_2.load(Ordering::Relaxed),
+        METRICS.vt_max_3.load(Ordering::Relaxed),
+        METRICS.vt_max_4.load(Ordering::Relaxed),
+        METRICS.vt_max_5.load(Ordering::Relaxed),
+        METRICS.vt_exit_count.load(Ordering::Relaxed),
     );
     format!("{line1}\n{line2}{vt_segment}")
 }
@@ -302,13 +302,13 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         stream_slip_max_us: METRICS.stream_slip_max_us.swap(0, Ordering::Relaxed),
         stream_slip_slope_mpm: METRICS.stream_slip_slope_mpm.swap(0, Ordering::Relaxed),
         audio_queue_ms: METRICS.audio_queue_ms.swap(0, Ordering::Relaxed),
-        vt_exit_count: METRICS.vt_exit_count,
-        vt_max_0: METRICS.vt_max_0,
-        vt_max_1: METRICS.vt_max_1,
-        vt_max_2: METRICS.vt_max_2,
-        vt_max_3: METRICS.vt_max_3,
-        vt_max_4: METRICS.vt_max_4,
-        vt_max_5: METRICS.vt_max_5,
+        vt_exit_count: METRICS.vt_exit_count.swap(0, Ordering::Relaxed),
+        vt_max_0: METRICS.vt_max_0.swap(0, Ordering::Relaxed),
+        vt_max_1: METRICS.vt_max_1.swap(0, Ordering::Relaxed),
+        vt_max_2: METRICS.vt_max_2.swap(0, Ordering::Relaxed),
+        vt_max_3: METRICS.vt_max_3.swap(0, Ordering::Relaxed),
+        vt_max_4: METRICS.vt_max_4.swap(0, Ordering::Relaxed),
+        vt_max_5: METRICS.vt_max_5.swap(0, Ordering::Relaxed),
         rtp_hold_saved: METRICS.rtp_hold_saved.swap(0, Ordering::Relaxed),
         rtp_hold_expired: METRICS.rtp_hold_expired.swap(0, Ordering::Relaxed),
         rtp_gaps: METRICS.rtp_gaps.swap(0, Ordering::Relaxed),
@@ -362,6 +362,7 @@ pub(crate) fn reset_session_metrics() {
     METRICS.stream_lag_max_us.store(0, Ordering::Relaxed);
     METRICS.stream_slip_us.store(0, Ordering::Relaxed);
     METRICS.stream_slip_max_us.store(0, Ordering::Relaxed);
+    METRICS.stream_slip_slope_mpm.store(0, Ordering::Relaxed);
     METRICS.audio_queue_ms.store(0, Ordering::Relaxed);
     METRICS.rtp_hold_saved.store(0, Ordering::Relaxed);
     METRICS.rtp_hold_expired.store(0, Ordering::Relaxed);
@@ -391,6 +392,13 @@ pub(crate) fn reset_session_metrics() {
     METRICS.gap_hole.store(0, Ordering::Relaxed);
     METRICS.gap_au.store(0, Ordering::Relaxed);
     METRICS.gap_unknown.store(0, Ordering::Relaxed);
+    METRICS.vt_exit_count.store(0, Ordering::Relaxed);
+    METRICS.vt_max_0.store(0, Ordering::Relaxed);
+    METRICS.vt_max_1.store(0, Ordering::Relaxed);
+    METRICS.vt_max_2.store(0, Ordering::Relaxed);
+    METRICS.vt_max_3.store(0, Ordering::Relaxed);
+    METRICS.vt_max_4.store(0, Ordering::Relaxed);
+    METRICS.vt_max_5.store(0, Ordering::Relaxed);
 }
 
     /// Flush the RAM-buffered metrics CSV log to disk once at session end.
