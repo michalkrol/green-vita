@@ -17,7 +17,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(300);
-const PERIODIC_KEYFRAME_INTERVAL: Duration = Duration::from_millis(200);
+
 /// Sustained keyframe demand means recovery is failing; spamming PLI/IDR requests
 /// every 300 ms overloads the console encoder and deepens its backlog.
 const KEYFRAME_STORM_WINDOW: Duration = Duration::from_secs(4);
@@ -340,7 +340,10 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         if SUPPRESS_KEYFRAME_REQUESTS {
             return;
         }
-        if self.last_periodic_keyframe.is_some_and(|last| now.duration_since(last) < PERIODIC_KEYFRAME_INTERVAL) {
+        if crate::flags::PERIODIC_KEYFRAME_INTERVAL_MS == 0 {
+            return;
+        }
+        if self.last_periodic_keyframe.is_some_and(|last| now.duration_since(last) < std::time::Duration::from_millis(crate::flags::PERIODIC_KEYFRAME_INTERVAL_MS)) {
             return;
         }
         self.last_periodic_keyframe = Some(now);
