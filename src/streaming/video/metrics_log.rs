@@ -6,6 +6,10 @@
 //!
 //! CSV is written to ux0:data/xcloud-rust/metrics.csv at session teardown.
 //! During the session, zero touches ux0:.
+//!
+//! Build-time flag: when METRICS_CSV_LOGGING is false, no CSV file is
+//! created/opened/appended at any point. All in-memory metrics, HUD, and
+//! status-string behavior remain exactly as before.
 
 use super::metrics::{MetricsSnapshot, drain_metrics, reset_session_metrics};
 use std::io::Write;
@@ -15,6 +19,11 @@ use crate::settings::{ColorProfile, H264Profile};
 
 const GIT_SHA: &str = env!("GIT_SHA");
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Build-time flag: when false, MetricsCsvLog::new() returns a disabled
+/// state that guarantees zero file I/O (write_row always returns false,
+/// flush is a no-op). Default true so existing behavior is unchanged.
+pub const METRICS_CSV_LOGGING: bool = true;
 
 
 /// Extra per-tick values that live on the video receiver rather than in METRICS.
@@ -37,28 +46,40 @@ pub(crate) struct MetricsCsvLog {
     rows: Arc<Mutex<Vec<String>>>,
     /// Counter for rows that were dropped due to capacity limit.
     dropped_rows: usize,
+    /// Counter for rows that were rejected due to disabled logging.
+    rejected_rows: usize,
     /// Session start time, for timestamp computation.
     started_at: std::time::Instant,
-    // Session metadata (written as leading CSV columns)
+    /// When false, write_row/flush are no-ops guaranteeing zero file I/O.
+    enabled: bool,
+    /// Session metadata (written as leading CSV columns)
     color_profile: &'static str,
     h264_profile: &'static str,
 }
 
 impl MetricsCsvLog {
     /// Creates a new RAM-buffered log.
+    /// When METRICS_CSV_LOGGING is false, the returned log guarantees zero
+    /// file I/O (write_row always returns false, flush is a no-op).
     pub(crate) fn new(color_profile: ColorProfile, h264_profile: H264Profile) -> Self {
         Self {
             rows: Arc::new(Mutex::new(Vec::new())),
             dropped_rows: 0,
+            rejected_rows: 0,
             started_at: std::time::Instant::now(),
+            enabled: METRICS_CSV_LOGGING,
             color_profile: color_profile.as_str(),
             h264_profile: h264_profile.as_str(),
         }
     }
 
     /// Write a metrics snapshot as a CSV row into the RAM buffer.
-    /// Returns `true` if row was added, `false` if buffer was full and row was dropped.
+    /// Returns `true` if row was added, `false` if buffer was full or logging is disabled.
+    /// When disabled, no row is added and zero file I/O occurs.
     pub(crate) fn write_row(&mut self, snapshot: &MetricsSnapshot, extras: &super::metrics_log::RowExtras) -> bool {
+        if !self.enabled {
+            return false;
+        }
         let mut buffer = self.rows.lock().unwrap_or_else(|_| panic!("metrics_csv_log row mutex poisoned"));
         if buffer.len() >= MAX_ROWS {
             self.dropped_rows += 1;
@@ -152,7 +173,11 @@ impl MetricsCsvLog {
     /// Flush the entire buffer to ux0:data/xcloud-rust/metrics.csv.
     /// Must be called once at session end (from RtcWorker::drop).
     /// Tolerant of path being unavailable (off-device: silently skip).
+    /// When disabled, this is a no-op (zero file I/O).
     pub(crate) fn flush(&self) {
+        if !self.enabled {
+            return;
+        }
         let buffer = self.rows.lock().unwrap_or_else(|_| panic!("metrics_csv_log flush mutex poisoned"));
         let path = std::path::Path::new("ux0:data/xcloud-rust/metrics.csv");
         // Ensure directory exists (no-op if already exists on-device; off-device will fail)
