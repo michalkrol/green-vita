@@ -21,6 +21,12 @@ pub const PERIODIC_KEYFRAME_INTERVAL_MS: u64 = 1200;
 /// `if crate::flags::DECODE_PACE_SLEEP_MS > 0 { ... }`).
 pub const DECODE_PACE_SLEEP_MS: u64 = 13;
 
+/// AU-queue age bound (drop-OLDEST). 0 = disabled → v0.3.0 semantics: depth-reject only
+/// (reference-preserving). 150 = post-21f0c51 latency guardrail from the open-loop era;
+/// drop-oldest breaks H.264 references (mixed colours until next IDR) and is redundant
+/// while pace-sleep+depth-6 bound residence ≈100 ms.
+pub const AU_QUEUE_MAX_AGE_MS: u64 = 0;
+
 /// v0.3.0 recipe: adaptive AU queue depth limit (1..6 based on source fps) that produced
 /// queue-full drops→keyframe requests; false = fixed 8 + age-150ms path (post-21f0c51).
 /// When true: restore the original `pending_limit`/adaptive limit logic exactly as in

@@ -29,6 +29,7 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) stream_slip_max_us: u64,
     pub(crate) stream_slip_slope_mpm: i64,
     pub(crate) slip_reanchors: u64,
+    pub(crate) age_drops: u64,
     pub(crate) audio_queue_ms: u64,
     pub(crate) vt_exit_count: u64,
     pub(crate) vt_max_0: u64,
@@ -96,6 +97,7 @@ pub(crate) struct VideoMetrics {
     pub(crate) stream_slip_max_us: AtomicU64,
     pub(crate) stream_slip_slope_mpm: AtomicI64,
     pub(crate) slip_reanchors: AtomicU64,
+    pub(crate) age_drops: AtomicU64,
     pub(crate) audio_queue_ms: AtomicU64,
     pub(crate) vt_exit_count: AtomicU64,
     pub(crate) vt_max_0: AtomicU64,
@@ -162,6 +164,7 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     stream_slip_max_us: AtomicU64::new(0),
     stream_slip_slope_mpm: AtomicI64::new(0),
     slip_reanchors: AtomicU64::new(0),
+    age_drops: AtomicU64::new(0),
     audio_queue_ms: AtomicU64::new(0),
     vt_exit_count: AtomicU64::new(0),
     vt_max_0: AtomicU64::new(0),
@@ -328,6 +331,7 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         stream_slip_max_us: METRICS.stream_slip_max_us.swap(0, Ordering::Relaxed),
         stream_slip_slope_mpm: METRICS.stream_slip_slope_mpm.swap(0, Ordering::Relaxed),
         slip_reanchors: METRICS.slip_reanchors.swap(0, Ordering::Relaxed),
+        age_drops: METRICS.age_drops.swap(0, Ordering::Relaxed),
         audio_queue_ms: METRICS.audio_queue_ms.swap(0, Ordering::Relaxed),
         vt_exit_count: METRICS.vt_exit_count.swap(0, Ordering::Relaxed),
         vt_max_0: METRICS.vt_max_0.swap(0, Ordering::Relaxed),
@@ -420,6 +424,7 @@ pub(crate) fn reset_session_metrics() {
     METRICS.ext_ast_id.store(0, Ordering::Relaxed);
     METRICS.ext_vt_id.store(0, Ordering::Relaxed);
     METRICS.slip_reanchors.store(0, Ordering::Relaxed);
+    METRICS.age_drops.store(0, Ordering::Relaxed);
     METRICS.pli_submit.store(0, Ordering::Relaxed);
     METRICS.pli_gap.store(0, Ordering::Relaxed);
     METRICS.pli_expired.store(0, Ordering::Relaxed);

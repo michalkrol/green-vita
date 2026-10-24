@@ -161,19 +161,26 @@ impl VideoDecodeWorker {
             return false;
         }
 
-        // Check age bound: if oldest AU in queue exceeds AU_QUEUE_MAX_AGE, reject.
+        // Check age bound: if oldest AU in queue exceeds AU_QUEUE_MAX_AGE_MS, reject.
+        // When the flag is 0 (disabled), the age check never rejects — marker bookkeeping
+        // elsewhere may remain untouched. When >0, use the flag value as the threshold.
         let age_exceeded = {
             let marker_guard = self.oldest_au_marker.lock().unwrap_or_else(|e| e.into_inner());
             match *marker_guard {
                 Some(marker) => {
                     let age = marker.elapsed().as_millis() as u64;
-                    age > AU_QUEUE_MAX_AGE
+                    if crate::flags::AU_QUEUE_MAX_AGE_MS == 0 {
+                        false
+                    } else {
+                        age > crate::flags::AU_QUEUE_MAX_AGE_MS
+                    }
                 }
                 None => false,
             }
         };
 
         if age_exceeded {
+            metrics::METRICS.age_drops.fetch_add(1, Ordering::Relaxed);
             metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
             *self.oldest_au_marker.lock().unwrap_or_else(|e| e.into_inner()) = None;
             return false;
