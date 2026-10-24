@@ -13,3 +13,18 @@ pub const SEND_RENDER_TIMING_METADATA: bool = false;
 
 /// Cadence for the periodic keyframe (IDR) request while the periodic_keyframe setting is ON. 1200 ms ≈ the effective ~1/s IDR cadence that f1bf114's accidental drop→PLI valve produced (validated low-latency session); 200 was the old flood (5/s saturated the 3.5–5 Mbps hop and made latency 5× worse). 0 disables.
 pub const PERIODIC_KEYFRAME_INTERVAL_MS: u64 = 1200;
+
+/// v0.3.0 recipe: decode-loop pacing sleep (ms). 0 = full-speed decode (post-21f0c51 behavior).
+/// Restores the paced decode cadence that kept the AU queue shedding at ~1/s keyframes.
+/// When >0: the decode loop sleeps this long after each iteration exactly as 21f0c51^ did
+/// (same placement/statistics semantics as the original — copy the original code, gate with
+/// `if crate::flags::DECODE_PACE_SLEEP_MS > 0 { ... }`).
+pub const DECODE_PACE_SLEEP_MS: u64 = 13;
+
+/// v0.3.0 recipe: adaptive AU queue depth limit (1..6 based on source fps) that produced
+/// queue-full drops→keyframe requests; false = fixed 8 + age-150ms path (post-21f0c51).
+/// When true: restore the original `pending_limit`/adaptive limit logic exactly as in
+/// 21f0c51^'s submit path; when false: keep the current code path intact.
+/// Preserve the existing AU_QUEUE_MAX_AGE age-drop behavior in BOTH cases (do not remove
+/// the 150 ms age bound).
+pub const ADAPTIVE_AU_LIMIT: bool = true;

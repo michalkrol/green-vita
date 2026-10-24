@@ -133,7 +133,30 @@ impl VideoDecodeWorker {
         // len>0 → compare age vs marker; reset marker when queue observed empty.
         let was_empty = self.access_units.len() == 0;
 
-        if self.access_units.len() >= AU_QUEUE_MAX {
+        // Adaptive AU queue depth limit (v0.3.0 recipe).
+        // When ADAPTIVE_AU_LIMIT is true, compute pending_limit from source fps:
+        //   pending_limit = 1 + (max(0, source_fps - 30).min(25) * (8 - 1) + 12) / 25
+        // capped to 1..=8. When false, use fixed AU_QUEUE_MAX (8).
+        let pending_limit = if crate::flags::ADAPTIVE_AU_LIMIT {
+            // Original v0.3.0 adaptive range (from 21f0c51^): MIN=1, MAX=6.
+            const MIN_PENDING: usize = 1;
+            const MAX_PENDING: usize = 6;
+            let source_fps = source_frame_duration_us
+                .filter(|d| *d > 0)
+                .map(|d| 1_000_000 / d)
+                .unwrap_or(30);
+            let extra_capacity = source_fps
+                .saturating_sub(30)
+                .min(25)
+                .saturating_mul((MAX_PENDING - MIN_PENDING) as u64)
+                .saturating_add(12)
+                / 25;
+            (MIN_PENDING + extra_capacity as usize).clamp(MIN_PENDING, MAX_PENDING)
+        } else {
+            AU_QUEUE_MAX
+        };
+
+        if self.access_units.len() >= pending_limit {
             metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
             return false;
         }
@@ -237,6 +260,13 @@ fn run_decode_loop(
                     access_unit,
                     &direct_output,
                 );
+                // v0.3.0 decode-pace sleep: throttle the decode loop to prevent AU queue from filling.
+                // When DECODE_PACE_SLEEP_MS > 0, sleep after each iteration restoring the paced
+                // decode cadence that kept the AU queue shedding at ~1/s keyframes.
+                // 0 = full-speed decode (post-21f0c51 behavior).
+                if crate::flags::DECODE_PACE_SLEEP_MS > 0 {
+                    std::thread::sleep(Duration::from_millis(crate::flags::DECODE_PACE_SLEEP_MS));
+                }
             }
         }
     }
