@@ -3,6 +3,7 @@ use crate::api::streaming::rtc::session::RtcSessionConfig;
 use crate::api::streaming::rtc::worker::{RtcWorker, RtcWorkerProvider};
 use crate::api_xbox::streaming::rtc::protocol::XboxRtcProtocol;
 use crate::api_xbox::streaming::rtc::{AUDIO_PAYLOAD_TYPE, ROUTE_PROBE, STUN_SERVER, peer, sdp};
+use crate::flags::OFFER_VIDEO_EXTMAPS;
 use crate::streaming::audio::AUDIO_SAMPLE_RATE;
 use crate::streaming::video::{
     DEFAULT_VIDEO_FPS, DecoderConfig, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH, STREAM_HEIGHT,
@@ -52,7 +53,7 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
     async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<(String, Option<u8>, Option<u8>)> {
         let sdp = sdp::cap_video_bitrate(&offer.sdp, self.video_bitrate_kbps);
         let sdp = sdp::request_video_fps(&sdp, 30);
-        let sdp = if sdp::OFFER_VIDEO_EXTMAPS {
+        let sdp = if OFFER_VIDEO_EXTMAPS {
             sdp::inject_video_extmaps(&sdp)
         } else {
             sdp

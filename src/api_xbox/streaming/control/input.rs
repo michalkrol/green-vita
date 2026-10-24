@@ -5,6 +5,7 @@ use std::time::Duration;
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
+use crate::flags::SEND_RENDER_TIMING_METADATA;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -85,7 +86,6 @@ pub(crate) fn input_quiet_for(min_quiet: Duration) -> bool {
 static SESSION_START: OnceLock<Instant> = OnceLock::new();
 
 pub(crate) const SEND_METADATA: bool = true;
-pub(crate) const SEND_RENDER_TIMING_METADATA: bool = false; // Revert 55573ba4: metadata loop undone because "minimal values test best"; risk of re-introducing loss-recovery loops.
 
 /// Monotonic session-uptime milliseconds — the wire-format equivalent of the
 /// reference client's performance.now(). Our old header wrote per-packet elapsed

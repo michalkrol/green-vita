@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use crate::streaming::video::metrics::{drain_metrics, METRICS};
-use crate::api_xbox::streaming::control::input::{SEND_RENDER_TIMING_METADATA, queue_video_metadata};
+use crate::flags::SEND_RENDER_TIMING_METADATA;
+use crate::api_xbox::streaming::control::input::queue_video_metadata;
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
 const REMB_INTERVAL: Duration = Duration::from_millis(500);

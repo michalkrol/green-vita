@@ -12,6 +12,7 @@ mod latency_test;  // <-- added
 mod safe_memory;
 mod settings;
 mod shell;
+mod flags;
 mod streaming;
 
 use api_xbox::api::{

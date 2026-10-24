@@ -24,8 +24,8 @@ pub(super) fn extract_extmap_id(sdp: &str, uri: &str) -> Option<u8> {
 /// All other lines (audio, b=AS, codec lines, etc.) are left untouched.
 /// Build-time feature flag: offer abs-send-time(2) + video-timing(7) extmaps (Phase 1.1).
 /// Set false to restore the historical zero-extmap offer for A/B comparisons.
-pub const OFFER_VIDEO_EXTMAPS: bool = true;
-
+/// 
+/// The actual flag value is now defined in `crate::flags::OFFER_VIDEO_EXTMAPS`.
 pub(super) fn inject_video_extmaps(sdp: &str) -> String {
     let newline = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
     let trailing_newline = sdp.ends_with('\n');

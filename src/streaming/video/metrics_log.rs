@@ -15,16 +15,12 @@ use super::metrics::{MetricsSnapshot, drain_metrics, reset_session_metrics};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
+use crate::flags::METRICS_CSV_LOGGING;
+
 use crate::settings::{ColorProfile, H264Profile};
 
 const GIT_SHA: &str = env!("GIT_SHA");
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Build-time flag: when false, MetricsCsvLog::new() returns a disabled
-/// state that guarantees zero file I/O (write_row always returns false,
-/// flush is a no-op). Default true so existing behavior is unchanged.
-pub const METRICS_CSV_LOGGING: bool = true;
-
 
 /// Extra per-tick values that live on the video receiver rather than in METRICS.
 pub(crate) struct RowExtras {
