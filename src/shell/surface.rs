@@ -1,6 +1,6 @@
 use crate::app::StreamingSession;
 use crate::shell::egui_painter::SdlEguiPainter;
-use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget, NUM_TEXTURES};
+use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget, NUM_TEXTURES, metrics::METRICS};
 use crate::settings::ColorProfile;
 use anyhow::{Context, Result};
 use sdl2::pixels::PixelFormatEnum;

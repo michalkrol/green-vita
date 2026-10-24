@@ -26,7 +26,7 @@ fn extract_field(status: &str, key: &str) -> String {
 /// Uses static cached rows; the matrix is recomputed no more than once per 250 ms window.
 /// Each row is a fixed-width cell: padded label + right-aligned value, so when a value's
 /// width changes only that cell's interior shifts and nothing layout-shifts.
-    fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<String> {
+    fn build_debug_rows(status: &str, _settings: &crate::settings::Settings) -> Vec<String> {
         static CACHED_ROWS: std::sync::Mutex<(String, String, Vec<String>)> = std::sync::Mutex::new((
             String::new(),
             String::new(),
@@ -43,8 +43,9 @@ fn extract_field(status: &str, key: &str) -> String {
         // Key on status string + color value (settings-derived field actually used in rows).
         if cached.0 == status && cached.1 == color_val {
             // Status string and color unchanged; return clone of cached rows
+            let rows = cached.2.clone();
             drop(cached);
-            return cached.2.clone();
+            return rows;
         }
         drop(cached);
 

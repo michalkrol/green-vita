@@ -306,10 +306,10 @@ impl VideoRtp {
             // Store as u64 using wrapping arithmetic so negative values
             // are represented as two's-complement (analyzer _unwrap_slip()
             // converts values > 2^63 back to signed ms).
-            METRICS.stream_slip_us.store(slip_ms as u64, Ordering::Relaxed);
+            METRICS.stream_slip_us.store(slip_us as u64, Ordering::Relaxed);
             // Maximum slip observed during the session (max of positive slips).
-            if slip_ms > 0 {
-                METRICS.stream_slip_max_us.fetch_max(slip_ms as u64, Ordering::Relaxed);
+            if slip_us > 0 {
+                METRICS.stream_slip_max_us.fetch_max(slip_us as u64, Ordering::Relaxed);
             }
             // One-shot base slope: capture once when wall-time since anchor ≥ 60 s.
             let anchor_age_secs = self.stream_clock_anchor

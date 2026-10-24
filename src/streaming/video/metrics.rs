@@ -92,6 +92,7 @@ pub(crate) struct VideoMetrics {
     pub(crate) stream_slip_max_us: AtomicU64,
     pub(crate) stream_slip_slope_mpm: AtomicI64,
     pub(crate) slip_reanchors: AtomicU64,
+    pub(crate) audio_queue_ms: AtomicU64,
     pub(crate) vt_exit_count: AtomicU64,
     pub(crate) vt_max_0: AtomicU64,
     pub(crate) vt_max_1: AtomicU64,
@@ -247,6 +248,7 @@ pub fn video_performance_summary() -> String {
         METRICS.audio_queue_ms.load(Ordering::Relaxed),
         METRICS.stream_slip_us.load(Ordering::Relaxed),
         METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed),
+        METRICS.slip_reanchors.load(Ordering::Relaxed),
     );
     let line2 = format!(
         "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{} ps:{present_us} psPk:{present_max_us} pli:{} plf:{} pv:{} pvM:{}",

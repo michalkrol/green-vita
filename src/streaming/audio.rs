@@ -184,6 +184,7 @@ impl AudioRenderer {
             Err(error) => eprintln!("Failed to restart audio decode worker: {error:#}"),
         }
     }
+}
 
 fn spawn_decode_worker() -> Result<(SyncSender<Bytes>, Receiver<Vec<i16>>)> {
     let (packets_tx, packets_rx) = sync_channel::<Bytes>(MAX_PENDING_OPUS_PACKETS);
