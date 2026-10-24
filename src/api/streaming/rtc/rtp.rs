@@ -301,7 +301,7 @@ impl VideoRtp {
 
         // Drift instrumentation: accumulate slip metric from the latest video packet.
         if let Some(slip) = self.stream_slip() {
-            let (slip_ms, _wall_ms, media_ms) = slip;
+            let (slip_us, _wall_us, media_us) = slip;
             // Current slip (updated every packet; HUD reads this value).
             // Store as u64 using wrapping arithmetic so negative values
             // are represented as two's-complement (analyzer _unwrap_slip()
@@ -318,15 +318,16 @@ impl VideoRtp {
                 && anchor_age_secs >= 60.0
             {
                 // Session-fixed base: never re-based for the duration of this session.
-                METRICS.stream_slip_slope_mpm.store(slip_ms as i64, Ordering::Relaxed);
+                METRICS.stream_slip_slope_mpm.store(slip_us as i64, Ordering::Relaxed);
             } else if METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) != 0
             {
                 // Compute running slope relative to the base captured at ~60 s.
                 // slope in ms/min: (delta_us * 60) / (1000 * elapsed_s)
-                let base_slip = METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) as u64;
+                // With µs inputs, this correctly yields ms/min
+                let base_slip = METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) as i64;
                 let elapsed_s = anchor_age_secs - 60.0; // seconds after the 60s base point
                 if elapsed_s > 1.0 {
-                    let delta_us = slip_ms as i64 - base_slip as i64;
+                    let delta_us = slip_us as i64 - base_slip;
                     let slope_mpm = (delta_us as f64 * 60.0) / (1000.0 * elapsed_s);
                     METRICS.stream_slip_slope_mpm.store(slope_mpm.round() as i64, Ordering::Relaxed);
                 }
@@ -434,17 +435,20 @@ impl VideoRtp {
     }
     
     pub(crate) fn flush_expired(&mut self, _worker: &VideoDecodeWorker, _kr: &mut bool, _stats: &mut crate::api::streaming::rtc::rtp::VideoSampleStats) {}
-    pub(crate) fn reset_lag_anchor(&mut self) { self.stream_clock_anchor = None; }
-    /// Drift instrumentation: (slip_ms, wall_ms, media_ms).  slip = wall time
+    /// Reset lag anchor is a no-op for re-anchoring mid-session.
+    /// The media-clock anchor is set ONCE per streaming session at session start.
+    /// Callers may invoke this without affecting the session-fixed anchor.
+    pub(crate) fn reset_lag_anchor(&mut self) { }
+    /// Drift instrumentation: (slip_us, wall_us, media_us).  slip = wall time in microseconds
     /// since the session anchor minus media time (RTP clock at 90 kHz) advanced
     /// since the anchor.  A flat slope means arrivals keep pace with the media
     /// timeline; a growing slope means they increasingly fall behind.
     pub(crate) fn stream_slip(&self) -> Option<(i64, i64, i64)> {
         let (anchor_at, anchor_ts) = self.stream_clock_anchor?;
         let (arrival_at, arrival_ts) = self.latest_rtp?;
-        let wall_ms = arrival_at.duration_since(anchor_at).as_millis() as i64;
-        let media_ms = (arrival_ts.wrapping_sub(anchor_ts) as i64) * 1000 / 90;
-        Some((wall_ms - media_ms, wall_ms, media_ms))
+        let wall_us = arrival_at.duration_since(anchor_at).as_micros() as i64;
+        let media_us = (arrival_ts.wrapping_sub(anchor_ts) as i64) * 1_000_000 / 90;
+        Some((wall_us - media_us, wall_us, media_us))
     }
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
     pub(crate) fn twcc_median_stride(&self) -> u16 { 0 }

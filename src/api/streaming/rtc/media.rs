@@ -177,11 +177,11 @@ impl VideoReceiver {
         }
     }
 
-    /// Re-baseline the glass-lag measurement (e.g. after a backlog flush) without
-    /// touching decoder or keyframe state.
-    pub(crate) fn reset_lag_anchor(&mut self) {
-        self.rtp.reset_lag_anchor();
-    }
+    /// Resetting the lag anchor mid-session is a no-op (anchor is session-fixed).
+    /// The media-clock anchor is set ONCE per streaming session at session start.
+    /// No-op: the media-clock anchor is session-fixed and never re-formed mid-session.
+    /// This function exists for API compatibility only.
+    pub(crate) fn reset_lag_anchor(&mut self) { }
 
     pub(crate) fn request_keyframe(&self, peer: &mut RTCPeerConnection) {        // A PLI needs both identifiers recorded when the remote video track was opened.
         if let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc)

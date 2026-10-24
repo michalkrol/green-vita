@@ -372,6 +372,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             "stream flush: lag={lag_us}us drops_since={drops_since_flush} total={total_drops}"
         );
         METRICS.flushes.fetch_add(1, Ordering::Relaxed);
+        METRICS.slip_reanchors.fetch_add(1, Ordering::Relaxed);
         self.backend.notify_stream_flush(&mut self.peer);
         self.video.reset_lag_anchor();
     }
