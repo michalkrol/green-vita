@@ -56,6 +56,9 @@ pub(crate) struct VideoReceiver {
     last_twcc_at: Option<Instant>,
     twcc_fb_pkt_count: u8,
     stats: VideoStats,
+    /// Trailing ~10 s minimum window for qd_rel (one sample per 1 Hz status tick).
+    qd_window: [i64; 10],
+    qd_window_i: usize,
     direct_output: Arc<DirectVideoOutput>,
 }
 
@@ -86,6 +89,8 @@ impl VideoReceiver {
             last_twcc_at: None,
             twcc_fb_pkt_count: 0,
             stats: VideoStats::default(),
+            qd_window: [0; 10],
+            qd_window_i: 0,
             direct_output,
         }
     }
@@ -99,6 +104,12 @@ impl VideoReceiver {
         self.track_id = Some(track_id);
         self.receiver_id = Some(receiver_id);
         self.ssrc = Some(ssrc);
+    }
+
+    /// Thread negotiated header extension ids (abs-send-time and video-timing) into the
+    /// VideoRtp parser. vt_id defaults to 7 if not set; ast_id enables/disables probe.
+    pub fn set_negotiated_ext_ids(&mut self, ast_id: Option<u8>, vt_id: Option<u8>) {
+        self.rtp.set_negotiated_ext_ids(ast_id, vt_id);
     }
 
     pub(crate) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {
@@ -302,6 +313,29 @@ impl VideoReceiver {
     // Reset the per-window census so the next status() call starts fresh.
     self.rtp.vt_max = [0; 6];
     self.rtp.vt_exit_count = 0;
+
+    // qd_rel: sample qd once per 1 Hz tick; store qd − min(trailing ~10 s window).
+    let qd_sample = crate::streaming::video::metrics::METRICS.qd_us.load(
+        std::sync::atomic::Ordering::Relaxed,
+    ) as i64;
+    if qd_sample != 0 {
+        let slot = self.qd_window_i % 10;
+        self.qd_window[slot] = qd_sample;
+        self.qd_window_i += 1;
+        let min_v = if self.qd_window_i <= 10 {
+            self.qd_window[..self.qd_window_i]
+                .iter()
+                .copied()
+                .min()
+                .unwrap_or(qd_sample)
+        } else {
+            self.qd_window.iter().copied().min().unwrap_or(qd_sample)
+        };
+        crate::streaming::video::metrics::METRICS.qd_rel_us.store(
+            (qd_sample - min_v) as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
 
 // Read current metrics for HUD display first (without draining).
 // The actual draining happens later for CSV logging.

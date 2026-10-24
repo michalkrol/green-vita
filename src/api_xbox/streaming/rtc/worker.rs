@@ -49,14 +49,19 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
         }
     }
 
-    async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<String> {
+    async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<(String, Option<u8>, Option<u8>)> {
         let sdp = sdp::cap_video_bitrate(&offer.sdp, self.video_bitrate_kbps);
         let sdp = sdp::request_video_fps(&sdp, 30);
+        let sdp = if sdp::OFFER_VIDEO_EXTMAPS {
+            sdp::inject_video_extmaps(&sdp)
+        } else {
+            sdp
+        };
         let answer = self.stream.send_sdp_offer(&sdp).await?;
-        let twcc_id = sdp::extract_extmap_id(&answer, super::peer::TWCC_URI).unwrap_or(0);
-        eprintln!("negotiated twcc ext id: {twcc_id}");
-        crate::api::streaming::rtc::rtp::set_negotiated_twcc_ext_id(twcc_id);
-        Ok(answer)
+        let ast_id = sdp::extract_extmap_id(&answer, "urn:ietf:params:rtp-hdrext:abs-send-time");
+        let vt_id = sdp::extract_extmap_id(&answer, "urn:ietf:params:rtp-hdrext:video-timing");
+        eprintln!("negotiated ast ext id: {ast_id:?} vt ext id: {vt_id:?}");
+        Ok((answer, ast_id, vt_id))
     }
 }
 

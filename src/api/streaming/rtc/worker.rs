@@ -27,7 +27,7 @@ pub(crate) trait RtcWorkerProvider: Send + 'static {
 
     fn create_peer(&self) -> Result<(FeedbackPeer, Self::Protocol)>;
     fn session_config(&self) -> RtcSessionConfig;
-    async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<String>;
+    async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<(String, Option<u8>, Option<u8>)>;
 }
 
 pub enum RtcWorkerEvent {
@@ -172,10 +172,12 @@ fn run_worker_thread<P: RtcWorkerProvider>(
         let mut session = RtcSession::new(peer, backend, config, direct_video_output).await?;
 
         let offer = session.create_offer()?;
-        let answer_sdp =
+        let (answer_sdp, ast_id, vt_id) =
             tokio::time::timeout(SDP_NEGOTIATION_TIMEOUT, provider.exchange_sdp(&offer))
                 .await
                 .context("timed out waiting for RTC SDP answer")??;
+        // Thread negotiated header extension ids into the session VideoReceiver
+        session.set_negotiated_ext_ids(ast_id, vt_id)?;
         session.set_remote_answer(answer_sdp)?;
         #[cfg(target_os = "vita")]
         prioritize_rtc_thread();

@@ -18,6 +18,39 @@ pub(super) fn extract_extmap_id(sdp: &str, uri: &str) -> Option<u8> {
     None
 }
 
+/// Injects the two required header-ext map lines into the VIDEO m-section of an SDP offer:
+///   a=extmap:2 urn:ietf:params:rtp-hdrext:abs-send-time
+///   a=extmap:7 urn:ietf:params:rtp-hdrext:video-timing
+/// All other lines (audio, b=AS, codec lines, etc.) are left untouched.
+/// Build-time feature flag: offer abs-send-time(2) + video-timing(7) extmaps (Phase 1.1).
+/// Set false to restore the historical zero-extmap offer for A/B comparisons.
+pub const OFFER_VIDEO_EXTMAPS: bool = true;
+
+pub(super) fn inject_video_extmaps(sdp: &str) -> String {
+    let newline = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
+    let trailing_newline = sdp.ends_with('\n');
+    let lines: Vec<String> = sdp.lines().map(|l| l.trim_end_matches('\r').to_owned()).collect();
+    let mut output = Vec::with_capacity(lines.len() + 2);
+    let mut injected = false;
+
+    for line in &lines {
+        output.push(line.clone());
+        // After we encounter the video m-line, inject the two extmap lines once.
+        if !injected && line.starts_with("m=video ") {
+            injected = true;
+            // Insert extmap lines after the m=video line
+            output.push("a=extmap:2 urn:ietf:params:rtp-hdrext:abs-send-time".to_owned());
+            output.push("a=extmap:7 urn:ietf:params:rtp-hdrext:video-timing".to_owned());
+        }
+    }
+
+    let mut result = output.join(newline);
+    if trailing_newline && !result.ends_with(newline) {
+        result.push_str(newline);
+    }
+    result
+}
+
 /// Removes advisory `a=framerate` attributes from the video section (browser
 /// parity: browsers never send this line). The console ignores fps declarations
 /// at the app layer yet emits ~58-62 AUs/s regardless; if it paces egress by the
@@ -185,5 +218,111 @@ mod tests {
     fn leaves_sdp_without_h264_untouched() {
         let offer = "v=0\nm=audio 9 UDP/TLS/RTP/SAVPF 111\n";
         assert_eq!(cap_video_bitrate(offer, 8_000), offer);
+    
+
+    #[test]
+    fn offer_injects_abs_send_time_and_video_timing_extmaps() {
+        let offer = concat!(
+            "v=0
+",
+            "m=video 9 UDP/TLS/RTP/SAVPF 102
+",
+            "a=rtpmap:102 H264/90000
+",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111
+",
+            "a=rtpmap:111 opus/48000/2
+",
+        );
+
+        let with_extmaps = inject_video_extmaps(offer);
+
+        // Verify both extmap lines are present in the video section
+        assert!(
+            with_extmaps.contains("a=extmap:2 urn:ietf:params:rtp-hdrext:abs-send-time"),
+            "Offer should contain extmap:2 abs-send-time URI"
+        );
+        assert!(
+            with_extmaps.contains("a=extmap:7 urn:ietf:params:rtp-hdrext:video-timing"),
+            "Offer should contain extmap:7 video-timing URI"
+        );
+
+        // Verify correct URIs
+        assert!(
+            with_extmaps.contains("urn:ietf:params:rtp-hdrext:abs-send-time"),
+            "Offer should use canonical abs-send-time URI"
+        );
+        assert!(
+            with_extmaps.contains("urn:ietf:params:rtp-hdrext:video-timing"),
+            "Offer should use canonical video-timing URI"
+        );
     }
+
+    #[test]
+    fn offer_contains_no_transport_cc_extmap_after_injection() {
+        let offer = concat!(
+            "v=0
+",
+            "m=video 9 UDP/TLS/RTP/SAVPF 102
+",
+            "a=rtpmap:102 H264/90000
+",
+            "b=AS:2500
+",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111
+",
+            "a=rtpmap:111 opus/48000/2
+",
+        );
+
+        let with_extmaps = inject_video_extmaps(offer);
+
+        // Should NOT contain transport-cc related extmaps
+        assert!(
+            !with_extmaps.contains("extmap:3"),
+            "Offer should not contain transport-cc extmap after injection"
+        );
+        assert!(
+            !with_extmaps.contains("a=rtcp-fb:"),
+            "Offer should not contain rtcp-fb lines after injection"
+        );
+        // b=AS should still be present
+        assert!(
+            with_extmaps.contains("b=AS:2500"),
+            "b=AS bandwidth line should be preserved after extmap injection"
+        );
+    }
+
+    #[test]
+    fn offer_other_content_unchanged_by_extmap_injection() {
+        let offer = concat!(
+            "v=0
+",
+            "m=video 9 UDP/TLS/RTP/SAVPF 102
+",
+            "a=rtpmap:102 H264/90000
+",
+            "b=AS:2500
+",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111
+",
+            "a=rtpmap:111 opus/48000/2
+",
+        );
+
+        let with_extmaps = inject_video_extmaps(offer);
+
+        // b=AS should still be present and in the right position (before audio m-line)
+        let video_end = with_extmaps.find("m=audio").unwrap();
+        assert!(
+            with_extmaps.contains("b=AS:2500"),
+            "b=AS should still be in video section after injection"
+        );
+        // Audio section should be untouched
+        assert!(
+            with_extmaps.contains("a=rtpmap:111 opus/48000/2"),
+            "Audio rtpmap should be unchanged"
+        );
+    }
+}
 }

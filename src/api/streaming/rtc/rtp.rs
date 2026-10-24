@@ -70,6 +70,12 @@ pub(crate) struct VideoRtp {
     /// Drift instrumentation: (arrival, RTP timestamp) of the newest video
     /// packet seen; used by stream_slip() for the accumulation trend.
     latest_rtp: Option<(Instant, u32)>,
+    /// Negotiated header extension ids from the SDP answer.
+    /// vt_ext_id defaults to 7 (video-timing), ast_ext_id defaults to None (probe off).
+    pub(crate) vt_ext_id: u8,
+    pub(crate) ast_ext_id: Option<u8>,
+    /// Last unwrapped abs-send-time high bits and wall clock for 24-bit wrap tracking.
+    last_abs_send_time: Option<(i64, i64)>,
     /// Drift instrumentation: per-window max of each video-timing (extmap id 7)
     /// stage delta (ms: encode-start, encode-finish, packetization, pacer-exit,
     /// network, network2) plus the sample count.
@@ -177,11 +183,30 @@ impl VideoRtp {
             waiting_for_keyframe: false,
             stream_clock_anchor: None,
             latest_rtp: None,
+            vt_ext_id: 7,
+            ast_ext_id: None,
+            last_abs_send_time: None,
             slip_slope_base: None,
             vt_max: [0; 6],
             vt_exit_count: 0,
             total_bytes: 0,
         }
+    }
+
+    /// Thread negotiated header extension ids into this VideoRtp.
+    /// vt_id: video-timing extension id (default 7 if None).
+    /// ast_id: abs-send-time extension id (None = probe off).
+    pub fn set_negotiated_ext_ids(&mut self, ast_id: Option<u8>, vt_id: Option<u8>) {
+        if let Some(id) = vt_id {
+            self.vt_ext_id = id;
+        }
+        self.ast_ext_id = ast_id;
+        crate::streaming::video::metrics::METRICS
+            .ext_ast_id
+            .store(ast_id.map_or(0, |v| v as u64), Ordering::Relaxed);
+        crate::streaming::video::metrics::METRICS
+            .ext_vt_id
+            .store(vt_id.map_or(0, |v| v as u64), Ordering::Relaxed);
     }
 
     pub(super) fn waiting_for_keyframe(&self) -> bool {
@@ -240,8 +265,9 @@ impl VideoRtp {
                 stats.dropped = stats.dropped.saturating_add(1);
             }
         }
-        // Video-timing census (extmap id=7): parse six 16-bit stage deltas.
-        if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == 7)
+        // Video-timing census (extmap id = negotiated vt_ext_id): parse six 16-bit stage deltas.
+        let vt_ext = self.vt_ext_id;
+        if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == vt_ext)
             && ext.payload.len() == 13
         {
             for (i, slot) in self.vt_max.iter_mut().enumerate() {
@@ -251,6 +277,37 @@ impl VideoRtp {
             self.vt_exit_count += 1;
         }
 
+        // abs-send-time census (extmap id = negotiated ast_ext_id).
+        // 3-byte value, 24-bit at 64 Hz. qd_us = arrival wall (since anchor) − send time
+        // (constant offset absorbed by the analyzer/media.rs qd_rel trailing minimum).
+        // 24-bit wraps every 64.4 s → extend against previous raw via signed shortest step.
+        // When ast_ext_id NOT negotiated: qd stays 0.
+        if let Some(ast_id) = self.ast_ext_id {
+            if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == ast_id)
+                && ext.payload.len() >= 3
+            {
+                let raw_24bit = u32::from_be_bytes([
+                    ext.payload[0], ext.payload[1], ext.payload[2], 0,
+                ]) & 0xFFFFFF;
+                let wall_us = self.stream_clock_anchor
+                    .map_or(0, |(anchor_at, _)| anchor_at.elapsed().as_micros() as i64);
+                let unwrapped = match self.last_abs_send_time {
+                    Some((prev_unwrapped, prev_raw)) => {
+                        let diff = raw_24bit.wrapping_sub(prev_raw as u32);
+                        let delta = (((diff + 0x800000) & 0xFFFFFF) as i64) - 0x800000;
+                        prev_unwrapped + delta
+                    }
+                    None => raw_24bit as i64,
+                };
+                // (unwrapped, raw) so the next packet can extend across wraps.
+                self.last_abs_send_time = Some((unwrapped, raw_24bit as i64));
+                let ast_us = unwrapped * 1_000_000 / 64;
+                let qd_us = wall_us - ast_us;
+                crate::streaming::video::metrics::METRICS
+                    .qd_us
+                    .store(qd_us as u64, Ordering::Relaxed);
+            }
+        }
         if self.pending.is_none() {
             if self
                 .last_frame_timestamp
@@ -447,7 +504,9 @@ impl VideoRtp {
         let (anchor_at, anchor_ts) = self.stream_clock_anchor?;
         let (arrival_at, arrival_ts) = self.latest_rtp?;
         let wall_us = arrival_at.duration_since(anchor_at).as_micros() as i64;
-        let media_us = (arrival_ts.wrapping_sub(anchor_ts) as i64) * 1_000_000 / 90;
+        // RTP video clock is 90 kHz: µs = ticks × 1_000_000 / 90_000.
+        // (The previous `/ 90` inflated media time 1000× — same bug as the old ms form.)
+        let media_us = (arrival_ts.wrapping_sub(anchor_ts) as i64) * 1_000_000 / 90_000;
         Some((wall_us - media_us, wall_us, media_us))
     }
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
