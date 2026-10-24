@@ -216,7 +216,11 @@ impl VitaSurface {
             primitives,
             textures_delta,
         )?;
+        let start = std::time::Instant::now();
         self.canvas.present();
+        let present_us = start.elapsed().as_micros() as u64;
+        METRICS.present_us.store(present_us, Ordering::Relaxed);
+        METRICS.present_max_us.fetch_max(present_us, Ordering::Relaxed);
         Ok(())
     }
 

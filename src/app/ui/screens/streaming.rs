@@ -26,18 +26,28 @@ fn extract_field(status: &str, key: &str) -> String {
 /// Uses static cached rows; the matrix is recomputed no more than once per 250 ms window.
 /// Each row is a fixed-width cell: padded label + right-aligned value, so when a value's
 /// width changes only that cell's interior shifts and nothing layout-shifts.
-fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<String> {
-    static LAST_REBUILD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    static CACHED_ROWS: std::sync::atomic::AtomicPtr<Vec<String>> = std::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+    fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<String> {
+        static CACHED_ROWS: std::sync::Mutex<(String, String, Vec<String>)> = std::sync::Mutex::new((
+            String::new(),
+            String::new(),
+            Vec::new(),
+        ));
 
-    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-    let last = LAST_REBUILD.load(std::sync::atomic::Ordering::Relaxed);
-    let cached_ptr = CACHED_ROWS.load(std::sync::atomic::Ordering::Relaxed);
+        // Extract settings-derived color value for cache key.
+        // The rows depend on the color profile, so we key on both the status string
+        // and the extracted color value so the cache invalidates when either changes.
+        let cs = extract_field(status, "cs:");
+        let color_val = if cs.is_empty() { "BT.709".to_string() } else { cs };
 
-    // Rebuild if no cached rows or if 250 ms has elapsed since last rebuild.
-    if cached_ptr.is_null() || now_ms.saturating_sub(last) > 250 {
+        let cached = CACHED_ROWS.lock().unwrap();
+        // Key on status string + color value (settings-derived field actually used in rows).
+        if cached.0 == status && cached.1 == color_val {
+            // Status string and color unchanged; return clone of cached rows
+            drop(cached);
+            return cached.2.clone();
+        }
+        drop(cached);
+
         let f = |key: &str| extract_field(status, key);
         let dp = f("d/p:");
         let da = f("d/a:");
@@ -54,14 +64,12 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
         let pick = f("pick:");
         let enc = f("enc:");
         let err = f("err:");
-        let cs = f("cs:");
 
         const LABEL_WIDTH: usize = 16;
         const VALUE_WIDTH: usize = 8;
 
         let res = if enc.is_empty() { "?".to_string() } else { enc };
         let err_val = if err.is_empty() { "0".to_string() } else { err };
-        let color_val = if cs.is_empty() { "BT.709".to_string() } else { cs };
 
         let new_rows: Vec<String> = vec![
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Dec/Pres:{}", dp), format!("Dec/Pip:{}ms", da)),
@@ -75,23 +83,15 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Color:{}", color_val), format!("Err:{}", err_val)),
         ];
 
-        // Free any previously cached rows and store the new ones.
-        let _ = CACHED_ROWS.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
-        let _ = LAST_REBUILD.store(now_ms, std::sync::atomic::Ordering::Relaxed);
-        let _boxed = Box::into_raw(Box::new(new_rows.clone()));
-        CACHED_ROWS.store(_boxed, std::sync::atomic::Ordering::Relaxed);
+        // Update the cache with new status string, color value, and rows
+        let mut cached = CACHED_ROWS.lock().unwrap();
+        cached.0 = status.to_string();
+        cached.1 = color_val;
+        cached.2 = new_rows.clone();
+        drop(cached);
 
         new_rows
-    } else {
-        // Return a clone of the cached rows.
-        if !cached_ptr.is_null() {
-            unsafe { (*cached_ptr).clone() }
-        } else {
-            build_debug_rows(status, settings)
-        }
     }
-}
-
 /// Fullscreen video view with debug overlays.
 pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
     const HINT_VISIBLE: std::time::Duration = std::time::Duration::from_secs(2);

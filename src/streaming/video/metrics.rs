@@ -28,6 +28,7 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) stream_slip_us: u64,
     pub(crate) stream_slip_max_us: u64,
     pub(crate) stream_slip_slope_mpm: i64,
+    pub(crate) slip_reanchors: u64,
     pub(crate) audio_queue_ms: u64,
     pub(crate) vt_exit_count: u64,
     pub(crate) vt_max_0: u64,
@@ -55,6 +56,8 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) video_bandwidth_kbps: u64,
     pub(crate) display_pickup_us: u64,
     pub(crate) display_pickup_max_us: u64,
+    pub(crate) present_us: u64,
+    pub(crate) present_max_us: u64,
     /// PLI (Picture Loss Indicator) counters per trigger
     pub(crate) pli_submit: u64,
     pub(crate) pli_gap: u64,
@@ -88,7 +91,7 @@ pub(crate) struct VideoMetrics {
     pub(crate) stream_slip_us: AtomicU64,
     pub(crate) stream_slip_max_us: AtomicU64,
     pub(crate) stream_slip_slope_mpm: AtomicI64,
-    pub(crate) audio_queue_ms: AtomicU64,
+    pub(crate) slip_reanchors: AtomicU64,
     pub(crate) vt_exit_count: AtomicU64,
     pub(crate) vt_max_0: AtomicU64,
     pub(crate) vt_max_1: AtomicU64,
@@ -115,6 +118,8 @@ pub(crate) struct VideoMetrics {
     pub(crate) video_bandwidth_kbps: AtomicU64,
     pub(crate) display_pickup_us: AtomicU64,
     pub(crate) display_pickup_max_us: AtomicU64,
+    pub(crate) present_us: AtomicU64,
+    pub(crate) present_max_us: AtomicU64,
     pub(crate) pli_submit: AtomicU64,
     pub(crate) pli_gap: AtomicU64,
     pub(crate) pli_expired: AtomicU64,
@@ -147,6 +152,7 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     stream_slip_us: AtomicU64::new(0),
     stream_slip_max_us: AtomicU64::new(0),
     stream_slip_slope_mpm: AtomicI64::new(0),
+    slip_reanchors: AtomicU64::new(0),
     audio_queue_ms: AtomicU64::new(0),
     vt_exit_count: AtomicU64::new(0),
     vt_max_0: AtomicU64::new(0),
@@ -174,6 +180,8 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     video_bandwidth_kbps: AtomicU64::new(0),
     display_pickup_us: AtomicU64::new(0),
     display_pickup_max_us: AtomicU64::new(0),
+    present_us: AtomicU64::new(0),
+    present_max_us: AtomicU64::new(0),
     /// PLI (Picture Loss Indicator) counters per trigger
     pli_submit: AtomicU64::new(0),
     pli_gap: AtomicU64::new(0),
@@ -218,9 +226,11 @@ pub fn video_performance_summary() -> String {
     let rtp_count = METRICS.rtp_assembly_count.load(Ordering::Relaxed);
     let rtp_average = rtp_sum.checked_div(rtp_count).unwrap_or(0);
     let rtp_max = METRICS.rtp_assembly_max_us.load(Ordering::Relaxed);
+    let present_us = METRICS.present_us.load(Ordering::Relaxed);
+    let present_max_us = METRICS.present_max_us.load(Ordering::Relaxed);
     // Two lines: the HUD label clips long single-line output on the Vita panel.
     let line1 = format!(
-        "d/p:{}/{} d/a:{}/{} skip:{} cap:{} repl:{} q:{} hwb:{} ageMax:{} lag:{} lagMax:{} bw:{} aq:{} slip:{} slipS:{}",
+        "d/p:{}/{} d/a:{}/{} skip:{} cap:{} repl:{} q:{} hwb:{} ageMax:{} lag:{} lagMax:{} bw:{} aq:{} slip:{} slipS:{} sa:{}",
         METRICS.decoded.load(Ordering::Relaxed),
         METRICS.presented.load(Ordering::Relaxed),
         METRICS.decode_us.load(Ordering::Relaxed) / 1000,
@@ -239,7 +249,7 @@ pub fn video_performance_summary() -> String {
         METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed),
     );
     let line2 = format!(
-        "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{} pli:{} plf:{} pv:{} pvM:{}",
+        "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{} ps:{present_us} psPk:{present_max_us} pli:{} plf:{} pv:{} pvM:{}",
         METRICS.resyncs.load(Ordering::Relaxed),
         METRICS.resets.load(Ordering::Relaxed),
         METRICS.rtp_wait_drops.load(Ordering::Relaxed),
@@ -301,6 +311,7 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         stream_slip_us: METRICS.stream_slip_us.swap(0, Ordering::Relaxed),
         stream_slip_max_us: METRICS.stream_slip_max_us.swap(0, Ordering::Relaxed),
         stream_slip_slope_mpm: METRICS.stream_slip_slope_mpm.swap(0, Ordering::Relaxed),
+        slip_reanchors: METRICS.slip_reanchors.swap(0, Ordering::Relaxed),
         audio_queue_ms: METRICS.audio_queue_ms.swap(0, Ordering::Relaxed),
         vt_exit_count: METRICS.vt_exit_count.swap(0, Ordering::Relaxed),
         vt_max_0: METRICS.vt_max_0.swap(0, Ordering::Relaxed),
@@ -325,6 +336,8 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         video_bandwidth_kbps: METRICS.video_bandwidth_kbps.swap(0, Ordering::Relaxed),
         display_pickup_us: METRICS.display_pickup_us.swap(0, Ordering::Relaxed),
         display_pickup_max_us: METRICS.display_pickup_max_us.swap(0, Ordering::Relaxed),
+        present_us: METRICS.present_us.swap(0, Ordering::Relaxed),
+        present_max_us: METRICS.present_max_us.load(Ordering::Relaxed),
         pli_submit: METRICS.pli_submit.swap(0, Ordering::Relaxed),
         pli_gap: METRICS.pli_gap.swap(0, Ordering::Relaxed),
         pli_expired: METRICS.pli_expired.swap(0, Ordering::Relaxed),
@@ -380,6 +393,9 @@ pub(crate) fn reset_session_metrics() {
     METRICS.video_bandwidth_kbps.store(0, Ordering::Relaxed);
     METRICS.display_pickup_us.store(0, Ordering::Relaxed);
     METRICS.display_pickup_max_us.store(0, Ordering::Relaxed);
+    METRICS.present_us.store(0, Ordering::Relaxed);
+    METRICS.present_max_us.store(0, Ordering::Relaxed);
+    METRICS.slip_reanchors.store(0, Ordering::Relaxed);
     METRICS.pli_submit.store(0, Ordering::Relaxed);
     METRICS.pli_gap.store(0, Ordering::Relaxed);
     METRICS.pli_expired.store(0, Ordering::Relaxed);
