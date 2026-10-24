@@ -68,6 +68,10 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) pli_watchdog: u64,
     pub(crate) pli_periodic: u64,
     pub(crate) pli_sent: u64,
+    pub(crate) qd_us: u64,
+    pub(crate) qd_rel_us: u64,
+    pub(crate) ext_ast_id: u64,
+    pub(crate) ext_vt_id: u64,
 }
 
 pub(crate) struct VideoMetrics {
@@ -130,6 +134,10 @@ pub(crate) struct VideoMetrics {
     pub(crate) pli_watchdog: AtomicU64,
     pub(crate) pli_periodic: AtomicU64,
     pub(crate) pli_sent: AtomicU64,
+    pub(crate) qd_us: AtomicU64,
+    pub(crate) qd_rel_us: AtomicU64,
+    pub(crate) ext_ast_id: AtomicU64,
+    pub(crate) ext_vt_id: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -193,6 +201,10 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     pli_watchdog: AtomicU64::new(0),
     pli_periodic: AtomicU64::new(0),
     pli_sent: AtomicU64::new(0),
+    qd_us: AtomicU64::new(0),
+    qd_rel_us: AtomicU64::new(0),
+    ext_ast_id: AtomicU64::new(0),
+    ext_vt_id: AtomicU64::new(0),
 };
 
 
@@ -229,6 +241,8 @@ pub fn video_performance_summary() -> String {
     let rtp_max = METRICS.rtp_assembly_max_us.load(Ordering::Relaxed);
     let present_us = METRICS.present_us.load(Ordering::Relaxed);
     let present_max_us = METRICS.present_max_us.load(Ordering::Relaxed);
+    let qd_us = METRICS.qd_us.load(Ordering::Relaxed);
+    let qd_rel_us = METRICS.qd_rel_us.load(Ordering::Relaxed);
     // Two lines: the HUD label clips long single-line output on the Vita panel.
     let line1 = format!(
         "d/p:{}/{} d/a:{}/{} skip:{} cap:{} repl:{} q:{} hwb:{} ageMax:{} lag:{} lagMax:{} bw:{} aq:{} slip:{} slipS:{} sa:{}",
@@ -251,7 +265,7 @@ pub fn video_performance_summary() -> String {
         METRICS.slip_reanchors.load(Ordering::Relaxed),
     );
     let line2 = format!(
-        "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{} ps:{present_us} psPk:{present_max_us} pli:{} plf:{} pv:{} pvM:{}",
+        "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{} ps:{present_us} psPk:{present_max_us} qd:{qd_us} qd_rel:{qd_rel_us} pli:{} plf:{} pv:{} pvM:{}",
         METRICS.resyncs.load(Ordering::Relaxed),
         METRICS.resets.load(Ordering::Relaxed),
         METRICS.rtp_wait_drops.load(Ordering::Relaxed),
@@ -340,6 +354,10 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         display_pickup_max_us: METRICS.display_pickup_max_us.swap(0, Ordering::Relaxed),
         present_us: METRICS.present_us.swap(0, Ordering::Relaxed),
         present_max_us: METRICS.present_max_us.load(Ordering::Relaxed),
+        qd_us: METRICS.qd_us.load(Ordering::Relaxed),
+        qd_rel_us: METRICS.qd_rel_us.load(Ordering::Relaxed),
+        ext_ast_id: METRICS.ext_ast_id.load(Ordering::Relaxed),
+        ext_vt_id: METRICS.ext_vt_id.load(Ordering::Relaxed),
         pli_submit: METRICS.pli_submit.swap(0, Ordering::Relaxed),
         pli_gap: METRICS.pli_gap.swap(0, Ordering::Relaxed),
         pli_expired: METRICS.pli_expired.swap(0, Ordering::Relaxed),
@@ -397,6 +415,10 @@ pub(crate) fn reset_session_metrics() {
     METRICS.display_pickup_max_us.store(0, Ordering::Relaxed);
     METRICS.present_us.store(0, Ordering::Relaxed);
     METRICS.present_max_us.store(0, Ordering::Relaxed);
+    METRICS.qd_us.store(0, Ordering::Relaxed);
+    METRICS.qd_rel_us.store(0, Ordering::Relaxed);
+    METRICS.ext_ast_id.store(0, Ordering::Relaxed);
+    METRICS.ext_vt_id.store(0, Ordering::Relaxed);
     METRICS.slip_reanchors.store(0, Ordering::Relaxed);
     METRICS.pli_submit.store(0, Ordering::Relaxed);
     METRICS.pli_gap.store(0, Ordering::Relaxed);
