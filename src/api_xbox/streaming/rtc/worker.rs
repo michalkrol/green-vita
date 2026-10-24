@@ -59,8 +59,8 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
             sdp
         };
         let answer = self.stream.send_sdp_offer(&sdp).await?;
-        let ast_id = sdp::extract_extmap_id(&answer, "urn:ietf:params:rtp-hdrext:abs-send-time");
-        let vt_id = sdp::extract_extmap_id(&answer, "urn:ietf:params:rtp-hdrext:video-timing");
+        let ast_id = sdp::extract_extmap_id(&answer, "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time");
+        let vt_id = sdp::extract_extmap_id(&answer, "http://www.webrtc.org/experiments/rtp-hdrext/video-timing");
         eprintln!("negotiated ast ext id: {ast_id:?} vt ext id: {vt_id:?}");
         Ok((answer, ast_id, vt_id))
     }

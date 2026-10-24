@@ -19,8 +19,8 @@ pub(super) fn extract_extmap_id(sdp: &str, uri: &str) -> Option<u8> {
 }
 
 /// Injects the two required header-ext map lines into the VIDEO m-section of an SDP offer:
-///   a=extmap:2 urn:ietf:params:rtp-hdrext:abs-send-time
-///   a=extmap:7 urn:ietf:params:rtp-hdrext:video-timing
+///   a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time
+///   a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/video-timing
 /// All other lines (audio, b=AS, codec lines, etc.) are left untouched.
 /// Build-time feature flag: offer abs-send-time(2) + video-timing(7) extmaps (Phase 1.1).
 /// Set false to restore the historical zero-extmap offer for A/B comparisons.
@@ -39,8 +39,8 @@ pub(super) fn inject_video_extmaps(sdp: &str) -> String {
         if !injected && line.starts_with("m=video ") {
             injected = true;
             // Insert extmap lines after the m=video line
-            output.push("a=extmap:2 urn:ietf:params:rtp-hdrext:abs-send-time".to_owned());
-            output.push("a=extmap:7 urn:ietf:params:rtp-hdrext:video-timing".to_owned());
+            output.push("a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time".to_owned());
+            output.push("a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/video-timing".to_owned());
         }
     }
 
@@ -239,21 +239,21 @@ mod tests {
 
         // Verify both extmap lines are present in the video section
         assert!(
-            with_extmaps.contains("a=extmap:2 urn:ietf:params:rtp-hdrext:abs-send-time"),
+            with_extmaps.contains("a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"),
             "Offer should contain extmap:2 abs-send-time URI"
         );
         assert!(
-            with_extmaps.contains("a=extmap:7 urn:ietf:params:rtp-hdrext:video-timing"),
+            with_extmaps.contains("a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/video-timing"),
             "Offer should contain extmap:7 video-timing URI"
         );
 
         // Verify correct URIs
         assert!(
-            with_extmaps.contains("urn:ietf:params:rtp-hdrext:abs-send-time"),
+            with_extmaps.contains("http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"),
             "Offer should use canonical abs-send-time URI"
         );
         assert!(
-            with_extmaps.contains("urn:ietf:params:rtp-hdrext:video-timing"),
+            with_extmaps.contains("http://www.webrtc.org/experiments/rtp-hdrext/video-timing"),
             "Offer should use canonical video-timing URI"
         );
     }
