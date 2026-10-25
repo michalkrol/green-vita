@@ -1,5 +1,5 @@
 use crate::api::streaming::rtc::rtp;
-use crate::streaming::video::{self, DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker, STREAM_HEIGHT, STREAM_WIDTH};
+use crate::streaming::video::{DecodedFrame, DecoderConfig, DirectVideoOutput, VideoDecodeWorker, STREAM_HEIGHT, STREAM_WIDTH};
 use anyhow::Result;
 use bytes::Bytes;
 use rtc::media_stream::MediaStreamTrackId;

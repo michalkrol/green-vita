@@ -1,7 +1,7 @@
 use crate::api::streaming::rtc::peer::FeedbackPeer;
 use crate::api::streaming::rtc::session::{RtcSession, RtcSessionConfig};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
-use crate::streaming::video::{DecodedFrame, DirectVideoOutput, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH};
+use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use rtc::peer_connection::sdp::RTCSessionDescription;
