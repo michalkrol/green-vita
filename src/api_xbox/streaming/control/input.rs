@@ -76,16 +76,7 @@ pub(crate) fn note_gamepad_activity(frame: &GamepadFrame) {
     }
 }
 
-pub(crate) fn input_quiet_for(min_quiet: Duration) -> bool {
-    match LAST_ACTIVE_INPUT.lock() {
-        Ok(slot) => slot.is_none_or(|at| at.elapsed() >= min_quiet),
-        Err(_) => true,
-    }
-}
-
 static SESSION_START: OnceLock<Instant> = OnceLock::new();
-
-pub(crate) const SEND_METADATA: bool = true;
 
 /// Monotonic session-uptime milliseconds — the wire-format equivalent of the
 /// reference client's performance.now(). Our old header wrote per-packet elapsed

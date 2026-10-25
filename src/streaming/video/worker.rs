@@ -8,8 +8,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Maximum age (in ms) an access unit can remain in the queue before being rejected.
-const AU_QUEUE_MAX_AGE: u64 = 150;
 /// Default decode interval in microseconds (≈60fps).
 const DEFAULT_DECODE_INTERVAL_US: u64 = 16_667;
 /// Minimum valid source frame duration in microseconds.

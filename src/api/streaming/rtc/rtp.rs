@@ -81,7 +81,6 @@ pub(crate) struct VideoRtp {
     /// network, network2) plus the sample count.
     pub(crate) vt_max: [u64; 6],
     pub(crate) vt_exit_count: u64,
-    slip_slope_base: Option<(Instant, i64)>,
     total_bytes: u64,
 }
 
@@ -186,7 +185,6 @@ impl VideoRtp {
             vt_ext_id: 7,
             ast_ext_id: None,
             last_abs_send_time: None,
-            slip_slope_base: None,
             vt_max: [0; 6],
             vt_exit_count: 0,
             total_bytes: 0,
@@ -502,9 +500,6 @@ impl VideoRtp {
     
     pub(crate) fn flush_expired(&mut self, _worker: &VideoDecodeWorker, _kr: &mut bool, _stats: &mut crate::api::streaming::rtc::rtp::VideoSampleStats) {}
     /// Reset lag anchor is a no-op for re-anchoring mid-session.
-    /// The media-clock anchor is set ONCE per streaming session at session start.
-    /// Callers may invoke this without affecting the session-fixed anchor.
-    pub(crate) fn reset_lag_anchor(&mut self) { }
     /// Drift instrumentation: (slip_us, wall_us, media_us).  slip = wall time in microseconds
     /// since the session anchor minus media time (RTP clock at 90 kHz) advanced
     /// since the anchor.  A flat slope means arrivals keep pace with the media

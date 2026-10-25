@@ -105,21 +105,6 @@ impl DirectVideoOutput {
         }
     }
 
-    /// Releases a decoded frame intentionally omitted by the presentation-rate limiter.
-    /// The currently displayed texture remains unchanged, so the decoder cannot overwrite it.
-    pub(crate) fn discard_pending(&self, index: usize, generation: u64) {
-        let mut discarded = false;
-        if let Ok(mut state) = self.state.lock()
-            && state.pending == Some((index, generation))
-        {
-            state.pending = None;
-            discarded = true;
-        }
-        if discarded {
-            self.frame_displayed.notify_one();
-        }
-    }
-
     pub(super) fn lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
         let mut state = self.state.lock().ok()?;
         let targets = state.targets?;
