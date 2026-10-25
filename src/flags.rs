@@ -33,4 +33,10 @@ pub const AU_QUEUE_MAX_AGE_MS: u64 = 0;
 /// 21f0c51^'s submit path; when false: keep the current code path intact.
 /// Preserve the existing AU_QUEUE_MAX_AGE age-drop behavior in BOTH cases (do not remove
 /// the 150 ms age bound).
+/// AU-queue depth-reject threshold (frames). 6 = exact v0.3.0 adaptive ceiling (1..6).
+/// 12 = decode-deeper experiment 2026-10-25: absorb drop-episodes by decoding them
+/// (reference chains intact, corruption reduced to wire-loss) at the cost of transient
+/// residence ≤ depth×frame-time during backlogs. Must match the bounded() channel capacity.
+pub const AU_QUEUE_MAX_DEPTH: usize = 12;
+
 pub const ADAPTIVE_AU_LIMIT: bool = true;

@@ -8,8 +8,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Maximum number of access units queued before rejecting new ones.
-const AU_QUEUE_MAX: usize = 8;
 /// Maximum age (in ms) an access unit can remain in the queue before being rejected.
 const AU_QUEUE_MAX_AGE: u64 = 150;
 /// Default decode interval in microseconds (≈60fps).
@@ -74,7 +72,7 @@ impl VideoDecodeWorker {
         }
         let decoder = decoder.expect("decoder created after retry loop");
         direct_output.decoder_ready.store(true, Ordering::Release);
-        let (access_units, worker_access_units) = bounded(AU_QUEUE_MAX);
+        let (access_units, worker_access_units) = bounded(crate::flags::AU_QUEUE_MAX_DEPTH);
         let (commands, worker_commands) = unbounded();
         let generation = Arc::new(AtomicU64::new(0));
         let worker_generation = Arc::clone(&generation);
@@ -135,12 +133,12 @@ impl VideoDecodeWorker {
 
         // Adaptive AU queue depth limit (v0.3.0 recipe).
         // When ADAPTIVE_AU_LIMIT is true, compute pending_limit from source fps:
-        //   pending_limit = 1 + (max(0, source_fps - 30).min(25) * (8 - 1) + 12) / 25
-        // capped to 1..=8. When false, use fixed AU_QUEUE_MAX (8).
+        //   pending_limit = 1 + (max(0, source_fps - 30).min(25) * (max_pending - 1) + 12) / 25
+        // capped to 1..=max_pending. When false, use flat max_pending.
+        let max_pending = crate::flags::AU_QUEUE_MAX_DEPTH;
         let pending_limit = if crate::flags::ADAPTIVE_AU_LIMIT {
-            // Original v0.3.0 adaptive range (from 21f0c51^): MIN=1, MAX=6.
+            // Original v0.3.0 adaptive range (from 21f0c51^): MIN=1, MAX=max_pending (from flags).
             const MIN_PENDING: usize = 1;
-            const MAX_PENDING: usize = 6;
             let source_fps = source_frame_duration_us
                 .filter(|d| *d > 0)
                 .map(|d| 1_000_000 / d)
@@ -148,12 +146,12 @@ impl VideoDecodeWorker {
             let extra_capacity = source_fps
                 .saturating_sub(30)
                 .min(25)
-                .saturating_mul((MAX_PENDING - MIN_PENDING) as u64)
+                .saturating_mul((max_pending - MIN_PENDING) as u64)
                 .saturating_add(12)
                 / 25;
-            (MIN_PENDING + extra_capacity as usize).clamp(MIN_PENDING, MAX_PENDING)
+            (MIN_PENDING + extra_capacity as usize).clamp(MIN_PENDING, max_pending)
         } else {
-            AU_QUEUE_MAX
+            max_pending
         };
 
         if self.access_units.len() >= pending_limit {
