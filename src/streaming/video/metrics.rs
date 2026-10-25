@@ -245,26 +245,27 @@ pub fn video_performance_summary() -> String {
     let present_max_us = METRICS.present_max_us.load(Ordering::Relaxed);
     let qd_us = METRICS.qd_us.load(Ordering::Relaxed);
     let qd_rel_us = METRICS.qd_rel_us.load(Ordering::Relaxed);
+    // Introduce locals for each metric so we can use named captures in the format string.
+    let decoded = METRICS.decoded.load(Ordering::Relaxed);
+    let presented = METRICS.presented.load(Ordering::Relaxed);
+    let decode_us = METRICS.decode_us.load(Ordering::Relaxed) / 1000;
+    let pipeline_age_us = METRICS.pipeline_age_us.load(Ordering::Relaxed) / 1000;
+    let skipped = METRICS.skipped.load(Ordering::Relaxed);
+    let rate_limited = METRICS.rate_limited.load(Ordering::Relaxed);
+    let replaced = METRICS.replaced.load(Ordering::Relaxed);
+    let queue_full = METRICS.queue_full.load(Ordering::Relaxed);
+    let hw_buffered = METRICS.hw_buffered.load(Ordering::Relaxed);
+    let pipeline_age_max_us = METRICS.pipeline_age_max_us.load(Ordering::Relaxed);
+    let stream_lag_us = METRICS.stream_lag_us.load(Ordering::Relaxed) / 1000;
+    let stream_lag_max_us = METRICS.stream_lag_max_us.load(Ordering::Relaxed) / 1000;
+    let video_bandwidth_kbps = METRICS.video_bandwidth_kbps.load(Ordering::Relaxed);
+    let audio_queue_ms = METRICS.audio_queue_ms.load(Ordering::Relaxed);
+    let stream_slip_us = METRICS.stream_slip_us.load(Ordering::Relaxed);
+    let stream_slip_slope_mpm = METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed);
+    let slip_reanchors = METRICS.slip_reanchors.load(Ordering::Relaxed);
     // Two lines: the HUD label clips long single-line output on the Vita panel.
     let line1 = format!(
-        "d/p:{}/{} d/a:{}/{} skip:{} cap:{} repl:{} q:{} hwb:{} ageMax:{} lag:{} lagMax:{} bw:{} aq:{} slip:{} slipS:{} sa:{}",
-        METRICS.decoded.load(Ordering::Relaxed),
-        METRICS.presented.load(Ordering::Relaxed),
-        METRICS.decode_us.load(Ordering::Relaxed) / 1000,
-        METRICS.pipeline_age_us.load(Ordering::Relaxed) / 1000,
-        METRICS.skipped.load(Ordering::Relaxed),
-        METRICS.rate_limited.load(Ordering::Relaxed),
-        METRICS.replaced.load(Ordering::Relaxed),
-        METRICS.queue_full.load(Ordering::Relaxed),
-        METRICS.hw_buffered.load(Ordering::Relaxed),
-        METRICS.pipeline_age_max_us.load(Ordering::Relaxed),
-        METRICS.stream_lag_us.load(Ordering::Relaxed) / 1000,
-        METRICS.stream_lag_max_us.load(Ordering::Relaxed) / 1000,
-        METRICS.video_bandwidth_kbps.load(Ordering::Relaxed),
-        METRICS.audio_queue_ms.load(Ordering::Relaxed),
-        METRICS.stream_slip_us.load(Ordering::Relaxed),
-        METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed),
-        METRICS.slip_reanchors.load(Ordering::Relaxed),
+        "d/p:{decoded}/{presented} d/a:{decode_us}/{pipeline_age_us} skip:{skipped} cap:{rate_limited} repl:{replaced} q:{queue_full} hwb:{hw_buffered} ageMax:{pipeline_age_max_us} lag:{stream_lag_us} lagMax:{stream_lag_max_us} bw:{video_bandwidth_kbps} aq:{audio_queue_ms} slip:{stream_slip_us} slipS:{stream_slip_slope_mpm} sa:{slip_reanchors}"
     );
     let line2 = format!(
         "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{} ps:{present_us} psPk:{present_max_us} qd:{qd_us} qd_rel:{qd_rel_us} pli:{} plf:{} pv:{} pvM:{}",
