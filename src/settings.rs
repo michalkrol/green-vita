@@ -98,8 +98,8 @@ impl Locale {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum H264Profile {
     #[default]
-    Baseline,
     Main,
+    Baseline,
 }
 
 impl H264Profile {
@@ -114,8 +114,8 @@ impl H264Profile {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ColorProfile {
     #[default]
-    Rgb565,
     Rgba8888,
+    Rgb565,
 }
 
 impl ColorProfile {
@@ -189,13 +189,13 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             locale: Locale::default(),
-            unlock_video_fps: false,
+            unlock_video_fps: true,
             show_stream_debug_info: false,
             home_console_ip: None,
-            video_bitrate_kbps: 15_000,
+            video_bitrate_kbps: 0,
             video_h264_profile: H264Profile::default(),
             video_color_profile: ColorProfile::default(),
-            periodic_keyframe: true,
+            periodic_keyframe: false,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,
             game_profiles: HashMap::new(),
