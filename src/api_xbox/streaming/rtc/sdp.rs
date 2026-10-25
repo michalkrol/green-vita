@@ -163,6 +163,7 @@ pub(super) fn cap_video_bitrate(sdp: &str, max_kbps: u32) -> String {
 }
 
 #[cfg(test)]
+#[allow(unnameable_test_items)]
 mod tests {
     use super::*;
 
