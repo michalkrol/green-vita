@@ -11,6 +11,7 @@ use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
+use std::collections::VecDeque;
 
 const MAX_PENDING_AUDIO_PACKETS: usize = 32;
 const MAX_H264_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
@@ -76,6 +77,11 @@ pub(crate) struct VideoRtp {
     pub(crate) vt_ext_id: u8,
     pub(crate) ast_ext_id: Option<u8>,
     pub(crate) tc_ext_id: Option<u8>,
+    /// Buffer of (wide_sequence_number, arrival_ms) pairs for transport CC reporting.
+    /// One entry per parsed packet with tc extension, capped at 4096 entries.
+    pub(crate) twcc_arrivals: VecDeque<(u16, u64)>,
+    /// Count of overflow drops when twcc_arrivals cap is exceeded.
+    pub(crate) twcc_overflow_drops: u64,
     /// Last unwrapped abs-send-time high bits and wall clock for 24-bit wrap tracking.
     last_abs_send_time: Option<(i64, i64)>,
     /// Drift instrumentation: per-window max of each video-timing (extmap id 7)
@@ -187,6 +193,8 @@ impl VideoRtp {
             vt_ext_id: 7,
             ast_ext_id: None,
             tc_ext_id: None,
+            twcc_arrivals: VecDeque::new(),
+            twcc_overflow_drops: 0,
             last_abs_send_time: None,
             vt_max: [0; 6],
             vt_exit_count: 0,
@@ -278,6 +286,24 @@ impl VideoRtp {
                 *slot = (*slot).max(d);
             }
             self.vt_exit_count += 1;
+        }
+
+        // Transport-wide CC census (extmap id = negotiated tc_ext_id): parse one-byte
+        // header extension (RFC 5285) containing the wide sequence number (2 bytes,
+        // big-endian). Record arrival timing for later loss recovery reports.
+        if let Some(tc_id) = self.tc_ext_id {
+            if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == tc_id)
+                && ext.payload.len() >= 2
+            {
+                let wide_seq = u16::from_be_bytes([ext.payload[0], ext.payload[1]]);
+                let arrival_ms = self.stream_clock_anchor
+                    .map_or(0, |(anchor_at, _)| anchor_at.elapsed().as_millis() as u64);
+                if self.twcc_arrivals.len() >= 4096 {
+                    self.twcc_arrivals.pop_front();
+                    self.twcc_overflow_drops += 1;
+                }
+                self.twcc_arrivals.push_back((wide_seq, arrival_ms));
+            }
         }
 
         // abs-send-time census (extmap id = negotiated ast_ext_id).
@@ -521,6 +547,12 @@ impl VideoRtp {
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
     pub(crate) fn twcc_median_stride(&self) -> u16 { 0 }
     pub(crate) fn take_twcc_report(&mut self, _media_ssrc: u32) -> Option<TwccReport> { None }
+    /// Drain the twcc arrivals buffer, returning all stored (wide_seq, arrival_ms) pairs.
+    /// This swaps out the internal buffer so the caller can process the entries
+    /// (e.g. build a TransportLayerCc report) without losing in-flight data.
+    pub(crate) fn drain_twcc_arrivals(&mut self) -> Vec<(u16, u64)> {
+        self.twcc_arrivals.drain(..).collect()
+    }
 }
 
 pub(crate) fn color_matrix_label(code: u8) -> String {
@@ -554,6 +586,83 @@ mod tests {
         // Anything else gets "m{code}" format
         assert_eq!(color_matrix_label(3), "m3");
         assert_eq!(color_matrix_label(255), "m255");
+    }
+
+    /// Parse the transport-wide CC header extension value from an RTP header extension.
+    /// The RFC 5285 TC extension payload is 2 bytes big-endian containing the wide
+    /// sequence number. Returns None if the extension id doesn't match or payload is too short.
+    fn parse_tc_extension(tc_id: u8, ext_id: u8, payload: &[u8]) -> Option<u16> {
+        if tc_id != ext_id {
+            return None;
+        }
+        if payload.len() < 2 {
+            return None;
+        }
+        Some(u16::from_be_bytes([payload[0], payload[1]]))
+    }
+
+    #[test]
+    fn test_parse_tc_extension_match() {
+        // TC ext id = 3, packet has ext id = 3, payload = [0x12, 0x34]
+        let result = parse_tc_extension(3, 3, &[0x12, 0x34]);
+        assert_eq!(result, Some(0x1234));
+    }
+
+    #[test]
+    fn test_parse_tc_extension_id_mismatch() {
+        // TC ext id = 3, packet has ext id = 4 → should return None
+        let result = parse_tc_extension(3, 4, &[0x12, 0x34]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_tc_extension_truncated() {
+        // TC ext id = 3, payload too short (1 byte) → None
+        let result = parse_tc_extension(3, 3, &[0x12]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_tc_extension_empty() {
+        // TC ext id = 3, empty payload → None
+        let result = parse_tc_extension(3, 3, &[]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_twcc_arrivals_buffer_cap() {
+        let mut rtp = VideoRtp::new();
+        // Push 4097 entries (>4096) to test the cap at 4096
+        for i in 0..=4096u16 {
+            rtp.tc_ext_id = Some(3);
+            rtp.stream_clock_anchor = Some((std::time::Instant::now(), 90000));
+            if rtp.twcc_arrivals.len() >= 4096 {
+                rtp.twcc_arrivals.pop_front();
+                rtp.twcc_overflow_drops += 1;
+            }
+            rtp.twcc_arrivals.push_back((i, i as u64));
+        }
+        assert_eq!(rtp.twcc_arrivals.len(), 4096);
+        assert_eq!(rtp.twcc_overflow_drops, 1);
+    }
+
+    #[test]
+    fn test_drain_twcc_arrivals() {
+        let mut rtp = VideoRtp::new();
+        // Push some entries
+        rtp.tc_ext_id = Some(3);
+        rtp.stream_clock_anchor = Some((std::time::Instant::now(), 90000));
+        rtp.twcc_arrivals.push_back((0x1234, 100));
+        rtp.twcc_arrivals.push_back((0x5678, 200));
+        rtp.twcc_arrivals.push_back((0x9abc, 300));
+
+        let drained = rtp.drain_twcc_arrivals();
+        assert_eq!(drained.len(), 3);
+        assert_eq!(drained[0], (0x1234, 100));
+        assert_eq!(drained[1], (0x5678, 200));
+        assert_eq!(drained[2], (0x9abc, 300));
+        // Buffer should be empty after drain
+        assert_eq!(rtp.twcc_arrivals.len(), 0);
     }
 }
 
