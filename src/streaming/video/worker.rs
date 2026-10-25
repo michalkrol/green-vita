@@ -41,6 +41,11 @@ pub struct VideoDecodeWorker {
     /// Marker for the oldest access unit in the queue, used for age-bound rejection.
     /// Set when the queue is empty (pre-push len==0); compared against when queue has AUs.
     oldest_au_marker: std::sync::Mutex<Option<Instant>>,
+    /// Current AU-queue depth, shared between submit thread and decode thread.
+    /// Incremented in submit_access_unit after successful try_send.
+    /// Decremented in run_decode_loop after each recv consumes an AU.
+    /// Reset to 0 in reset_decoder/begin_resync to avoid leaked counter pinning sleep at 2ms.
+    current_depth: Arc<AtomicU64>,
 }
 
 impl VideoDecodeWorker {
@@ -83,6 +88,8 @@ impl VideoDecodeWorker {
         let worker_direct_output = Arc::clone(&direct_output);
         let source_duration = Arc::new(AtomicU64::new(DEFAULT_DECODE_INTERVAL_US));
         let worker_source_duration = Arc::clone(&source_duration);
+        let current_depth = Arc::new(AtomicU64::new(0));
+        let current_depth_thread = Arc::clone(&current_depth);
 
         std::thread::Builder::new()
             .name("green-vita-video-decode".to_owned())
@@ -99,6 +106,7 @@ impl VideoDecodeWorker {
                     config,
                     worker_direct_output,
                     worker_source_duration,
+                    current_depth_thread,
                 )
             })
             .context("failed to spawn video decode worker")?;
@@ -111,6 +119,7 @@ impl VideoDecodeWorker {
             result_ready,
             last_source_duration_us: source_duration,
             oldest_au_marker: std::sync::Mutex::new(None),
+            current_depth,
         })
     }
 
@@ -190,7 +199,11 @@ impl VideoDecodeWorker {
         }
 
         match self.access_units.try_send(access_unit) {
-            Ok(()) => true,
+            Ok(()) => {
+                // Track depth for depth-scaled decode pacing.
+                self.current_depth.fetch_add(1, Ordering::Relaxed);
+                true
+            }
             Err(TrySendError::Full(_)) => {
                 // Queue filled after our len check - treat as reject
                 metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
@@ -203,12 +216,14 @@ impl VideoDecodeWorker {
     pub fn reset_decoder(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
         metrics::METRICS.resets.fetch_add(1, Ordering::Relaxed);
+        self.current_depth.store(0, Ordering::Relaxed);
         let _ = self.commands.send(DecoderCommand::Reset);
     }
 
     pub fn begin_resync(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
         metrics::METRICS.resyncs.fetch_add(1, Ordering::Relaxed);
+        self.current_depth.store(0, Ordering::Relaxed);
     }
 }
 
@@ -242,6 +257,7 @@ fn run_decode_loop(
     config: DecoderConfig,
     direct_output: Arc<DirectVideoOutput>,
     _source_duration: Arc<AtomicU64>,
+    current_depth: Arc<AtomicU64>,
 ) {
     let mut decoder = Some(initial_decoder);
 
@@ -265,12 +281,30 @@ fn run_decode_loop(
                     access_unit,
                     &direct_output,
                 );
-                // v0.3.0 decode-pace sleep: throttle the decode loop to prevent AU queue from filling.
-                // When DECODE_PACE_SLEEP_MS > 0, sleep after each iteration restoring the paced
-                // decode cadence that kept the AU queue shedding at ~1/s keyframes.
-                // 0 = full-speed decode (post-21f0c51 behavior).
-                if crate::flags::DECODE_PACE_SLEEP_MS > 0 {
-                    std::thread::sleep(Duration::from_millis(crate::flags::DECODE_PACE_SLEEP_MS));
+                // Depth-scaled decode pacing: sleep duration depends on remaining AU-queue depth after
+                // popping/decoding the current AU. User schedule 2026-10-25:
+                //   depth 0-1 → 13 ms, depth 2 → 11 ms, depth 3 → 10 ms,
+                //   depth 4 → 9 ms, depth 5 → 8 ms, depth 6 → 7 ms,
+                //   depth ≥7 → 2 ms catch-up (clears 12-deep backlog in tens of ms,
+                //   not ~2 s at fixed 13 ms). DECODE_PACE_SLEEP_MS acts as a cap/kill-switch.
+                if crate::flags::DECODE_PACE_SLEEP_MS == 0 {
+                    // Full-speed decode (post-21f0c51 regime); no sleep.
+                } else {
+                    // Decrement current_depth after consuming the AU from the queue;
+                    // remaining = old_depth - 1, saturated to avoid underflow.
+                    let prev = current_depth
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                            Some(v.saturating_sub(1))
+                        })
+                        .unwrap_or(0);
+                    let remaining = prev.saturating_sub(1);
+                    let t = *crate::flags::DECODE_PACE_DEPTH_TABLE_MS
+                        .get(remaining as usize)
+                        .unwrap_or(&crate::flags::DECODE_PACE_CATCHUP_MS);
+                    let effective_sleep = t.min(crate::flags::DECODE_PACE_SLEEP_MS);
+                    if effective_sleep > 0 {
+                        std::thread::sleep(Duration::from_millis(effective_sleep));
+                    }
                 }
             }
         }

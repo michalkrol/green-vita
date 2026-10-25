@@ -19,7 +19,19 @@ pub const PERIODIC_KEYFRAME_INTERVAL_MS: u64 = 1200;
 /// When >0: the decode loop sleeps this long after each iteration exactly as 21f0c51^ did
 /// (same placement/statistics semantics as the original — copy the original code, gate with
 /// `if crate::flags::DECODE_PACE_SLEEP_MS > 0 { ... }`).
+/// **Now acts as a cap/kill-switch**: effective_sleep = min(table_value, DECODE_PACE_SLEEP_MS),
+/// so a future 4ms baseline A/B still works, catch-up 2ms still wins. Set to 0 to disable
+/// pacing entirely (full-speed regime).
 pub const DECODE_PACE_SLEEP_MS: u64 = 13;
+
+/// Sleep (ms) after each decoded frame indexed by REMAINING AU-queue depth 0..=6.
+/// User schedule 2026-10-25: depth1=13, 2=11, 3=10, … 6=7 so we never sit on ~6 frames
+/// (6×13=100ms of stored latency) — the queue continuously drains instead.
+pub const DECODE_PACE_DEPTH_TABLE_MS: [u64; 7] = [13, 13, 11, 10, 9, 8, 7];
+
+/// Sleep for remaining depth ≥7: aggressive catch-up (12-deep backlog clears in tens of ms,
+/// not ~2 s at fixed 13ms).
+pub const DECODE_PACE_CATCHUP_MS: u64 = 2;
 
 /// AU-queue age bound (drop-OLDEST). 0 = disabled → v0.3.0 semantics: depth-reject only
 /// (reference-preserving). 150 = post-21f0c51 latency guardrail from the open-loop era;
