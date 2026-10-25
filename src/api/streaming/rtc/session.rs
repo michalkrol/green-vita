@@ -385,6 +385,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         METRICS.flushes.fetch_add(1, Ordering::Relaxed);
         METRICS.slip_reanchors.fetch_add(1, Ordering::Relaxed);
         self.backend.notify_stream_flush(&mut self.peer);
-        self.video.reset_lag_anchor();
+        // reset_lag_anchor() removed: anchor is session-fixed, only cleared on NEW session start.
     }
 }

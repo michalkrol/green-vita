@@ -287,7 +287,7 @@ impl VideoRtp {
                 && ext.payload.len() >= 3
             {
                 let raw_24bit = u32::from_be_bytes([
-                    ext.payload[0], ext.payload[1], ext.payload[2], 0,
+                    0, ext.payload[0], ext.payload[1], ext.payload[2],
                 ]) & 0xFFFFFF;
                 let wall_us = self.stream_clock_anchor
                     .map_or(0, |(anchor_at, _)| anchor_at.elapsed().as_micros() as i64);
@@ -295,7 +295,16 @@ impl VideoRtp {
                     Some((prev_unwrapped, prev_raw)) => {
                         let diff = raw_24bit.wrapping_sub(prev_raw as u32);
                         let delta = (((diff + 0x800000) & 0xFFFFFF) as i64) - 0x800000;
-                        prev_unwrapped + delta
+                        // Sanity clamp: abs-send-time is 64 Hz (~15.6 µs per packet);
+                        // packets arrive ≥ ~8 ms apart → max plausible delta ≈ 64 * 2 = 128.
+                        // Use limit 512 to catch corrupted wraps without suppressing real
+                        // packet-advance variation. If delta exceeds the limit, re-anchor
+                        // on the raw value so the next packet can re-sync.
+                        if delta.abs() > 512 {
+                            raw_24bit as i64 // fresh anchor
+                        } else {
+                            prev_unwrapped + delta
+                        }
                     }
                     None => raw_24bit as i64,
                 };
