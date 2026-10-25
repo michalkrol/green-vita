@@ -21,6 +21,15 @@ use crate::settings::{ColorProfile, H264Profile};
 
 const GIT_SHA: &str = env!("GIT_SHA");
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const CSV_NUM_COLS: usize = 67;
+const HEADER_ORIG: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,present_us,present_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,pli_submit,pli_gap,pli_expired,pli_too_large,pli_wait_idr,pli_decode_err,pli_watchdog,pli_periodic,pli_sent,slip_reanchors,qd_us,qd_rel_us,ast_id,vt_id,age_drops";
+
+const fn count_commas(s: &str) -> usize {
+    let b = s.as_bytes(); let mut i = 0; let mut n = 0;
+    while i < b.len() { if b[i] == b',' { n += 1; } i += 1; }
+    n + 1 // field count = commas + 1
+}
+const _: () = assert!(count_commas(HEADER_ORIG) == CSV_NUM_COLS, "CSV header_orig field count != cols array length");
 
 /// Extra per-tick values that live on the video receiver rather than in METRICS.
 pub(crate) struct RowExtras {
@@ -84,7 +93,7 @@ impl MetricsCsvLog {
         let t_s = self.started_at.elapsed().as_secs();
         // Fixed-size array so the column count is compiler-enforced and can never
         // drift out of sync with HEADER. Order MUST match HEADER below.
-        let cols: [u64; 67] = [
+        let cols: [u64; CSV_NUM_COLS] = [
             t_s,
             snapshot.rtp_assembly_sum_us,
             snapshot.rtp_assembly_count,
@@ -182,7 +191,7 @@ impl MetricsCsvLog {
         // Build the full CSV content once: header + all rows + footer
         let header = format!(
             "color_profile,h264_profile,git_sha,app_version,{header_orig}",
-            header_orig = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,present_us,present_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,pli_submit,pli_gap,pli_expired,pli_too_large,pli_wait_idr,pli_decode_err,pli_watchdog,pli_periodic,pli_sent,slip_reanchors,qd_us,qd_rel_us,ast_id,vt_id,age_drops"
+            header_orig = HEADER_ORIG
         );
         let rows_content: String = buffer
             .iter()
