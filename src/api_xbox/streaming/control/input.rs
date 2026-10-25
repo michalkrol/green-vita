@@ -5,7 +5,7 @@ use std::time::Duration;
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
-use crate::flags::SEND_RENDER_TIMING_METADATA;
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
