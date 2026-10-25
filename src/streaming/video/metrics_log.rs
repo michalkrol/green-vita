@@ -11,7 +11,7 @@
 //! created/opened/appended at any point. All in-memory metrics, HUD, and
 //! status-string behavior remain exactly as before.
 
-use super::metrics::{MetricsSnapshot, drain_metrics, reset_session_metrics};
+use super::metrics::MetricsSnapshot;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 

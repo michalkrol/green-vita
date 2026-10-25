@@ -367,7 +367,7 @@ impl VideoRtp {
 
         // Drift instrumentation: accumulate slip metric from the latest video packet.
         if let Some(slip) = self.stream_slip() {
-            let (slip_us, _wall_us, media_us) = slip;
+            let (slip_us, _wall_us, _media_us) = slip;
             // Current slip (updated every packet; HUD reads this value).
             // Store as u64 using wrapping arithmetic so negative values
             // are represented as two's-complement (analyzer _unwrap_slip()

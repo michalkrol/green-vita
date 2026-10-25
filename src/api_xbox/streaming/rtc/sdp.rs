@@ -314,7 +314,6 @@ mod tests {
         let with_extmaps = inject_video_extmaps(offer);
 
         // b=AS should still be present and in the right position (before audio m-line)
-        let video_end = with_extmaps.find("m=audio").unwrap();
         assert!(
             with_extmaps.contains("b=AS:2500"),
             "b=AS should still be in video section after injection"

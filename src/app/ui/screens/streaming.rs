@@ -194,7 +194,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                 // Two-column layout when many rows (>10), otherwise single column
                 let two_columns = n > 10;
                 let n_left = if two_columns { n / 2 } else { n };
-                let n_right = if two_columns { n - n_left } else { 0 };
 
                 let cell_px_width = (LABEL_WIDTH + VALUE_WIDTH) as f32 * 6.0; // approx 6px per char at 10pt monospace
                 const COLUMN_GAP: usize = 32;      // 5+ extra space cells at 6px/char ≈ 96-192px
