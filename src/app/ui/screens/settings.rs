@@ -445,7 +445,7 @@ fn checkbox_row(ui: &mut egui::Ui, selected: bool, checked: bool, label: String)
         ui.painter().rect_stroke(
             box_rect,
             3.0,
-            egui::Stroke::new(1.5, outline),
+            egui::Stroke::new(1.5_f32, outline),
             egui::StrokeKind::Inside,
         );
 
@@ -455,7 +455,7 @@ fn checkbox_row(ui: &mut egui::Ui, selected: bool, checked: bool, label: String)
             } else {
                 egui::Color32::WHITE
             };
-            let check_stroke = egui::Stroke::new(2.5, check_color);
+            let check_stroke = egui::Stroke::new(2.5_f32, check_color);
             let first = egui::pos2(box_rect.left() + 3.5, box_rect.center().y);
             let middle = egui::pos2(box_rect.left() + 7.5, box_rect.bottom() - 4.0);
             let last = egui::pos2(box_rect.right() - 3.0, box_rect.top() + 4.0);
