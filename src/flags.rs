@@ -1,5 +1,14 @@
 //! Build-time feature flags — check/change ALL switches here.
 
+/// # FLAG INTERPLAY
+/// 
+/// - ADAPTIVE_AU_LIMIT vs AU_QUEUE_MAX_DEPTH: true = adaptive pending_limit 1..=AU_QUEUE_MAX_DEPTH scaled by source fps (at 60 fps yields the max); false = fixed AU_QUEUE_MAX_DEPTH. Depth-reject is the ONLY shedding path while AU_QUEUE_MAX_AGE_MS=0.
+/// - AU_QUEUE_MAX_AGE_MS vs AU_QUEUE_MAX_DEPTH: 0 = disabled (v0.3.0 semantics, depth-reject only — reference-preserving); >0 = drop-OLDEST older than threshold → breaks H.264 reference chains (mixed colours until next IDR) — redundant while pace table + depth bound residence; keep 0 unless A/B testing.
+/// - DECODE_PACE_SLEEP_MS vs DECODE_PACE_DEPTH_TABLE_MS + DECODE_PACE_CATCHUP_MS: 0 = full-speed decode (the post-21f0c51 regressed regime — DO NOT ship); >0 = CAP: effective = min(table[depth], DECODE_PACE_SLEEP_MS). Table (remaining depth 0..6): 13,13,11,10,9,8,7 ms; depth>=7 → CATCHUP (2 ms).
+/// - PERIODIC_KEYFRAME_INTERVAL_MS: 1200 ≈ 1/s IDR valve; 0 disables; historical 200 = 5/s flood → 5x worse latency (never restore 200).
+/// - OFFER_VIDEO_EXTMAPS: true = offer abs-send-time + video-timing with Chrome wire URIs (console STRIPS urn-form URIs — reference chrome-dumps); false = historical zero-extmap offer.
+/// - METRICS_CSV_LOGGING / SEND_RENDER_TIMING_METADATA: straightforward on/off (see each const's own doc).
+
 /// When true, offers abs-send-time(2) + video-timing(7) extmaps in SDP video m-section (Phase 1.1).
 /// Set false to restore the historical zero-extmap offer for A/B comparisons.
 pub const OFFER_VIDEO_EXTMAPS: bool = true;
