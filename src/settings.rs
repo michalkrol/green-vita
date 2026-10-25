@@ -192,7 +192,7 @@ impl Default for Settings {
             unlock_video_fps: true,
             show_stream_debug_info: false,
             home_console_ip: None,
-            video_bitrate_kbps: 0,
+            video_bitrate_kbps: 4500,
             video_h264_profile: H264Profile::default(),
             video_color_profile: ColorProfile::default(),
             periodic_keyframe: false,
