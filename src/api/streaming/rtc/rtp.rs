@@ -72,8 +72,10 @@ pub(crate) struct VideoRtp {
     latest_rtp: Option<(Instant, u32)>,
     /// Negotiated header extension ids from the SDP answer.
     /// vt_ext_id defaults to 7 (video-timing), ast_ext_id defaults to None (probe off).
+    /// tc_ext_id stores the transport-wide CC extension map id (e.g. 3 when offered).
     pub(crate) vt_ext_id: u8,
     pub(crate) ast_ext_id: Option<u8>,
+    pub(crate) tc_ext_id: Option<u8>,
     /// Last unwrapped abs-send-time high bits and wall clock for 24-bit wrap tracking.
     last_abs_send_time: Option<(i64, i64)>,
     /// Drift instrumentation: per-window max of each video-timing (extmap id 7)
@@ -184,6 +186,7 @@ impl VideoRtp {
             latest_rtp: None,
             vt_ext_id: 7,
             ast_ext_id: None,
+            tc_ext_id: None,
             last_abs_send_time: None,
             vt_max: [0; 6],
             vt_exit_count: 0,
@@ -194,11 +197,13 @@ impl VideoRtp {
     /// Thread negotiated header extension ids into this VideoRtp.
     /// vt_id: video-timing extension id (default 7 if None).
     /// ast_id: abs-send-time extension id (None = probe off).
-    pub fn set_negotiated_ext_ids(&mut self, ast_id: Option<u8>, vt_id: Option<u8>) {
+    /// tc_id: transport-wide CC extension id (None = probe off).
+    pub fn set_negotiated_ext_ids(&mut self, ast_id: Option<u8>, vt_id: Option<u8>, tc_id: Option<u8>) {
         if let Some(id) = vt_id {
             self.vt_ext_id = id;
         }
         self.ast_ext_id = ast_id;
+        self.tc_ext_id = tc_id;
         crate::streaming::video::metrics::METRICS
             .ext_ast_id
             .store(ast_id.map_or(0, |v| v as u64), Ordering::Relaxed);
@@ -561,7 +566,9 @@ pub(crate) struct TwccReport {
     pub recv_deltas: Vec<rtcp::transport_feedbacks::transport_layer_cc::RecvDelta>,
 }
 
-pub(crate) fn set_negotiated_twcc_ext_id(_id: u8) {}
+pub(crate) fn set_negotiated_twcc_ext_id(rtp: &mut VideoRtp, tc_id: u8) {
+        rtp.tc_ext_id = Some(tc_id);
+    }
 
 fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
     let distance = candidate.wrapping_sub(reference);

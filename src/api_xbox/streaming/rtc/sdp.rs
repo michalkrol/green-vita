@@ -17,6 +17,7 @@ pub(super) fn extract_extmap_id(sdp: &str, uri: &str) -> Option<u8> {
     }
     None
 }
+use super::peer::TWCC_URI;
 
 /// Injects the two required header-ext map lines into the VIDEO m-section of an SDP offer:
 ///   a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time
@@ -41,6 +42,44 @@ pub(super) fn inject_video_extmaps(sdp: &str) -> String {
             // Insert extmap lines after the m=video line
             output.push("a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time".to_owned());
             output.push("a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/video-timing".to_owned());
+        }
+    }
+
+    let mut result = output.join(newline);
+    if trailing_newline && !result.ends_with(newline) {
+        result.push_str(newline);
+    }
+    result
+}
+
+/// Injects the transport-wide-cc extmap and RTCP-FB lines into the VIDEO m-section of an SDP offer.
+/// When the TWCC extension is offered, the answer should echo back extmap:3 with the
+/// draft-holmer URI, and the video m-section should include `a=rtcp-fb:102 transport-cc`.
+/// All other lines (audio, b=AS, codec lines, etc.) are left untouched.
+/// Build-time feature flag: offer extmap:3 (transport-wide-cc draft-holmer URI) + rtcp-fb (Phase 1.2).
+/// Set false to restore the historical zero-extmap offer for A/B comparisons.
+///
+/// The actual flag value is now defined in `crate::flags::OFFER_TWCC_EXTMAP`.
+pub(crate) fn inject_twcc_extmap(sdp: &str) -> String {
+    // Idempotency guard: never inject twice (a second ICE-offer re-use would duplicate).
+    if sdp.contains(TWCC_URI) {
+        return sdp.to_owned();
+    }
+    let newline = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
+    let trailing_newline = sdp.ends_with('\n');
+    let lines: Vec<String> = sdp.lines().map(|l| l.trim_end_matches('\r').to_owned()).collect();
+    let mut output = Vec::with_capacity(lines.len() + 2);
+    let mut injected = false;
+
+    for line in &lines {
+        output.push(line.clone());
+        // After we encounter the video m-line, inject the TWCC extmap lines once.
+        if !injected && line.starts_with("m=video ") {
+            injected = true;
+            // Insert extmap:3 line after the m=video line
+            output.push(format!("a=extmap:3 {}", TWCC_URI));
+            // Insert rtcp-fb line after the m=video line
+            output.push("a=rtcp-fb:102 transport-cc".to_owned());
         }
     }
 
@@ -135,7 +174,6 @@ pub(super) fn cap_video_bitrate(sdp: &str, max_kbps: u32) -> String {
 }
 
 #[cfg(test)]
-#[allow(unnameable_test_items)]
 mod tests {
     use super::*;
 
@@ -191,7 +229,7 @@ mod tests {
     fn leaves_sdp_without_h264_untouched() {
         let offer = "v=0\nm=audio 9 UDP/TLS/RTP/SAVPF 111\n";
         assert_eq!(cap_video_bitrate(offer, 8_000), offer);
-    
+    }
 
     #[test]
     fn offer_injects_abs_send_time_and_video_timing_extmaps() {
@@ -296,5 +334,44 @@ mod tests {
             "Audio rtpmap should be unchanged"
         );
     }
-}
+
+    #[test]
+    fn offer_twcc_injection_adds_extmap3_and_transport_cc_fb() {
+        let offer = concat!(
+            "v=0
+",
+            "m=video 9 UDP/TLS/RTP/SAVPF 102
+",
+            "a=rtpmap:102 H264/90000
+",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111
+",
+            "a=rtpmap:111 opus/48000/2
+",
+        );
+
+        let with_twcc = inject_twcc_extmap(offer);
+
+        // Verify extmap:3 line is present with exact TWCC URI
+        assert!(
+            with_twcc.contains("a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"),
+            "Offer should contain extmap:3 transport-wide-cc URI"
+        );
+
+        // Verify rtcp-fb:102 line is present
+        assert!(
+            with_twcc.contains("a=rtcp-fb:102 transport-cc"),
+            "Offer should contain rtcp-fb:102 transport-cc line"
+        );
+
+        // Verify m=video is still intact
+        assert!(
+            with_twcc.contains("m=video 9 UDP/TLS/RTP/SAVPF 102"),
+            "m=video line should be preserved after injection"
+        );
+
+        // Verify idempotency: a second call produces the same output
+        let second_call = inject_twcc_extmap(&with_twcc);
+        assert_eq!(with_twcc, second_call, "Second call to inject_twcc_extmap should be idempotent");
+    }
 }

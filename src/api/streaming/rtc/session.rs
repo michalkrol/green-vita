@@ -152,11 +152,11 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             .context("failed to set remote rtc answer")
     }
 
-    /// Thread negotiated header extension ids (abs-send-time and video-timing) into the
-    /// VideoReceiver. Ids from the SDP answer override defaults (vt_id defaults to 7,
-    /// ast_id defaults to None/probe off).
-    pub fn set_negotiated_ext_ids(&mut self, ast_id: Option<u8>, vt_id: Option<u8>) -> Result<()> {
-        self.video.set_negotiated_ext_ids(ast_id, vt_id);
+    /// Thread negotiated header extension ids (abs-send-time, video-timing and transport-wide CC)
+    /// into the VideoReceiver. Ids from the SDP answer override defaults (vt_id defaults to 7,
+    /// ast_id defaults to None/probe off; tc_id defaults to None/probe off).
+    pub fn set_negotiated_ext_ids(&mut self, ast_id: Option<u8>, vt_id: Option<u8>, tc_id: Option<u8>) -> Result<()> {
+        self.video.set_negotiated_ext_ids(ast_id, vt_id, tc_id);
         Ok(())
     }
 

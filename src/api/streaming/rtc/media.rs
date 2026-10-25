@@ -107,10 +107,11 @@ impl VideoReceiver {
         self.ssrc = Some(ssrc);
     }
 
-    /// Thread negotiated header extension ids (abs-send-time and video-timing) into the
-    /// VideoRtp parser. vt_id defaults to 7 if not set; ast_id enables/disables probe.
-    pub fn set_negotiated_ext_ids(&mut self, ast_id: Option<u8>, vt_id: Option<u8>) {
-        self.rtp.set_negotiated_ext_ids(ast_id, vt_id);
+    /// Thread negotiated header extension ids (abs-send-time, video-timing and transport-wide CC)
+    /// into the VideoRtp parser. vt_id defaults to 7 if not set; ast_id enables/disables probe;
+    /// tc_id stores the transport-wide CC extension map id (e.g. 3 when offered).
+    pub fn set_negotiated_ext_ids(&mut self, ast_id: Option<u8>, vt_id: Option<u8>, tc_id: Option<u8>) {
+        self.rtp.set_negotiated_ext_ids(ast_id, vt_id, tc_id);
     }
 
     pub(crate) fn handles(&self, track_id: &MediaStreamTrackId) -> bool {

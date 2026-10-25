@@ -17,7 +17,7 @@ use rtc::rtp_transceiver::rtp_sender::{
 
 /// transport-wide-cc URI kept for answer SDP parsing in worker.rs; the extension
 /// is no longer offered since the console never annotates toward us at useful density.
-pub(super) const TWCC_URI: &str =
+pub(crate) const TWCC_URI: &str =
     "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
 
 pub(super) fn create(video_fps: u32, video_h264_profile: H264Profile) -> Result<(RTCPeerConnection, XboxRtcProtocol)> {

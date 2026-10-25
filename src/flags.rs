@@ -7,11 +7,15 @@
 /// - DECODE_PACE_SLEEP_MS vs DECODE_PACE_DEPTH_TABLE_MS + DECODE_PACE_CATCHUP_MS: 0 = full-speed decode (the post-21f0c51 regressed regime — DO NOT ship); >0 = CAP: effective = min(table[depth], DECODE_PACE_SLEEP_MS). Table (remaining depth 0..6): 13,13,11,10,9,8,7 ms; depth>=7 → CATCHUP (2 ms).
 /// - PERIODIC_KEYFRAME_INTERVAL_MS: 1200 ≈ 1/s IDR valve; 0 disables; historical 200 = 5/s flood → 5x worse latency (never restore 200).
 /// - OFFER_VIDEO_EXTMAPS: true = offer abs-send-time + video-timing with Chrome wire URIs (console STRIPS urn-form URIs — reference chrome-dumps); false = historical zero-extmap offer.
+/// - OFFER_TWCC_EXTMAP: true = offer extmap:3 (transport-wide-cc draft-holmer URI) + a=rtcp-fb:102 transport-cc in video m-section (Phase 1.2); false = historical zero-extmap offer.
 /// - METRICS_CSV_LOGGING / SEND_RENDER_TIMING_METADATA: straightforward on/off (see each const's own doc).
 
 /// When true, offers abs-send-time(2) + video-timing(7) extmaps in SDP video m-section (Phase 1.1).
 /// Set false to restore the historical zero-extmap offer for A/B comparisons.
 pub const OFFER_VIDEO_EXTMAPS: bool = true;
+
+/// When true, offers extmap:3 (transport-wide-cc draft-holmer URI) + a=rtcp-fb:102 transport-cc in the video m-section (Phase 1.2). Set false to restore the historical zero-extmap offer for A/B comparisons.
+pub const OFFER_TWCC_EXTMAP: bool = false;
 
 /// When false, no CSV file is created/opened/appended at any point.  All in-memory metrics, HUD, and
 /// status-string behavior remain exactly as before. Default true so existing behavior is unchanged.

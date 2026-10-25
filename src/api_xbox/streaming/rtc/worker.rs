@@ -3,7 +3,8 @@ use crate::api::streaming::rtc::session::RtcSessionConfig;
 use crate::api::streaming::rtc::worker::{RtcWorker, RtcWorkerProvider};
 use crate::api_xbox::streaming::rtc::protocol::XboxRtcProtocol;
 use crate::api_xbox::streaming::rtc::{AUDIO_PAYLOAD_TYPE, ROUTE_PROBE, STUN_SERVER, peer, sdp};
-use crate::flags::OFFER_VIDEO_EXTMAPS;
+use crate::flags::{OFFER_VIDEO_EXTMAPS, OFFER_TWCC_EXTMAP};
+use crate::api_xbox::streaming::rtc::peer::TWCC_URI;
 use crate::streaming::audio::AUDIO_SAMPLE_RATE;
 use crate::streaming::video::{
     DEFAULT_VIDEO_FPS, DecoderConfig, HW_OUTPUT_HEIGHT, HW_OUTPUT_WIDTH, STREAM_HEIGHT,
@@ -50,7 +51,7 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
         }
     }
 
-    async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<(String, Option<u8>, Option<u8>)> {
+    async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<(String, Option<u8>, Option<u8>, Option<u8>)> {
         let sdp = sdp::cap_video_bitrate(&offer.sdp, self.video_bitrate_kbps);
         let sdp = sdp::request_video_fps(&sdp, 30);
         let sdp = if OFFER_VIDEO_EXTMAPS {
@@ -58,11 +59,21 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
         } else {
             sdp
         };
+        let sdp = if OFFER_TWCC_EXTMAP {
+            sdp::inject_twcc_extmap(&sdp)
+        } else {
+            sdp
+        };
         let answer = self.stream.send_sdp_offer(&sdp).await?;
         let ast_id = sdp::extract_extmap_id(&answer, "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time");
         let vt_id = sdp::extract_extmap_id(&answer, "http://www.webrtc.org/experiments/rtp-hdrext/video-timing");
-        eprintln!("negotiated ast ext id: {ast_id:?} vt ext id: {vt_id:?}");
-        Ok((answer, ast_id, vt_id))
+        let tc_id = if OFFER_TWCC_EXTMAP {
+            sdp::extract_extmap_id(&answer, TWCC_URI)
+        } else {
+            None
+        };
+        eprintln!("negotiated ast ext id: {ast_id:?} vt ext id: {vt_id:?} tc ext id: {tc_id:?}");
+        Ok((answer, ast_id, vt_id, tc_id))
     }
 }
 
