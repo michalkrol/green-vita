@@ -1,7 +1,6 @@
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-use crate::settings::{ColorProfile, H264Profile};
 
 
 /// Snapshot of per-second metrics drained from METRICS at status() time.
@@ -194,7 +193,7 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     display_pickup_max_us: AtomicU64::new(0),
     present_us: AtomicU64::new(0),
     present_max_us: AtomicU64::new(0),
-    /// PLI (Picture Loss Indicator) counters per trigger
+    // PLI (Picture Loss Indicator) counters per trigger
     pli_submit: AtomicU64::new(0),
     pli_gap: AtomicU64::new(0),
     pli_expired: AtomicU64::new(0),
