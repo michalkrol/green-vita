@@ -12,4 +12,6 @@
 /// in a single-producer single-consumer lock-free ring.
 
 pub mod clock;
+pub mod decode;
+pub mod media;
 pub mod telemetry;
