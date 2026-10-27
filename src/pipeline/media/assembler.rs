@@ -142,7 +142,9 @@ impl AccessUnitAssembler {
 
         // Start or continue AU logic
         let _au_started = if just_started_or_none(self) || self.current_au.is_none() {
-            // Start a new AU
+            // Start a new AU — record the arrival timestamp of the first packet
+            // for the 12 ms hold window (A19: fixed 12 ms, no RTT available).
+            self.au_first_arrival_us = arrival_us;
             // Check for between-AU gap (bullet 4): if last_closed_seq is set and
             // the new seq is not contiguous (modular-16-bit), increment gap_au.
             if self.last_closed_seq != seq && seq.wrapping_sub(self.last_closed_seq) != 1 {
@@ -255,6 +257,14 @@ impl AccessUnitAssembler {
         } else {
             AssemblyOutcome::Damaged(desc)
         }
+    }
+
+    /// Poll a single queued outcome from the internal resolved queue,
+    /// returning None if the queue is empty. This is useful for draining
+    /// outcomes that were resolved earlier (e.g. from flush_due or newer-timestamp
+    /// resolution) but not yet returned by push.
+    pub fn poll_outcome(&mut self) -> Option<AssemblyOutcome> {
+        self.resolved_queue.pop_front()
     }
 
     /// Time-based hold: resolve any open AU older than the 12 ms hold window

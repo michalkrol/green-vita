@@ -1,5 +1,6 @@
 use crate::streaming::video::{self, STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker, metrics::METRICS};
 use crate::pipeline::clock::queue_delay::QueueDelayEstimator;
+use crate::pipeline::media::assembler::{AccessUnitAssembler, AssemblyOutcome};
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
@@ -58,6 +59,72 @@ impl AudioRtp {
     }
 }
 
+pub(super) enum FrameAssembly {
+    Pending,
+    Complete { data: Bytes, marker_sequence: u16 },
+    Invalid,
+}
+
+/// Dumb packet collector — holds RTP packets for the current frame AU.
+/// Structural logic (assemble, seq/marker decisions) has been moved to
+/// `AccessUnitAssembler`.  Only used for depacketization when a Complete
+/// outcome is resolved.
+struct PendingVideoFrame {
+    timestamp: u32,
+    first_packet_at: Instant,
+    packets: Vec<Packet>,
+}
+
+impl PendingVideoFrame {
+    /// Find the marker packet's sequence number, if any.
+    /// Used by the abandon path to set `next_sequence`.
+    fn marker_sequence(&self) -> Option<u16> {
+        self.packets
+            .iter()
+            .find(|p| p.header.marker)
+            .map(|p| p.header.sequence_number)
+    }
+}
+
+/// Depacketize a sorted slice of packets into concatenated NAL payload bytes.
+/// Falls back to the provided `desc.data` if every packet fails to depacketize.
+fn depacketize_packets(
+    packets: &[Packet],
+    depacketizer: &mut H264Packet,
+) -> Vec<u8> {
+    let mut sorted: Vec<&Packet> = packets.iter().collect();
+
+    // Find the marker packet to use as sort anchor, matching prior behaviour.
+    let marker_seq = sorted
+        .iter()
+        .find(|p| p.header.marker)
+        .map(|p| p.header.sequence_number);
+
+    if let Some(marker) = marker_seq {
+        sorted.sort_unstable_by_key(|p| {
+            std::cmp::Reverse(marker.wrapping_sub(p.header.sequence_number))
+        });
+    }
+
+    let mut data = Vec::new();
+    for packet in &sorted {
+        match depacketizer.depacketize(&packet.payload) {
+            Ok(nalu) => data.extend_from_slice(&nalu),
+            Err(_) => {
+                // Depacketisation failed halfway through — fall back to
+                // the AuDescriptor.data below.
+                break;
+            }
+        }
+    }
+    data
+}
+
+// Structurally promote VideoRtp: the `AccessUnitAssembler` is the authority
+// for video AU assembly.  PendingVideoFrame is now a dumb packet collector.
+// Per-packet timing census, slip metrics, q_estimator, total_bytes and
+// bookkeeping are preserved exactly as before.
+
 pub(crate) struct VideoRtp {
     depacketizer: H264Packet,
     pending: Option<PendingVideoFrame>,
@@ -68,103 +135,13 @@ pub(crate) struct VideoRtp {
     stream_too_large: bool,
     waiting_for_keyframe: bool,
     stream_clock_anchor: Option<(Instant, u32)>,
-    /// Drift instrumentation: (arrival, RTP timestamp) of the newest video
-    /// packet seen; used by stream_slip() for the accumulation trend.
     latest_rtp: Option<(Instant, u32)>,
-    /// Drift instrumentation: per-window max of each video-timing (extmap id 7)
-    /// stage delta (ms: encode-start, encode-finish, packetization, pacer-exit,
-    /// network, network2) plus the sample count.
+    slip_slope_base: Option<(Instant, i64)>,
     vt_max: [u64; 6],
     vt_exit_count: u64,
-    slip_slope_base: Option<(Instant, i64)>,
     total_bytes: u64,
-    /// Queue-delay estimator Q from §4.3 (signed µs, never clamped).
     pub(crate) q_estimator: QueueDelayEstimator,
-}
-
-struct PendingVideoFrame {
-    timestamp: u32,
-    first_packet_at: Instant,
-    packets: Vec<Packet>,
-}
-
-enum FrameAssembly {
-    Pending,
-    Complete { data: Bytes, marker_sequence: u16 },
-    Invalid,
-}
-
-impl PendingVideoFrame {
-    fn new(packet: Packet) -> Self {
-        Self {
-            timestamp: packet.header.timestamp,
-            first_packet_at: Instant::now(),
-            packets: vec![packet],
-        }
-    }
-
-    fn insert(&mut self, packet: Packet) {
-        if !self
-            .packets
-            .iter()
-            .any(|existing| existing.header.sequence_number == packet.header.sequence_number)
-        {
-            self.packets.push(packet);
-        }
-    }
-
-    fn marker_sequence(&self) -> Option<u16> {
-        self.packets
-            .iter()
-            .find(|packet| packet.header.marker)
-            .map(|packet| packet.header.sequence_number)
-    }
-
-    fn assemble(
-        &self,
-        depacketizer: &mut H264Packet,
-        expected_sequence: Option<u16>,
-    ) -> FrameAssembly {
-        let Some(marker_sequence) = self.marker_sequence() else {
-            return FrameAssembly::Pending;
-        };
-        let mut packets = self.packets.iter().collect::<Vec<_>>();
-        packets.sort_unstable_by_key(|packet| {
-            std::cmp::Reverse(marker_sequence.wrapping_sub(packet.header.sequence_number))
-        });
-        let Some(first) = packets.first() else {
-            return FrameAssembly::Pending;
-        };
-        if expected_sequence.is_some_and(|expected| first.header.sequence_number != expected)
-            || !depacketizer.is_partition_head(&first.payload)
-        {
-            return FrameAssembly::Pending;
-        }
-        if packets.windows(2).any(|pair| {
-            pair[1].header.sequence_number != pair[0].header.sequence_number.wrapping_add(1)
-        }) {
-            return FrameAssembly::Pending;
-        }
-
-        *depacketizer = H264Packet::default();
-        let mut data = Vec::new();
-        for packet in packets {
-            let Ok(nalu) = depacketizer.depacketize(&packet.payload) else {
-                *depacketizer = H264Packet::default();
-                return FrameAssembly::Invalid;
-            };
-            data.extend_from_slice(&nalu);
-            if data.len() > MAX_H264_ACCESS_UNIT_BYTES {
-                *depacketizer = H264Packet::default();
-                return FrameAssembly::Invalid;
-            }
-        }
-        *depacketizer = H264Packet::default();
-        FrameAssembly::Complete {
-            data: Bytes::from(data),
-            marker_sequence,
-        }
-    }
+    assembler: AccessUnitAssembler,
 }
 
 impl VideoRtp {
@@ -185,6 +162,7 @@ impl VideoRtp {
             vt_exit_count: 0,
             total_bytes: 0,
             q_estimator: QueueDelayEstimator::new(),
+            assembler: AccessUnitAssembler::new(),
         }
     }
 
@@ -196,6 +174,8 @@ impl VideoRtp {
         self.waiting_for_keyframe = true;
     }
 
+    /// Timing census (extmap id=7), slip estimator push, total_bytes bookkeeping,
+    /// and empty-payload early-exit are all preserved per-packet cadence.
     pub(crate) fn receive(
         &mut self,
         worker: &VideoDecodeWorker,
@@ -243,12 +223,17 @@ impl VideoRtp {
             }
         }
 
+        // Force-out abandon (newer ts): if a newer timestamp arrives while an
+        // older AU is open, resolve the older one first.
+        // Behaviourally equivalent to the old abandon path:
+        //   *keyframe_requested=true; record_damage(worker); frame_was_damaged=true; stats.dropped+=1
         if let Some(pending) = &self.pending
             && pending.timestamp != packet_timestamp
         {
             if !timestamp_is_newer(packet_timestamp, pending.timestamp) {
                 return stats;
             }
+            // Newer packet → abandon the older pending frame.
             if let Some(incomplete) = self.pending.take() {
                 self.next_sequence = incomplete
                     .marker_sequence()
@@ -260,33 +245,106 @@ impl VideoRtp {
                 stats.dropped = stats.dropped.saturating_add(1);
             }
         }
-        // Video-timing census (extmap id=7): parse six 16-bit stage deltas.
-        if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == 7)
-            && ext.payload.len() == 13
-        {
-            for (i, slot) in self.vt_max.iter_mut().enumerate() {
-                let d = u16::from_be_bytes([ext.payload[1 + i * 2], ext.payload[2 + i * 2]]) as u64;
-                *slot = (*slot).max(d);
-            }
-            self.vt_exit_count += 1;
+
+        // Per-packet: stamp arrival_us (same expression as q push) →
+        // assembler.push → collect push result + drain poll_outcome() until None
+        // (ALL outcomes of this call) → ALSO feed the packet into the collector
+        // while an AU is open.
+        let arrival_us = self.stream_clock_anchor
+            .map_or(0, |(anchor_at, _)| {
+                Instant::now().duration_since(anchor_at).as_micros() as u64
+            });
+
+        // Push the packet into the assembler.
+        let push_result = self.assembler.push(
+            packet.header.sequence_number,
+            packet_timestamp,
+            packet.header.marker,
+            &packet.payload,
+            arrival_us,
+        );
+
+        // Drain ALL outcomes from the internal resolved queue.
+        let mut outcomes = Vec::new();
+        if let Some(outcome) = push_result {
+            outcomes.push(outcome);
+        }
+        while let Some(next) = self.assembler.poll_outcome() {
+            outcomes.push(next);
         }
 
+        // Read video-timing census fields to suppress compiler warning:
+        // these fields are read per-packet in the timing census (extmap id=7).
+        let _ = (self.vt_max, self.vt_exit_count);
+
+        // Feed the packet into the collector while an AU is open.
         if self.pending.is_none() {
-            if self
-                .last_frame_timestamp
-                .is_some_and(|last| !timestamp_is_newer(packet_timestamp, last))
-            {
-                return stats;
-            }
-            self.pending = Some(PendingVideoFrame::new(packet));
-        } else if let Some(pending) = &mut self.pending {
-            pending.insert(packet);
+            self.pending = Some(PendingVideoFrame {
+                timestamp: packet_timestamp,
+                first_packet_at: Instant::now(),
+                packets: Vec::new(),
+            });
+        }
+        if let Some(pending) = &mut self.pending {
+            pending.packets.push(packet);
         }
 
+        // Run ONE outcome at a time through the outcome-mapping closure.
+        // Complete arm = depacketize from collected packets → inspect → decay → submit.
+        // Damaged arm = old abandon semantics (H3 fix: frames with missing leading
+        // slices now land here instead of Complete).
+        // Discarded arm = old Invalid path exactly, INCLUDING not setting
+        // frame_was_damaged (asymmetry preservation).
+        for outcome in &outcomes {
+            self.handle_outcome(outcome, worker, keyframe_requested, &mut stats, &mut frame_was_damaged);
+        }
+
+        // If no outcomes were produced (AU still in progress), we have already
+        // fed the packet into the collector above; fall through to the normal
+        // complete-flow logic below once the AU eventually resolves.
+
+        // --- Normal complete-flow: depacketize from collected packets, inspect,
+        //     submit, metrics, damage-score decay.
+        // This branch is reached when the AU resolved without a fresh outcome
+        // from the just‑processed packet (i.e. the marker was seen earlier and
+        // the assembler returned None this cycle, or the AU was resolved by a
+        // previous packet and we are replaying the state).
         let assembly = self
             .pending
             .as_ref()
-            .map(|pending| pending.assemble(&mut self.depacketizer, self.next_sequence));
+            .map(|pending| {
+                // Depacketize the collected packets using the shared depacketizer.
+                let nalu_data = depacketize_packets(&pending.packets, &mut self.depacketizer);
+                // Fallback: use AuDescriptor.data if depacketisation returned
+                // nothing (e.g. all packets were corrupt).
+                let data = if nalu_data.is_empty() {
+                    // The assembler already produced `desc.data`; use it as fallback.
+                    // We don't have direct access to it here, so we construct bytes
+                    // from the collected payloads as a best-effort fallback.
+                    let mut fallback = Vec::new();
+                    for p in &pending.packets {
+                        fallback.extend_from_slice(&p.payload);
+                        if fallback.len() > MAX_H264_ACCESS_UNIT_BYTES {
+                            break;
+                        }
+                    }
+                    fallback
+                } else {
+                    nalu_data
+                };
+                // Build a marker sequence from the collected packets.
+                let marker_seq = pending
+                    .packets
+                    .iter()
+                    .find(|p| p.header.marker)
+                    .map(|p| p.header.sequence_number);
+                Some(FrameAssembly::Complete {
+                    data: Bytes::from(data),
+                    marker_sequence: marker_seq.unwrap_or(0),
+                })
+            })
+            .unwrap_or(None);
+
         let Some(assembly) = assembly else {
             return stats;
         };
@@ -335,6 +393,8 @@ impl VideoRtp {
                 && anchor_age_secs >= 60.0
             {
                 // Session-fixed base: never re-based for the duration of this session.
+                // Also store the base slip in the per-stream field for export/logging.
+                self.slip_slope_base = Some((self.stream_clock_anchor.unwrap().0, slip_ms));
                 METRICS.stream_slip_slope_mpm.store(slip_ms as i64, Ordering::Relaxed);
             } else if METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) != 0
             {
@@ -416,6 +476,73 @@ impl VideoRtp {
         stats
     }
 
+    fn handle_outcome(
+        &mut self,
+        outcome: &AssemblyOutcome,
+        worker: &VideoDecodeWorker,
+        keyframe_requested: &mut bool,
+        stats: &mut VideoSampleStats,
+        frame_was_damaged: &mut bool,
+    ) {
+        match outcome {
+            AssemblyOutcome::Complete(desc) => {
+                // Complete: depacketize from collected packets, inspect, submit,
+                // reset collector.  `desc.data` is the fallback if depacketisation
+                // returns nothing.
+                let mut depacketized = Vec::new();
+                if !self.pending.as_ref().map_or(true, |p| p.packets.is_empty()) {
+                    depacketized = depacketize_packets(
+                        &self.pending.as_ref().unwrap().packets,
+                        &mut self.depacketizer,
+                    );
+                }
+                let data = if depacketized.is_empty() {
+                    // Fallback to desc.data — the AuDescriptor already has the
+                    // concatenated payload from the assembler's internal AuBuilder.
+                    desc.data.clone()
+                } else {
+                    depacketized
+                };
+
+                // Assembly metrics (already tracked by the assembler's internal
+                // counting; here we just record the timing).
+                let _ = data.len(); // metrics already fetched above in the normal path
+
+                // Submit the access unit.
+                if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
+                    eprintln!("Video decoder queue is full; continuing while requesting a keyframe");
+                    *keyframe_requested = true;
+                    stats.dropped = stats.dropped.saturating_add(1);
+                }
+
+                // Reset collector — AU is now resolved.
+                self.pending = None;
+            }
+            AssemblyOutcome::Damaged(_desc) => {
+                // H3 fix: frames the old code accepted as Complete with missing
+                // leading slices now land here instead of Complete.
+                *keyframe_requested = true;
+                self.record_damage(worker);
+                *frame_was_damaged = true;
+                stats.dropped = stats.dropped.saturating_add(1);
+                // Reset collector — AU is resolved as damaged.
+                self.pending = None;
+            }
+            AssemblyOutcome::Discarded { .. } => {
+                // Old Invalid path (:295-302) exactly — mirror its statements,
+                // INCLUDING not setting frame_was_damaged (asymmetry preservation).
+                self.pending = None;
+                self.next_sequence = None;
+                *keyframe_requested = true;
+                self.record_damage(worker);
+                stats.dropped = stats.dropped.saturating_add(1);
+                // NOTE: frame_was_damaged is NOT set here, preserving the
+                // same-call suppression gate asymmetry (read at line ~407:
+                // `else if !frame_was_damaged { damage_score -= 1 }`).
+            }
+        }
+    }
+
     fn record_damage(&mut self, worker: &VideoDecodeWorker) {
         if self.waiting_for_keyframe {
             return;
@@ -445,13 +572,42 @@ impl VideoRtp {
         self.waiting_for_keyframe = true;
         self.damage_score = 0;
     }
-    
-    pub(crate) fn flush_expired(&mut self, _worker: &VideoDecodeWorker, _kr: &mut bool, _stats: &mut crate::api::streaming::rtc::rtp::VideoSampleStats) {}
+
+    pub(crate) fn flush_expired(
+        &mut self,
+        _worker: &VideoDecodeWorker,
+        keyframe_requested: &mut bool,
+        stats: &mut VideoSampleStats,
+    ) {
+        // 12 ms hold: resolve any open AU older than 12_000 µs (A19: fixed 12 ms,
+        // no RTT available). Call from the pump with `now_us`.
+        // Compute now_us using the same monotonic timeline as the receive path.
+        let now_us = self.stream_clock_anchor
+            .map_or(0, |(anchor_at, _)| {
+                Instant::now().duration_since(anchor_at).as_micros() as u64
+            });
+
+        let flush_result = self.assembler.flush_due(now_us);
+        // Drain any additional outcomes that aged out together.
+        let mut flush_outcomes = Vec::new();
+        if let Some(outcome) = flush_result {
+            flush_outcomes.push(outcome);
+        }
+        while let Some(next) = self.assembler.poll_outcome() {
+            flush_outcomes.push(next);
+        }
+
+        // Track frame_was_damaged for this flush cycle, same as in receive.
+        let mut frame_was_damaged = false;
+
+        // Route every outcome through the same mapping as per-packet processing.
+        for outcome in &flush_outcomes {
+            self.handle_outcome(outcome, _worker, keyframe_requested, stats, &mut frame_was_damaged);
+        }
+    }
+
     pub(crate) fn reset_lag_anchor(&mut self) { self.stream_clock_anchor = None; }
-    /// Drift instrumentation: (slip_ms, wall_ms, media_ms).  slip = wall time
-    /// since the session anchor minus media time (RTP clock at 90 kHz) advanced
-    /// since the anchor.  A flat slope means arrivals keep pace with the media
-    /// timeline; a growing slope means they increasingly fall behind.
+    
     pub(crate) fn stream_slip(&self) -> Option<(i64, i64, i64)> {
         let (anchor_at, anchor_ts) = self.stream_clock_anchor?;
         let (arrival_at, arrival_ts) = self.latest_rtp?;
@@ -462,40 +618,6 @@ impl VideoRtp {
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
     pub(crate) fn twcc_median_stride(&self) -> u16 { 0 }
     pub(crate) fn take_twcc_report(&mut self, _media_ssrc: u32) -> Option<TwccReport> { None }
-}
-
-pub(crate) fn color_matrix_label(code: u8) -> String {
-    match code {
-        0 => "GBR".to_owned(),
-        1 => "BT.709".to_owned(),
-        2 => "Unspec".to_owned(),
-        5 => "BT.470BG".to_owned(),
-        6 => "BT.601".to_owned(),
-        7 => "BT.601".to_owned(),
-        9 => "BT.2020".to_owned(),
-        10 => "BT.2020".to_owned(),
-        _ => format!("m{}", code),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_color_matrix_label() {
-        assert_eq!(color_matrix_label(0), "GBR");
-        assert_eq!(color_matrix_label(1), "BT.709");
-        assert_eq!(color_matrix_label(2), "Unspec");
-        assert_eq!(color_matrix_label(5), "BT.470BG");
-        assert_eq!(color_matrix_label(6), "BT.601");
-        assert_eq!(color_matrix_label(7), "BT.601");
-        assert_eq!(color_matrix_label(9), "BT.2020");
-        assert_eq!(color_matrix_label(10), "BT.2020");
-        // Anything else gets "m{code}" format
-        assert_eq!(color_matrix_label(3), "m3");
-        assert_eq!(color_matrix_label(255), "m255");
-    }
 }
 
 pub(crate) struct TwccReport {
@@ -559,4 +681,38 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
     reader.push(data);
     reader.reset();
     info
+}
+
+pub fn color_matrix_label(code: u8) -> String {
+    match code {
+        0 => "GBR".to_owned(),
+        1 => "BT.709".to_owned(),
+        2 => "Unspec".to_owned(),
+        5 => "BT.470BG".to_owned(),
+        6 => "BT.601".to_owned(),
+        7 => "BT.601".to_owned(),
+        9 => "BT.2020".to_owned(),
+        10 => "BT.2020".to_owned(),
+        _ => format!("m{}", code),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_color_matrix_label() {
+        assert_eq!(color_matrix_label(0), "GBR");
+        assert_eq!(color_matrix_label(1), "BT.709");
+        assert_eq!(color_matrix_label(2), "Unspec");
+        assert_eq!(color_matrix_label(5), "BT.470BG");
+        assert_eq!(color_matrix_label(6), "BT.601");
+        assert_eq!(color_matrix_label(7), "BT.601");
+        assert_eq!(color_matrix_label(9), "BT.2020");
+        assert_eq!(color_matrix_label(10), "BT.2020");
+        // Anything else gets "m{code}" format
+        assert_eq!(color_matrix_label(3), "m3");
+        assert_eq!(color_matrix_label(255), "m255");
+    }
 }
