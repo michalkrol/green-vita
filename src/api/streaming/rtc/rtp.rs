@@ -1,4 +1,5 @@
 use crate::streaming::video::{self, STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker, metrics::METRICS};
+use crate::pipeline::clock::queue_delay::QueueDelayEstimator;
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
@@ -77,6 +78,8 @@ pub(crate) struct VideoRtp {
     vt_exit_count: u64,
     slip_slope_base: Option<(Instant, i64)>,
     total_bytes: u64,
+    /// Queue-delay estimator Q from §4.3 (signed µs, never clamped).
+    pub(crate) q_estimator: QueueDelayEstimator,
 }
 
 struct PendingVideoFrame {
@@ -181,6 +184,7 @@ impl VideoRtp {
             vt_max: [0; 6],
             vt_exit_count: 0,
             total_bytes: 0,
+            q_estimator: QueueDelayEstimator::new(),
         }
     }
 
@@ -219,7 +223,24 @@ impl VideoRtp {
         }
         match self.latest_rtp {
             Some((_, last_ts)) if !timestamp_is_newer(packet_timestamp, last_ts) => {}
-            _ => self.latest_rtp = Some((Instant::now(), packet_timestamp)),
+            _ => {
+                self.latest_rtp = Some((Instant::now(), packet_timestamp));
+                // Push queue-delay estimator input per video RTP packet.
+                // send_us = RTP timestamp gradient fallback for abs-send-time
+                // (per §16.4 A3; abs-send-time wiring comes later).
+                let send_us = (packet_timestamp as u64).wrapping_mul(100) / 9;
+                // arrival_us = same local-µs timeline as slip: wall time since
+                // the session anchor (the slip computation uses
+                // arrival_at.duration_since(anchor_at)).
+                let arrival_us = self.stream_clock_anchor
+                    .map_or(0, |(anchor_at, _)| {
+                        Instant::now().duration_since(anchor_at).as_micros() as u64
+                    });
+                self.q_estimator.push(crate::pipeline::clock::queue_delay::PacketInput {
+                    send_us,
+                    arrival_us,
+                });
+            }
         }
 
         if let Some(pending) = &self.pending
@@ -301,14 +322,12 @@ impl VideoRtp {
         if let Some(slip) = self.stream_slip() {
             let (slip_ms, _wall_ms, media_ms) = slip;
             // Current slip (updated every packet; HUD reads this value).
-            // Use max(0, ...) to avoid u64 wrap when slip_ms is negative
-            // (media outpaces wall clock). The slip is absolute since the
-            // first video AU, never re-anchored per session design.
-            METRICS.stream_slip_us.store(slip_ms.max(0) as u64, Ordering::Relaxed);
-            // Maximum slip observed during the session (max of positive slips).
-            if slip_ms > 0 {
-                METRICS.stream_slip_max_us.fetch_max(slip_ms as u64, Ordering::Relaxed);
-            }
+            // Store signed slip directly — no clamp to positive, since signed
+            // slip conveys direction (wall vs media time). Cite
+            // RENDERING-PIPELINE-ARCHITECTURE-PROPOSITION.md §4.4.
+            METRICS.stream_slip_us.store(slip_ms as i64, Ordering::Relaxed);
+            // Maximum slip observed during the session (max absolute magnitude).
+            METRICS.stream_slip_max_us.fetch_max(slip_ms.unsigned_abs() as u64, Ordering::Relaxed);
             // One-shot base slope: capture once when wall-time since anchor ≥ 60 s.
             let anchor_age_secs = self.stream_clock_anchor
                 .map_or(0.0, |(anchor_at, _)| anchor_at.elapsed().as_secs_f64());
@@ -321,7 +340,7 @@ impl VideoRtp {
             {
                 // Compute running slope relative to the base captured at ~60 s.
                 // slope in ms/min: (delta_us * 60) / (1000 * elapsed_s)
-                let base_slip = METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) as u64;
+                let base_slip = METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed) as i64;
                 let elapsed_s = anchor_age_secs - 60.0; // seconds after the 60s base point
                 if elapsed_s > 1.0 {
                     let delta_us = slip_ms as i64 - base_slip as i64;

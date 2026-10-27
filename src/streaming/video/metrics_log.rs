@@ -23,6 +23,8 @@ pub(crate) struct RowExtras {
 }
 
 const MAX_ROWS: usize = 20_000;
+/// CSV header for per-session metrics log. Updated in sync with the cols array in write_row.
+const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,q_us,q_us_max,q_slope_mpm";
 
 /// RAM-buffered CSV log for a streaming session.
 /// Rows are accumulated at 1 Hz from status() and flushed once at session end.
@@ -57,57 +59,60 @@ impl MetricsCsvLog {
         let t_s = self.started_at.elapsed().as_secs();
         // Fixed-size array so the column count is compiler-enforced and can never
         // drift out of sync with HEADER. Order MUST match HEADER below.
-        let cols: [u64; 50] = [
-            t_s,
-            snapshot.rtp_assembly_sum_us,
-            snapshot.rtp_assembly_count,
-            snapshot.rtp_assembly_max_us,
-            snapshot.decode_us,
-            snapshot.pipeline_age_us,
-            snapshot.decoded,
-            snapshot.skipped,
-            snapshot.rate_limited,
-            snapshot.presented,
-            snapshot.replaced,
-            snapshot.queue_full,
-            snapshot.resyncs,
-            snapshot.resets,
-            snapshot.hw_buffered,
-            snapshot.pipeline_age_max_us,
-            snapshot.stream_lag_us,
-            snapshot.stream_lag_max_us,
-            snapshot.rtp_hold_saved,
-            snapshot.rtp_hold_expired,
-            snapshot.rtp_gaps,
-            snapshot.rtp_abandons,
-            snapshot.rtp_wait_drops,
-            snapshot.rtp_invalid,
-            snapshot.dec_queue_full,
-            snapshot.flushes,
-            snapshot.twcc_sent,
-            snapshot.twcc_samples,
-            snapshot.rtp_ext_any,
-            snapshot.twcc_stride,
-            snapshot.video_metadata_sent,
-            snapshot.video_bandwidth_kbps,
-            snapshot.display_pickup_us,
-            snapshot.display_pickup_max_us,
+        let cols: [i64; 53] = [
+            t_s as i64,
+            snapshot.rtp_assembly_sum_us as i64,
+            snapshot.rtp_assembly_count as i64,
+            snapshot.rtp_assembly_max_us as i64,
+            snapshot.decode_us as i64,
+            snapshot.pipeline_age_us as i64,
+            snapshot.decoded as i64,
+            snapshot.skipped as i64,
+            snapshot.rate_limited as i64,
+            snapshot.presented as i64,
+            snapshot.replaced as i64,
+            snapshot.queue_full as i64,
+            snapshot.resyncs as i64,
+            snapshot.resets as i64,
+            snapshot.hw_buffered as i64,
+            snapshot.pipeline_age_max_us as i64,
+            snapshot.stream_lag_us as i64,
+            snapshot.stream_lag_max_us as i64,
+            snapshot.rtp_hold_saved as i64,
+            snapshot.rtp_hold_expired as i64,
+            snapshot.rtp_gaps as i64,
+            snapshot.rtp_abandons as i64,
+            snapshot.rtp_wait_drops as i64,
+            snapshot.rtp_invalid as i64,
+            snapshot.dec_queue_full as i64,
+            snapshot.flushes as i64,
+            snapshot.twcc_sent as i64,
+            snapshot.twcc_samples as i64,
+            snapshot.rtp_ext_any as i64,
+            snapshot.twcc_stride as i64,
+            snapshot.video_metadata_sent as i64,
+            snapshot.video_bandwidth_kbps as i64,
+            snapshot.display_pickup_us as i64,
+            snapshot.display_pickup_max_us as i64,
             snapshot.stream_slip_us,
-            snapshot.stream_slip_max_us,
-            snapshot.audio_queue_ms,
-            extras.src_fps,
-            u64::from(extras.enc_width),
-            u64::from(extras.enc_height),
-            u64::from(extras.waiting_keyframe),
-            extras.drops,
-            extras.decode_errors,
-            snapshot.vt_exit_count,
-            snapshot.vt_max_0,
-            snapshot.vt_max_1,
-            snapshot.vt_max_2,
-            snapshot.vt_max_3,
-            snapshot.vt_max_4,
-            snapshot.vt_max_5,
+            snapshot.stream_slip_max_us as i64,
+            snapshot.audio_queue_ms as i64,
+            extras.src_fps as i64,
+            u64::from(extras.enc_width) as i64,
+            u64::from(extras.enc_height) as i64,
+            u64::from(extras.waiting_keyframe) as i64,
+            extras.drops as i64,
+            extras.decode_errors as i64,
+            snapshot.vt_exit_count as i64,
+            snapshot.vt_max_0 as i64,
+            snapshot.vt_max_1 as i64,
+            snapshot.vt_max_2 as i64,
+            snapshot.vt_max_3 as i64,
+            snapshot.vt_max_4 as i64,
+            snapshot.vt_max_5 as i64,
+            snapshot.q_us,
+            snapshot.q_us_max as i64,
+            snapshot.q_slope_mpm,
         ];
         let row = cols
             .iter()
@@ -127,11 +132,6 @@ impl MetricsCsvLog {
         // Ensure directory exists (no-op if already exists on-device; off-device will fail)
         let _ = std::fs::create_dir_all("ux0:data/xcloud-rust");
         // Build the full CSV content once: header + all rows + footer
-        let header = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5";
-        let rows_content: String = buffer
-            .iter()
-            .map(|row| format!("{row}\n"))
-            .collect();
         let duration_s = self.started_at.elapsed().as_secs();
         let footer = format!(
             "// session_duration_s={}, total_rows={}, dropped_rows={}",
@@ -139,7 +139,11 @@ impl MetricsCsvLog {
             buffer.len(),
             self.dropped_rows
         );
-        let content = format!("{header}\n{rows_content}{footer}\n");
+        let rows_content: String = buffer
+            .iter()
+            .map(|row| format!("{row}\n"))
+            .collect();
+        let content = format!("{HEADER}\n{rows_content}{footer}\n");
         // Try writing the full content; on failure, fallback to OpenOptions then eprintln
         match std::fs::write(path, &content) {
             Ok(()) => {
@@ -154,7 +158,7 @@ impl MetricsCsvLog {
                     .truncate(true)
                     .open(path)
                 {
-                    let _ = writeln!(file, "{header}");
+                    let _ = writeln!(file, "{HEADER}");
                     for row in buffer.iter() {
                         let _ = writeln!(file, "{row}");
                     }
@@ -169,4 +173,192 @@ impl MetricsCsvLog {
     }
 }
 
-// end of metrics_log.rs
+// Private helper: build a CSV row string from a MetricsSnapshot (mirrors write_row logic).
+fn csv_row_from_snapshot(snapshot: &MetricsSnapshot) -> String {
+    // Same 53-element layout as the cols array in write_row, using i64 values.
+    let cols: [i64; 53] = [
+        0 as i64,                                                    // t_s
+        snapshot.rtp_assembly_sum_us as i64,
+        snapshot.rtp_assembly_count as i64,
+        snapshot.rtp_assembly_max_us as i64,
+        snapshot.decode_us as i64,
+        snapshot.pipeline_age_us as i64,
+        snapshot.decoded as i64,
+        snapshot.skipped as i64,
+        snapshot.rate_limited as i64,
+        snapshot.presented as i64,
+        snapshot.replaced as i64,
+        snapshot.queue_full as i64,
+        snapshot.resyncs as i64,
+        snapshot.resets as i64,
+        snapshot.hw_buffered as i64,
+        snapshot.pipeline_age_max_us as i64,
+        snapshot.stream_lag_us as i64,
+        snapshot.stream_lag_max_us as i64,
+        snapshot.rtp_hold_saved as i64,
+        snapshot.rtp_hold_expired as i64,
+        snapshot.rtp_gaps as i64,
+        snapshot.rtp_abandons as i64,
+        snapshot.rtp_wait_drops as i64,
+        snapshot.rtp_invalid as i64,
+        snapshot.dec_queue_full as i64,
+        snapshot.flushes as i64,
+        snapshot.twcc_sent as i64,
+        snapshot.twcc_samples as i64,
+        snapshot.rtp_ext_any as i64,
+        snapshot.twcc_stride as i64,
+        snapshot.video_metadata_sent as i64,
+        snapshot.video_bandwidth_kbps as i64,
+            snapshot.display_pickup_us as i64,
+            snapshot.display_pickup_max_us as i64,
+            snapshot.stream_slip_us,
+        snapshot.stream_slip_max_us as i64,
+        snapshot.audio_queue_ms as i64,
+        0 as i64,                                                    // src_fps
+        0 as i64,                                                    // enc_width
+        0 as i64,                                                    // enc_height
+        0 as i64,                                                    // waiting_keyframe
+        0 as i64,                                                    // drops
+        0 as i64,                      // decode_errors
+        0 as i64,                                                    // vt_exit_count
+        0 as i64,                                                    // vt_max_0
+        0 as i64,                                                    // vt_max_1
+        0 as i64,                                                    // vt_max_2
+        0 as i64,                                                    // vt_max_3
+        0 as i64,                                                    // vt_max_4
+        0 as i64,                                                    // vt_max_5
+        snapshot.q_us,
+        snapshot.q_us_max as i64,
+        snapshot.q_slope_mpm,
+    ];
+    cols.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(",")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_csv_header_row_column_count_match() {
+        // Build a dummy snapshot with known q values.
+        let snapshot = MetricsSnapshot {
+            rtp_assembly_sum_us: 0,
+            rtp_assembly_count: 0,
+            rtp_assembly_max_us: 0,
+            decode_us: 0,
+            pipeline_age_us: 0,
+            decoded: 0,
+            skipped: 0,
+            rate_limited: 0,
+            presented: 0,
+            replaced: 0,
+            queue_full: 0,
+            resyncs: 0,
+            resets: 0,
+            hw_buffered: 0,
+            pipeline_age_max_us: 0,
+            stream_lag_us: 0,
+            stream_lag_max_us: 0,
+            stream_slip_us: 0,
+            stream_slip_max_us: 0,
+            stream_slip_slope_mpm: 0,
+            audio_queue_ms: 0,
+            q_us: -42,  // signed value required by the task
+            q_us_max: 1000,
+            q_slope_mpm: 500,
+            vt_exit_count: 0,
+            vt_max_0: 0,
+            vt_max_1: 0,
+            vt_max_2: 0,
+            vt_max_3: 0,
+            vt_max_4: 0,
+            vt_max_5: 0,
+            rtp_hold_saved: 0,
+            rtp_hold_expired: 0,
+            rtp_gaps: 0,
+            rtp_abandons: 0,
+            rtp_wait_drops: 0,
+            rtp_invalid: 0,
+            dec_queue_full: 0,
+            flushes: 0,
+            twcc_sent: 0,
+            twcc_samples: 0,
+            rtp_ext_any: 0,
+            twcc_stride: 0,
+            video_metadata_sent: 0,
+            video_bandwidth_kbps: 0,
+            display_pickup_us: 0,
+            display_pickup_max_us: 0,
+        };
+
+        let row = csv_row_from_snapshot(&snapshot);
+        let header_cols = HEADER.split(',').count();
+        let row_cols = row.split(',').count();
+        assert_eq!(
+            header_cols, row_cols,
+            "Header column count ({}) must match row column count ({})",
+            header_cols, row_cols
+        );
+    }
+
+    #[test]
+    fn test_csv_row_allows_negative_q_us() {
+        // Verify that a negative q_us produces a minus sign in the CSV row.
+        let snapshot = MetricsSnapshot {
+            rtp_assembly_sum_us: 0,
+            rtp_assembly_count: 0,
+            rtp_assembly_max_us: 0,
+            decode_us: 0,
+            pipeline_age_us: 0,
+            decoded: 0,
+            skipped: 0,
+            rate_limited: 0,
+            presented: 0,
+            replaced: 0,
+            queue_full: 0,
+            resyncs: 0,
+            resets: 0,
+            hw_buffered: 0,
+            pipeline_age_max_us: 0,
+            stream_lag_us: 0,
+            stream_lag_max_us: 0,
+            rtp_hold_saved: 0,
+            rtp_hold_expired: 0,
+            rtp_gaps: 0,
+            rtp_abandons: 0,
+            rtp_wait_drops: 0,
+            rtp_invalid: 0,
+            dec_queue_full: 0,
+            flushes: 0,
+            twcc_sent: 0,
+            twcc_samples: 0,
+            rtp_ext_any: 0,
+            twcc_stride: 0,
+            video_metadata_sent: 0,
+            video_bandwidth_kbps: 0,
+            display_pickup_us: 0,
+            display_pickup_max_us: 0,
+            stream_slip_us: 0,
+            stream_slip_max_us: 0,
+            stream_slip_slope_mpm: 0,
+            audio_queue_ms: 0,
+            q_us: -1000,  // negative value
+            q_us_max: 1000,
+            q_slope_mpm: 0,
+            vt_exit_count: 0,
+            vt_max_0: 0,
+            vt_max_1: 0,
+            vt_max_2: 0,
+            vt_max_3: 0,
+            vt_max_4: 0,
+            vt_max_5: 0,
+        };
+
+        let row = csv_row_from_snapshot(&snapshot);
+        // q_us = -1000 should appear as "-1000" in the CSV.
+        assert!(
+            row.contains("-1000"),
+            "Negative q_us (-1000) should appear in CSV row, but row was: {}",
+            row
+        );
+    }
+}

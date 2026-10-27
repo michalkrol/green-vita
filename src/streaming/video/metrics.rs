@@ -22,10 +22,13 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) pipeline_age_max_us: u64,
     pub(crate) stream_lag_us: u64,
     pub(crate) stream_lag_max_us: u64,
-    pub(crate) stream_slip_us: u64,
+    pub(crate) stream_slip_us: i64,
     pub(crate) stream_slip_max_us: u64,
     pub(crate) stream_slip_slope_mpm: i64,
     pub(crate) audio_queue_ms: u64,
+    pub(crate) q_us: i64,
+    pub(crate) q_us_max: u64,
+    pub(crate) q_slope_mpm: i64,
     pub(crate) vt_exit_count: u64,
     pub(crate) vt_max_0: u64,
     pub(crate) vt_max_1: u64,
@@ -69,10 +72,13 @@ pub(crate) struct VideoMetrics {
     pub(crate) pipeline_age_max_us: AtomicU64,
     pub(crate) stream_lag_us: AtomicU64,
     pub(crate) stream_lag_max_us: AtomicU64,
-    pub(crate) stream_slip_us: AtomicU64,
+    pub(crate) stream_slip_us: AtomicI64,
     pub(crate) stream_slip_max_us: AtomicU64,
     pub(crate) stream_slip_slope_mpm: AtomicI64,
     pub(crate) audio_queue_ms: AtomicU64,
+    pub(crate) q_us: AtomicI64,
+    pub(crate) q_us_max: AtomicU64,
+    pub(crate) q_slope_mpm: AtomicI64,
     pub(crate) vt_exit_count: u64,
     pub(crate) vt_max_0: u64,
     pub(crate) vt_max_1: u64,
@@ -116,10 +122,13 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     pipeline_age_max_us: AtomicU64::new(0),
     stream_lag_us: AtomicU64::new(0),
     stream_lag_max_us: AtomicU64::new(0),
-    stream_slip_us: AtomicU64::new(0),
+    stream_slip_us: AtomicI64::new(0),
     stream_slip_max_us: AtomicU64::new(0),
     stream_slip_slope_mpm: AtomicI64::new(0),
     audio_queue_ms: AtomicU64::new(0),
+    q_us: AtomicI64::new(0),
+    q_us_max: AtomicU64::new(0),
+    q_slope_mpm: AtomicI64::new(0),
     vt_exit_count: 0,
     vt_max_0: 0,
     vt_max_1: 0,
@@ -174,7 +183,7 @@ pub fn video_performance_summary() -> String {
     let rtp_max = METRICS.rtp_assembly_max_us.load(Ordering::Relaxed);
     // Two lines: the HUD label clips long single-line output on the Vita panel.
     let line1 = format!(
-        "d/p:{}/{} d/a:{}/{} skip:{} cap:{} repl:{} q:{} hwb:{} ageMax:{} lag:{} lagMax:{} bw:{} aq:{} slip:{} slipS:{}",
+        "d/p:{}/{} d/a:{}/{} skip:{} cap:{} repl:{} q:{} hwb:{} ageMax:{} lag:{} lagMax:{} bw:{} aq:{} slip:{} slipS:{} qS:{}",
         METRICS.decoded.load(Ordering::Relaxed),
         METRICS.presented.load(Ordering::Relaxed),
         METRICS.decode_us.load(Ordering::Relaxed) / 1000,
@@ -182,7 +191,7 @@ pub fn video_performance_summary() -> String {
         METRICS.skipped.load(Ordering::Relaxed),
         METRICS.rate_limited.load(Ordering::Relaxed),
         METRICS.replaced.load(Ordering::Relaxed),
-        METRICS.queue_full.load(Ordering::Relaxed),
+        METRICS.q_us.load(Ordering::Relaxed),
         METRICS.hw_buffered.load(Ordering::Relaxed),
         METRICS.pipeline_age_max_us.load(Ordering::Relaxed),
         METRICS.stream_lag_us.load(Ordering::Relaxed) / 1000,
@@ -191,6 +200,7 @@ pub fn video_performance_summary() -> String {
         METRICS.audio_queue_ms.load(Ordering::Relaxed),
         METRICS.stream_slip_us.load(Ordering::Relaxed),
         METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed),
+        METRICS.q_slope_mpm.load(Ordering::Relaxed),
     );
     let line2 = format!(
         "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{}",
@@ -252,6 +262,9 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         stream_slip_max_us: METRICS.stream_slip_max_us.swap(0, Ordering::Relaxed),
         stream_slip_slope_mpm: METRICS.stream_slip_slope_mpm.swap(0, Ordering::Relaxed),
         audio_queue_ms: METRICS.audio_queue_ms.swap(0, Ordering::Relaxed),
+        q_us: METRICS.q_us.swap(0, Ordering::Relaxed),
+        q_us_max: METRICS.q_us_max.swap(0, Ordering::Relaxed),
+        q_slope_mpm: METRICS.q_slope_mpm.swap(0, Ordering::Relaxed),
         vt_exit_count: METRICS.vt_exit_count,
         vt_max_0: METRICS.vt_max_0,
         vt_max_1: METRICS.vt_max_1,
@@ -300,6 +313,9 @@ pub(crate) fn reset_session_metrics() {
     METRICS.stream_lag_max_us.store(0, Ordering::Relaxed);
     METRICS.stream_slip_us.store(0, Ordering::Relaxed);
     METRICS.stream_slip_max_us.store(0, Ordering::Relaxed);
+    METRICS.q_us.store(0, Ordering::Relaxed);
+    METRICS.q_us_max.store(0, Ordering::Relaxed);
+    METRICS.q_slope_mpm.store(0, Ordering::Relaxed);
     METRICS.audio_queue_ms.store(0, Ordering::Relaxed);
     METRICS.rtp_hold_saved.store(0, Ordering::Relaxed);
     METRICS.rtp_hold_expired.store(0, Ordering::Relaxed);
@@ -329,4 +345,3 @@ pub(crate) fn reset_session_metrics() {
         }
         *log = None;
     }
-

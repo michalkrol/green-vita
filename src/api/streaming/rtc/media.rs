@@ -273,6 +273,9 @@ impl VideoReceiver {
         // Drain all per-second metrics into a snapshot for CSV logging.
         // Since video_performance_summary() uses load() (not swap), the metrics
         // are still intact and will be properly captured by drain_metrics().
+        // Compute q_slope_mpm from the queue-delay estimator before draining.
+        let q_slope_mpm = self.rtp.q_estimator.trend_us_per_s() * 60.0 / 1000.0;
+        METRICS.q_slope_mpm.store(q_slope_mpm.round() as i64, Ordering::Relaxed);
         let snapshot = drain_metrics();
 
         // If render timing metadata is enabled, queue a metadata frame.

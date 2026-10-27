@@ -191,8 +191,6 @@ fn run_decode_loop(
     // now selected by the scheduler (pipeline::decode). The yield
     // duration is chosen per-mode: DisplayClocked → 13 ms, Paced →
     // depth-scaled, PassThrough → 1 ms or 0 if idle.
-    // const DECODE_PACE_SLEEP: Duration = Duration::from_micros(13_000);
-
     let mut decoder = Some(initial_decoder);
 
     loop {
