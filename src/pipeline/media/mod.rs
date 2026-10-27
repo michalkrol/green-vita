@@ -15,3 +15,4 @@
 /// - Oversize AUs (>2 MiB) are discarded to prevent decoder overflow.
 pub mod nal;
 pub mod assembler;
+pub mod gop;
