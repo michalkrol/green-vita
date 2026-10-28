@@ -156,6 +156,8 @@ mod tests {
             had_first_slice,
             holes: 0,
             packet_count: 1,
+            first_seq: 0,
+            last_seq: 0,
         }
     }
 
@@ -169,6 +171,8 @@ mod tests {
             had_first_slice,
             holes: if damaged { 1 } else { 0 },
             packet_count: 1,
+            first_seq: 0,
+            last_seq: 0,
         }
     }
 

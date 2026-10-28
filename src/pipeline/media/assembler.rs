@@ -33,8 +33,13 @@ pub enum AssemblyOutcome {
     /// AU assembled but its reference chain start is unverified or packets
     /// are missing.
     Damaged(AuDescriptor),
-    /// AU too large (> 2 MiB) or malformed — caller must resync.
-    Discarded { reason: DiscardReason },
+    /// AU too large (> 2 MiB) or malformed — caller must resync. Carries the
+    /// AU's RTP timestamp so the 8a shadow comparator can pair it with the
+    /// legacy `Invalid` event; no other payload data (§4).
+    Discarded {
+        reason: DiscardReason,
+        rtp_ts: u32,
+    },
 }
 
 // Describes a complete or damaged access unit built from RTP packets.
@@ -61,6 +66,10 @@ pub struct AuDescriptor {
     pub holes: u16,
     /// Total number of packets received for this AU.
     pub packet_count: u16,
+    /// Modular-lowest / highest sequence numbers collected for this AU —
+    /// boundary comparison for the 8a shadow comparator (§3).
+    pub first_seq: u16,
+    pub last_seq: u16,
 }
 
 // Holds state for assembling one access unit from a stream of RTP packets.
@@ -214,10 +223,12 @@ impl AccessUnitAssembler {
         // Per §4: Discarded outcome carries no submittable bytes
         if let Some(au) = self.current_au.as_mut() {
             if au.raw_len > MAX_AU_BYTES {
+                let rtp_ts = au.rtp_ts;
                 au.payloads.clear(); // §4: no submittable bytes
                 self.current_au = None;
                 return Some(AssemblyOutcome::Discarded {
                     reason: DiscardReason::Oversize,
+                    rtp_ts,
                 });
             }
         }
@@ -242,6 +253,7 @@ impl AccessUnitAssembler {
         // covers the same condition).
         let holes = compute_holes(&au.payloads);
         au.holes = holes;
+        let (first_seq, last_seq) = seq_bounds(&au.payloads);
         self.gap_hole = self.gap_hole.saturating_add(holes as u64);
 
         // Determine outcome: contiguous + verified start => Complete, else Damaged (bullet 5)
@@ -258,6 +270,8 @@ impl AccessUnitAssembler {
                 had_first_slice: au.had_first_slice,
                 holes,
                 packet_count: au.packet_count,
+                first_seq,
+                last_seq,
             });
         }
 
@@ -269,6 +283,7 @@ impl AccessUnitAssembler {
                 au.payloads.clear();
                 return AssemblyOutcome::Discarded {
                     reason: DiscardReason::Malformed,
+                    rtp_ts: au.rtp_ts,
                 };
             }
         };
@@ -277,6 +292,7 @@ impl AccessUnitAssembler {
             au.payloads.clear();
             return AssemblyOutcome::Discarded {
                 reason: DiscardReason::Oversize,
+                rtp_ts: au.rtp_ts,
             };
         }
         au.payloads.clear();
@@ -288,6 +304,8 @@ impl AccessUnitAssembler {
             had_first_slice: au.had_first_slice,
             holes,
             packet_count: au.packet_count,
+            first_seq,
+            last_seq,
         })
     }
 
@@ -352,6 +370,27 @@ const ANNEXB_START_CODE: [u8; 4] = [0x00, 0x00, 0x00, 0x01];
 
 /// AU size cap — matches legacy `MAX_H264_ACCESS_UNIT_BYTES` in rtp.rs.
 const MAX_AU_BYTES: usize = 2 * 1024 * 1024;
+
+/// Modular sequence bounds `(first, last)` of an AU's packet set.
+pub(crate) fn seq_bounds(payloads: &[(u16, Vec<u8>)]) -> (u16, u16) {
+    let seqs: Vec<u16> = payloads.iter().map(|(seq, _)| *seq).collect();
+    seq_bounds_of(&seqs)
+}
+
+/// Modular sequence bounds `(first, last)` of a raw sequence-number list
+/// (used by the 8a shadow comparator for legacy-side boundaries).
+pub(crate) fn seq_bounds_of(seqs: &[u16]) -> (u16, u16) {
+    if seqs.is_empty() {
+        return (0, 0);
+    }
+    let anchor = modular_anchor(seqs);
+    let last = seqs
+        .iter()
+        .copied()
+        .max_by_key(|seq| seq.wrapping_sub(anchor))
+        .unwrap_or(anchor);
+    (anchor, last)
+}
 
 /// Modular-minimum anchor for a set of sequence numbers: the candidate `c`
 /// for which every `seq.wrapping_sub(c) < 32768` (the unique such value for

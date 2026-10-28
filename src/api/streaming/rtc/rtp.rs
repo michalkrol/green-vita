@@ -1,5 +1,9 @@
 use crate::streaming::video::{self, STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker, metrics::METRICS};
 use crate::pipeline::clock::queue_delay::QueueDelayEstimator;
+use crate::pipeline::media::assembler::{
+    seq_bounds_of, AccessUnitAssembler, AssemblyOutcome,
+};
+use std::sync::LazyLock;
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
@@ -80,6 +84,12 @@ pub(crate) struct VideoRtp {
     total_bytes: u64,
     /// Queue-delay estimator Q from §4.3 (signed µs, never clamped).
     pub(crate) q_estimator: QueueDelayEstimator,
+    /// 8a shadow (§3): the new AccessUnitAssembler fed every packet in
+    /// parallel with the legacy path. Never authoritative.
+    shadow: AccessUnitAssembler,
+    /// 8a shadow: pairs legacy and new outcomes by RTP timestamp and counts
+    /// matches/mismatches. Never touches legacy state.
+    shadow_cmp: ShadowComparator,
 }
 
 struct PendingVideoFrame {
@@ -185,6 +195,8 @@ impl VideoRtp {
             vt_exit_count: 0,
             total_bytes: 0,
             q_estimator: QueueDelayEstimator::new(),
+            shadow: AccessUnitAssembler::new(),
+            shadow_cmp: ShadowComparator::new(),
         }
     }
 
@@ -213,6 +225,31 @@ impl VideoRtp {
         self.total_bytes += 12 + packet.payload.len() as u64;
 
         let packet_timestamp = packet.header.timestamp;
+
+        // 8a shadow (STAGE8-REDO-SPEC §3): feed every non-empty video packet
+        // to the new assembler alongside the legacy path. Behaviour-neutral by
+        // construction — it never touches pending, worker, keyframe_requested
+        // or stats; outcomes only feed the comparator counters. flush_due runs
+        // here in shadow only (§3).
+        let shadow_now = SHADOW_CLOCK.elapsed().as_micros() as u64;
+        if let Some(outcome) = self.shadow.push(
+            packet.header.sequence_number,
+            packet_timestamp,
+            packet.header.marker,
+            &packet.payload,
+            shadow_now,
+        ) {
+            self.observe_shadow(outcome, false);
+        }
+        while let Some(outcome) = self.shadow.poll_outcome() {
+            self.observe_shadow(outcome, false);
+        }
+        if let Some(outcome) = self.shadow.flush_due(shadow_now) {
+            self.observe_shadow(outcome, true);
+        }
+        while let Some(outcome) = self.shadow.poll_outcome() {
+            self.observe_shadow(outcome, false);
+        }
 
         // Drift instrumentation (log only, no behaviour change): establish the
         // session media-clock anchor on the first video packet and track the
@@ -254,6 +291,22 @@ impl VideoRtp {
                 return stats;
             }
             if let Some(incomplete) = self.pending.take() {
+                // 8a shadow: record the legacy abandon before the frame is
+                // dropped (pairing happens by RTP timestamp).
+                let seqs: Vec<u16> = incomplete
+                    .packets
+                    .iter()
+                    .map(|p| p.header.sequence_number)
+                    .collect();
+                let (first_seq, last_seq) = seq_bounds_of(&seqs);
+                self.shadow_cmp.observe_legacy(ShadowRecord {
+                    ts: incomplete.timestamp,
+                    class: ShadowClass::Abandoned,
+                    first_seq,
+                    last_seq,
+                    packet_count: seqs.len() as u16,
+                    bytes_hash: None,
+                });
                 self.next_sequence = incomplete
                     .marker_sequence()
                     .map(|sequence| sequence.wrapping_add(1));
@@ -297,7 +350,23 @@ impl VideoRtp {
         let (data, marker_sequence) = match assembly {
             FrameAssembly::Pending => return stats,
             FrameAssembly::Invalid => {
-                self.pending = None;
+                // 8a shadow: record the legacy Invalid event before dropping.
+                if let Some(invalid) = self.pending.take() {
+                    let seqs: Vec<u16> = invalid
+                        .packets
+                        .iter()
+                        .map(|p| p.header.sequence_number)
+                        .collect();
+                    let (first_seq, last_seq) = seq_bounds_of(&seqs);
+                    self.shadow_cmp.observe_legacy(ShadowRecord {
+                        ts: invalid.timestamp,
+                        class: ShadowClass::Invalid,
+                        first_seq,
+                        last_seq,
+                        packet_count: seqs.len() as u16,
+                        bytes_hash: None,
+                    });
+                }
                 self.next_sequence = None;
                 *keyframe_requested = true;
                 self.record_damage(worker);
@@ -310,6 +379,24 @@ impl VideoRtp {
             } => (data, marker_sequence),
         };
         let completed = self.pending.take().expect("assembled pending video frame");
+        {
+            // 8a shadow: record the legacy Complete event (bytes hashed for
+            // byte-parity comparison against the new path).
+            let seqs: Vec<u16> = completed
+                .packets
+                .iter()
+                .map(|p| p.header.sequence_number)
+                .collect();
+            let (first_seq, last_seq) = seq_bounds_of(&seqs);
+            self.shadow_cmp.observe_legacy(ShadowRecord {
+                ts: completed.timestamp,
+                class: ShadowClass::Complete,
+                first_seq,
+                last_seq,
+                packet_count: seqs.len() as u16,
+                bytes_hash: Some(hash_bytes(&data)),
+            });
+        }
         // Record both average and worst-case RTP assembly time for the stream HUD.
         let assembly_us = completed.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS
@@ -412,12 +499,32 @@ impl VideoRtp {
             self.damage_score = self.damage_score.saturating_sub(1);
         }
 
+        // 8a telemetry (§3): submitted-AU counters that would have caught the
+        // stage-8 black screen on day one.
+        METRICS
+            .au_submitted
+            .fetch_add(1, Ordering::Relaxed);
+        if !(data.starts_with(&[0, 0, 0, 1]) || data.starts_with(&[0, 0, 1])) {
+            METRICS.au_no_startcode.fetch_add(1, Ordering::Relaxed);
+        }
+        if unit.has_idr {
+            METRICS.au_idr_submitted.fetch_add(1, Ordering::Relaxed);
+        }
         if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
             eprintln!("Video decoder queue is full; continuing while requesting a keyframe");
             *keyframe_requested = true;
             stats.dropped = stats.dropped.saturating_add(1);
         }
         stats
+    }
+
+    /// 8a shadow (§3): record one new-path outcome for the comparator.
+    /// Never touches legacy state.
+    fn observe_shadow(&mut self, outcome: AssemblyOutcome, via_hold: bool) {
+        if via_hold && matches!(outcome, AssemblyOutcome::Complete(_)) {
+            METRICS.sh_hold_saved.fetch_add(1, Ordering::Relaxed);
+        }
+        self.shadow_cmp.observe_new(outcome);
     }
 
     fn record_damage(&mut self, worker: &VideoDecodeWorker) {
@@ -563,6 +670,307 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
     reader.push(data);
     reader.reset();
     info
+}
+
+// ---------------------------------------------------------------------------
+// 8a shadow (STAGE8-REDO-SPEC §3): outcome pairing between the legacy authority
+// and the new AccessUnitAssembler. Records are keyed by RTP timestamp and
+// paired whenever both sides have produced one; verdicts feed METRICS counters.
+// The comparator never touches pending, worker, keyframe_requested or stats.
+// ---------------------------------------------------------------------------
+
+/// Monotonic µs clock for the shadow assembler's 12 ms hold window.
+static SHADOW_CLOCK: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// FNV-1a — deterministic byte hash for legacy↔new AU parity comparison.
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShadowClass {
+    /// Legacy `FrameAssembly::Complete` / new `AssemblyOutcome::Complete`.
+    Complete,
+    /// New `AssemblyOutcome::Damaged` (legacy has no equivalent class).
+    Damaged,
+    /// New `AssemblyOutcome::Discarded` (oversize/malformed).
+    Discarded,
+    /// Legacy force-out of an incomplete frame on a newer timestamp.
+    Abandoned,
+    /// Legacy `FrameAssembly::Invalid` (depacketize error / oversize).
+    Invalid,
+}
+
+#[derive(Debug, Clone)]
+struct ShadowRecord {
+    ts: u32,
+    class: ShadowClass,
+    first_seq: u16,
+    last_seq: u16,
+    packet_count: u16,
+    bytes_hash: Option<u64>,
+}
+
+impl ShadowRecord {
+    /// Build a shadow-side record from a new-path outcome.
+    fn from_new(outcome: AssemblyOutcome) -> Self {
+        match outcome {
+            AssemblyOutcome::Complete(desc) => ShadowRecord {
+                ts: desc.rtp_ts,
+                class: ShadowClass::Complete,
+                first_seq: desc.first_seq,
+                last_seq: desc.last_seq,
+                packet_count: desc.packet_count,
+                bytes_hash: Some(hash_bytes(&desc.data)),
+            },
+            AssemblyOutcome::Damaged(desc) => ShadowRecord {
+                ts: desc.rtp_ts,
+                class: ShadowClass::Damaged,
+                first_seq: desc.first_seq,
+                last_seq: desc.last_seq,
+                packet_count: desc.packet_count,
+                bytes_hash: None,
+            },
+            AssemblyOutcome::Discarded { reason: _, rtp_ts } => ShadowRecord {
+                ts: rtp_ts,
+                class: ShadowClass::Discarded,
+                first_seq: 0,
+                last_seq: 0,
+                packet_count: 0, // Discarded carries no packet bounds
+                bytes_hash: None,
+            },
+        }
+    }
+}
+
+/// Verdict for one paired (legacy, new) outcome tuple.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairVerdict {
+    Match,
+    BytesMismatch,
+    ClassMismatch,
+    /// Expected-delta bucket: new Damaged where legacy completed (§3 — the
+    /// H3 fix; in this base also reached by reorder-marker-early pairings).
+    BucketDamagedOldComplete,
+    /// Expected-delta bucket: new Complete where legacy abandoned (§3 —
+    /// 12 ms hold / markerless force-out equivalence).
+    BucketCompleteOldAbandon,
+}
+
+/// Pure classification of a paired outcome tuple (unit-tested).
+fn classify_pair(legacy: &ShadowRecord, new_rec: &ShadowRecord) -> PairVerdict {
+    use ShadowClass::*;
+    match (legacy.class, new_rec.class) {
+        (Complete, Complete) => {
+            if legacy.bytes_hash == new_rec.bytes_hash {
+                PairVerdict::Match
+            } else {
+                PairVerdict::BytesMismatch
+            }
+        }
+        (Abandoned | Invalid, Damaged | Discarded) => PairVerdict::Match,
+        (Complete, Damaged) => PairVerdict::BucketDamagedOldComplete,
+        (Abandoned, Complete) => PairVerdict::BucketCompleteOldAbandon,
+        _ => PairVerdict::ClassMismatch,
+    }
+}
+
+#[derive(Debug)]
+struct ShadowComparator {
+    legacy: Vec<ShadowRecord>,
+    new: Vec<ShadowRecord>,
+}
+
+impl ShadowComparator {
+    fn new() -> Self {
+        Self {
+            legacy: Vec::new(),
+            new: Vec::new(),
+        }
+    }
+
+    fn observe_legacy(&mut self, record: ShadowRecord) {
+        self.legacy.push(record);
+        if self.legacy.len() > 64 {
+            self.legacy.remove(0);
+            METRICS
+                .sh_legacy_unmatched
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        self.try_match();
+    }
+
+    fn observe_new(&mut self, outcome: AssemblyOutcome) {
+        let record = ShadowRecord::from_new(outcome);
+        self.new.push(record);
+        if self.new.len() > 64 {
+            self.new.remove(0);
+            METRICS.sh_new_unmatched.fetch_add(1, Ordering::Relaxed);
+        }
+        self.try_match();
+    }
+
+    /// Pair pending records by RTP timestamp and apply counters.
+    fn try_match(&mut self) {
+        let mut i = 0;
+        while i < self.legacy.len() {
+            let ts = self.legacy[i].ts;
+            if let Some(j) = self.new.iter().position(|record| record.ts == ts) {
+                let new_rec = self.new.remove(j);
+                let legacy_rec = self.legacy.remove(i);
+                self.compare(&legacy_rec, &new_rec);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn compare(&mut self, legacy: &ShadowRecord, new_rec: &ShadowRecord) {
+        // Boundary comparison (§3): only when both sides report packet bounds.
+        if legacy.packet_count > 0 && new_rec.packet_count > 0 {
+            let same_bounds = (legacy.first_seq, legacy.last_seq, legacy.packet_count)
+                == (
+                    new_rec.first_seq,
+                    new_rec.last_seq,
+                    new_rec.packet_count,
+                );
+            if !same_bounds {
+                METRICS
+                    .sh_bound_mismatch
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        match classify_pair(legacy, new_rec) {
+            PairVerdict::Match => {
+                METRICS.sh_match.fetch_add(1, Ordering::Relaxed);
+            }
+            PairVerdict::BytesMismatch => {
+                METRICS.sh_bytes_mismatch.fetch_add(1, Ordering::Relaxed);
+            }
+            PairVerdict::ClassMismatch => {
+                METRICS.sh_class_mismatch.fetch_add(1, Ordering::Relaxed);
+            }
+            PairVerdict::BucketDamagedOldComplete => {
+                METRICS
+                    .sh_new_damaged_old_complete
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            PairVerdict::BucketCompleteOldAbandon => {
+                METRICS
+                    .sh_new_complete_old_abandon
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod shadow_tests {
+    use super::*;
+    use crate::pipeline::media::assembler::DiscardReason;
+
+    fn rec(ts: u32, class: ShadowClass, hash: Option<u64>) -> ShadowRecord {
+        ShadowRecord {
+            ts,
+            class,
+            first_seq: 10,
+            last_seq: 12,
+            packet_count: 3,
+            bytes_hash: hash,
+        }
+    }
+
+    #[test]
+    fn classify_complete_pair_matches_on_equal_hash() {
+        let l = rec(1, ShadowClass::Complete, Some(42));
+        let n = rec(1, ShadowClass::Complete, Some(42));
+        assert_eq!(classify_pair(&l, &n), PairVerdict::Match);
+        let n_bad = rec(1, ShadowClass::Complete, Some(43));
+        assert_eq!(classify_pair(&l, &n_bad), PairVerdict::BytesMismatch);
+    }
+
+    #[test]
+    fn classify_legacy_reject_vs_new_reject_matches() {
+        let abandoned = rec(2, ShadowClass::Abandoned, None);
+        let damaged = rec(2, ShadowClass::Damaged, None);
+        assert_eq!(
+            classify_pair(&abandoned, &damaged),
+            PairVerdict::Match
+        );
+        let invalid = rec(3, ShadowClass::Invalid, None);
+        let discarded = rec(3, ShadowClass::Discarded, None);
+        assert_eq!(
+            classify_pair(&invalid, &discarded),
+            PairVerdict::Match
+        );
+    }
+
+    #[test]
+    fn classify_expected_delta_buckets() {
+        // Bucket 1: new Damaged where legacy completed (H3 fix).
+        let complete = rec(4, ShadowClass::Complete, Some(7));
+        let damaged = rec(4, ShadowClass::Damaged, None);
+        assert_eq!(
+            classify_pair(&complete, &damaged),
+            PairVerdict::BucketDamagedOldComplete
+        );
+        // Bucket 2: new Complete where legacy abandoned (12 ms hold).
+        let abandoned = rec(5, ShadowClass::Abandoned, None);
+        let complete_new = rec(5, ShadowClass::Complete, Some(9));
+        assert_eq!(
+            classify_pair(&abandoned, &complete_new),
+            PairVerdict::BucketCompleteOldAbandon
+        );
+    }
+
+    #[test]
+    fn classify_unexpected_pair_is_class_mismatch() {
+        let complete = rec(6, ShadowClass::Complete, Some(1));
+        let discarded = rec(6, ShadowClass::Discarded, None);
+        assert_eq!(
+            classify_pair(&complete, &discarded),
+            PairVerdict::ClassMismatch
+        );
+        // (Invalid, Complete) is NOT bucket 2 — only Abandoned is.
+        let invalid = rec(7, ShadowClass::Invalid, None);
+        let complete_new = rec(7, ShadowClass::Complete, Some(2));
+        assert_eq!(
+            classify_pair(&invalid, &complete_new),
+            PairVerdict::ClassMismatch
+        );
+    }
+
+    #[test]
+    fn record_from_new_outcome_maps_classes_and_ts() {
+        let mut assembler = AccessUnitAssembler::new();
+        let payload = [0x01u8, 0x00, 0x00];
+        let outcome = assembler
+            .push(10, 90_000, true, &payload, 1_000)
+            .expect("marker resolves");
+        let record = ShadowRecord::from_new(outcome);
+        assert_eq!(record.class, ShadowClass::Complete);
+        assert_eq!(record.ts, 90_000);
+        assert_eq!((record.first_seq, record.last_seq), (10, 10));
+        assert!(record.bytes_hash.is_some());
+
+        let discarded = ShadowRecord::from_new(AssemblyOutcome::Discarded {
+            reason: DiscardReason::Malformed,
+            rtp_ts: 180_000,
+        });
+        assert_eq!(discarded.class, ShadowClass::Discarded);
+        assert_eq!(discarded.ts, 180_000);
+    }
+
+    #[test]
+    fn hash_bytes_is_stable_and_discriminating() {
+        assert_eq!(hash_bytes(&[1, 2, 3]), hash_bytes(&[1, 2, 3]));
+        assert_ne!(hash_bytes(&[1, 2, 3]), hash_bytes(&[1, 2, 4]));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1059,7 +1467,8 @@ mod diff_fixtures {
             new.iter().any(|(_, outcome)| matches!(
                 outcome,
                 AssemblyOutcome::Discarded {
-                    reason: DiscardReason::Oversize
+                    reason: DiscardReason::Oversize,
+                    ..
                 }
             )),
             "new classifies oversize: {new:?}"
@@ -1080,7 +1489,10 @@ mod diff_fixtures {
         assert!(
             matches!(
                 new_run(&packets).as_slice(),
-                [(0, AssemblyOutcome::Discarded { reason: DiscardReason::Malformed })]
+                [(0, AssemblyOutcome::Discarded {
+                    reason: DiscardReason::Malformed,
+                    ..
+                })]
             ),
             "new Discarded{{Malformed}} for the same payload"
         );

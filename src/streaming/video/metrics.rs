@@ -52,6 +52,18 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) video_bandwidth_kbps: u64,
     pub(crate) display_pickup_us: u64,
     pub(crate) display_pickup_max_us: u64,
+    pub(crate) sh_match: u64,
+    pub(crate) sh_bound_mismatch: u64,
+    pub(crate) sh_bytes_mismatch: u64,
+    pub(crate) sh_class_mismatch: u64,
+    pub(crate) sh_new_damaged_old_complete: u64,
+    pub(crate) sh_new_complete_old_abandon: u64,
+    pub(crate) sh_hold_saved: u64,
+    pub(crate) sh_legacy_unmatched: u64,
+    pub(crate) sh_new_unmatched: u64,
+    pub(crate) au_submitted: u64,
+    pub(crate) au_no_startcode: u64,
+    pub(crate) au_idr_submitted: u64,
 }
 
 pub(crate) struct VideoMetrics {
@@ -102,6 +114,18 @@ pub(crate) struct VideoMetrics {
     pub(crate) video_bandwidth_kbps: AtomicU64,
     pub(crate) display_pickup_us: AtomicU64,
     pub(crate) display_pickup_max_us: AtomicU64,
+    pub(crate) sh_match: AtomicU64,
+    pub(crate) sh_bound_mismatch: AtomicU64,
+    pub(crate) sh_bytes_mismatch: AtomicU64,
+    pub(crate) sh_class_mismatch: AtomicU64,
+    pub(crate) sh_new_damaged_old_complete: AtomicU64,
+    pub(crate) sh_new_complete_old_abandon: AtomicU64,
+    pub(crate) sh_hold_saved: AtomicU64,
+    pub(crate) sh_legacy_unmatched: AtomicU64,
+    pub(crate) sh_new_unmatched: AtomicU64,
+    pub(crate) au_submitted: AtomicU64,
+    pub(crate) au_no_startcode: AtomicU64,
+    pub(crate) au_idr_submitted: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -152,6 +176,18 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     video_bandwidth_kbps: AtomicU64::new(0),
     display_pickup_us: AtomicU64::new(0),
     display_pickup_max_us: AtomicU64::new(0),
+    sh_match: AtomicU64::new(0),
+    sh_bound_mismatch: AtomicU64::new(0),
+    sh_bytes_mismatch: AtomicU64::new(0),
+    sh_class_mismatch: AtomicU64::new(0),
+    sh_new_damaged_old_complete: AtomicU64::new(0),
+    sh_new_complete_old_abandon: AtomicU64::new(0),
+    sh_hold_saved: AtomicU64::new(0),
+    sh_legacy_unmatched: AtomicU64::new(0),
+    sh_new_unmatched: AtomicU64::new(0),
+    au_submitted: AtomicU64::new(0),
+    au_no_startcode: AtomicU64::new(0),
+    au_idr_submitted: AtomicU64::new(0),
 };
 
 
@@ -288,6 +324,22 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         video_bandwidth_kbps: METRICS.video_bandwidth_kbps.swap(0, Ordering::Relaxed),
         display_pickup_us: METRICS.display_pickup_us.swap(0, Ordering::Relaxed),
         display_pickup_max_us: METRICS.display_pickup_max_us.swap(0, Ordering::Relaxed),
+        sh_match: METRICS.sh_match.swap(0, Ordering::Relaxed),
+        sh_bound_mismatch: METRICS.sh_bound_mismatch.swap(0, Ordering::Relaxed),
+        sh_bytes_mismatch: METRICS.sh_bytes_mismatch.swap(0, Ordering::Relaxed),
+        sh_class_mismatch: METRICS.sh_class_mismatch.swap(0, Ordering::Relaxed),
+        sh_new_damaged_old_complete: METRICS
+            .sh_new_damaged_old_complete
+            .swap(0, Ordering::Relaxed),
+        sh_new_complete_old_abandon: METRICS
+            .sh_new_complete_old_abandon
+            .swap(0, Ordering::Relaxed),
+        sh_hold_saved: METRICS.sh_hold_saved.swap(0, Ordering::Relaxed),
+        sh_legacy_unmatched: METRICS.sh_legacy_unmatched.swap(0, Ordering::Relaxed),
+        sh_new_unmatched: METRICS.sh_new_unmatched.swap(0, Ordering::Relaxed),
+        au_submitted: METRICS.au_submitted.swap(0, Ordering::Relaxed),
+        au_no_startcode: METRICS.au_no_startcode.swap(0, Ordering::Relaxed),
+        au_idr_submitted: METRICS.au_idr_submitted.swap(0, Ordering::Relaxed),
     }
 }
 
@@ -333,6 +385,18 @@ pub(crate) fn reset_session_metrics() {
     METRICS.video_bandwidth_kbps.store(0, Ordering::Relaxed);
     METRICS.display_pickup_us.store(0, Ordering::Relaxed);
     METRICS.display_pickup_max_us.store(0, Ordering::Relaxed);
+    METRICS.sh_match.store(0, Ordering::Relaxed);
+    METRICS.sh_bound_mismatch.store(0, Ordering::Relaxed);
+    METRICS.sh_bytes_mismatch.store(0, Ordering::Relaxed);
+    METRICS.sh_class_mismatch.store(0, Ordering::Relaxed);
+    METRICS.sh_new_damaged_old_complete.store(0, Ordering::Relaxed);
+    METRICS.sh_new_complete_old_abandon.store(0, Ordering::Relaxed);
+    METRICS.sh_hold_saved.store(0, Ordering::Relaxed);
+    METRICS.sh_legacy_unmatched.store(0, Ordering::Relaxed);
+    METRICS.sh_new_unmatched.store(0, Ordering::Relaxed);
+    METRICS.au_submitted.store(0, Ordering::Relaxed);
+    METRICS.au_no_startcode.store(0, Ordering::Relaxed);
+    METRICS.au_idr_submitted.store(0, Ordering::Relaxed);
 }
 
     /// Flush the RAM-buffered metrics CSV log to disk once at session end.
