@@ -18,6 +18,10 @@ use std::collections::VecDeque;
 pub enum DiscardReason {
     /// AU exceeded the 2 MiB size cap.
     Oversize,
+    /// AU could not be framed as Annex-B (malformed STAP-A sizes, short
+    /// packets, unsupported NAL types) — the legacy path returned
+    /// `FrameAssembly::Invalid` for the same payloads.
+    Malformed,
 }
 
 // Describes the outcome of assembling an access unit from RTP packets.
@@ -38,8 +42,11 @@ pub enum AssemblyOutcome {
 pub struct AuDescriptor {
     /// RTP timestamp of the first packet in the AU (capture timestamp proxy).
     pub rtp_ts: u32,
-    /// Concatenated NAL payloads (length-prefixed Annex B not required;
-    /// documented choice: raw NAL payloads concatenated in sequence order).
+    /// Decodable Annex-B bytes for `Complete` outcomes: `00 00 00 01`
+    /// start-code framed NALs in legacy byte order (STAP-A split, FU-A
+    /// reassembled) — byte-exact with the legacy `H264Packet` path.
+    /// Always empty for `Damaged` outcomes (§4: non-Complete outcomes carry
+    /// no bytes the integration layer may submit).
     pub data: Vec<u8>,
     /// `true` if the AU contains an IDR NAL unit.
     pub is_idr: bool,
@@ -152,42 +159,39 @@ impl AccessUnitAssembler {
                 self.gap_au = self.gap_au.saturating_add(1);
             }
             self.last_closed_seq = seq; // Initialize for future gap checks
+            self.au_first_arrival_us = arrival_us; // 12 ms hold anchor for flush_due
             self.current_au = Some(AuBuilder {
                 rtp_ts: timestamp,
-                data: payload.to_vec(),
+                payloads: vec![(seq, payload.to_vec())],
+                raw_len: payload.len(),
                 had_first_slice: is_verified_start,
                 is_idr: fu_header
                     .map_or_else(|| NalHeader::is_keyframe_nal(nal_header.nal_unit_type), |fh| fh.is_keyframe_nal()),
                 nal_ref_idc: fu_header
                     .map_or_else(|| nal_header.nal_ref_idc, |fh| fh.nal_ref_idc),
-                first_seq: seq,
-                last_seq: seq,
                 holes: 0,
                 packet_count: 1,
-                resolved: false,
             });
             true // flag that we started a new AU
         } else {
             // Continue the existing AU
             let au = self.current_au.as_mut().unwrap();
 
-            // Detect sequence gap (modular-16-bit)
-            let gap = seq.wrapping_sub(au.last_seq);
-            if gap != 1 {
-                if !au.resolved {
-                    au.holes = au.holes.saturating_add(gap.saturating_sub(1));
-                    self.gap_hole = self.gap_hole.saturating_add(gap.saturating_sub(1) as u64);
-                }
-            }
-            au.last_seq = seq;
-            au.data.extend_from_slice(payload);
-            au.packet_count += 1;
+            // Duplicate packet (same seq already collected): legacy
+            // PendingVideoFrame::insert dedups — drop it here too, but keep
+            // marker/oversize handling below.
+            let is_duplicate = au.payloads.iter().any(|(existing, _)| *existing == seq);
+            if !is_duplicate {
+                au.payloads.push((seq, payload.to_vec()));
+                au.raw_len += payload.len();
+                au.packet_count += 1;
 
-            // Update IDR state
-            if NalHeader::is_keyframe_nal(nal_header.nal_unit_type) || fu_header.map_or(false, |fh| fh.is_keyframe_nal()) {
-                au.is_idr = true;
+                // Update IDR state
+                if NalHeader::is_keyframe_nal(nal_header.nal_unit_type) || fu_header.map_or(false, |fh| fh.is_keyframe_nal()) {
+                    au.is_idr = true;
+                }
+                au.nal_ref_idc = au.nal_ref_idc.max(fu_header.map_or_else(|| nal_header.nal_ref_idc, |fh| fh.nal_ref_idc));
             }
-            au.nal_ref_idc = au.nal_ref_idc.max(fu_header.map_or_else(|| nal_header.nal_ref_idc, |fh| fh.nal_ref_idc));
 
             false // flag that we continued existing AU
         };
@@ -197,11 +201,8 @@ impl AccessUnitAssembler {
         if marker {
             // Take the AU out and resolve it (avoid double borrow of self)
             let mut resolved_au = self.current_au.take().unwrap();
-            // Record the last seq of the resolved AU for gap_au tracking
-            self.last_closed_seq = resolved_au.last_seq;
-            // If we just started a new AU and there are no packets beyond the first,
-            // the AU has holes=0 and packet_count=1, so it resolves based on had_first_slice
-            let _is_complete = resolved_au.holes == 0 && resolved_au.packet_count > 0 && resolved_au.had_first_slice;
+            // Record the AU's end sequence for gap_au tracking
+            self.last_closed_seq = seq;
             let outcome = self.resolve_au_now(&mut resolved_au, arrival_us);
             self.resolved_queue.push_back(outcome);
 
@@ -210,9 +211,10 @@ impl AccessUnitAssembler {
         }
 
         // Check oversize limit (>2 MiB) (bullet 8)
-        if let Some(ref au) = self.current_au {
-            if au.data.len() > 2 * 1024 * 1024 {
-                // Discard the oversize AU and reset state for the next AU
+        // Per §4: Discarded outcome carries no submittable bytes
+        if let Some(au) = self.current_au.as_mut() {
+            if au.raw_len > MAX_AU_BYTES {
+                au.payloads.clear(); // §4: no submittable bytes
                 self.current_au = None;
                 return Some(AssemblyOutcome::Discarded {
                     reason: DiscardReason::Oversize,
@@ -234,27 +236,59 @@ impl AccessUnitAssembler {
     /// Resolve the current AU immediately (called when marker is seen or newer
     /// timestamp forces resolution).
     fn resolve_au_now(&mut self, au: &mut AuBuilder, _arrival_us: u64) -> AssemblyOutcome {
-        // Mark as resolved so we don't count holes again
-        au.resolved = true;
+        // Compute holes from the deduplicated sequence set in modular order.
+        // Reordered packets sort back into place and count no holes; only
+        // genuinely missing sequence numbers do (legacy's contiguity gate
+        // covers the same condition).
+        let holes = compute_holes(&au.payloads);
+        au.holes = holes;
+        self.gap_hole = self.gap_hole.saturating_add(holes as u64);
 
         // Determine outcome: contiguous + verified start => Complete, else Damaged (bullet 5)
-        let is_complete = au.holes == 0 && au.packet_count > 0 && au.had_first_slice;
+        let is_complete = holes == 0 && au.packet_count > 0 && au.had_first_slice;
 
-        let desc = AuDescriptor {
+        if !is_complete {
+            // §4: Damaged outcomes carry no bytes the integration may submit.
+            au.payloads.clear();
+            return AssemblyOutcome::Damaged(AuDescriptor {
+                rtp_ts: au.rtp_ts,
+                data: vec![],
+                is_idr: au.is_idr,
+                nal_ref_idc: au.nal_ref_idc,
+                had_first_slice: au.had_first_slice,
+                holes,
+                packet_count: au.packet_count,
+            });
+        }
+
+        // Complete: build byte-exact Annex-B in the legacy sort order.
+        let data = match build_annex_b(&au.payloads) {
+            Ok(data) => data,
+            Err(()) => {
+                // Legacy depacketize error => FrameAssembly::Invalid (never submitted).
+                au.payloads.clear();
+                return AssemblyOutcome::Discarded {
+                    reason: DiscardReason::Malformed,
+                };
+            }
+        };
+        if data.len() > MAX_AU_BYTES {
+            // Legacy oversized Complete => Invalid; class mapped to Oversize.
+            au.payloads.clear();
+            return AssemblyOutcome::Discarded {
+                reason: DiscardReason::Oversize,
+            };
+        }
+        au.payloads.clear();
+        AssemblyOutcome::Complete(AuDescriptor {
             rtp_ts: au.rtp_ts,
-            data: std::mem::take(&mut au.data),
+            data,
             is_idr: au.is_idr,
             nal_ref_idc: au.nal_ref_idc,
             had_first_slice: au.had_first_slice,
-            holes: au.holes,
+            holes,
             packet_count: au.packet_count,
-        };
-
-        if is_complete {
-            AssemblyOutcome::Complete(desc)
-        } else {
-            AssemblyOutcome::Damaged(desc)
-        }
+        })
     }
 
     /// Time-based hold: resolve any open AU older than the 12 ms hold window
@@ -276,6 +310,13 @@ impl AccessUnitAssembler {
             return None; // No outcome resolved this call
         }
         // Return one outcome per call (queue internally if several age out)
+        self.resolved_queue.pop_front()
+    }
+
+    /// Drain one resolved outcome from the internal queue. `push` may queue an
+    /// outcome (e.g. a force-out) while returning another; callers must drain
+    /// until `None` after each push.
+    pub fn poll_outcome(&mut self) -> Option<AssemblyOutcome> {
         self.resolved_queue.pop_front()
     }
 
@@ -306,6 +347,118 @@ fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
     distance != 0 && distance < (1 << 31)
 }
 
+/// Annex-B start code used by the legacy `H264Packet` path (`is_avc=false`).
+const ANNEXB_START_CODE: [u8; 4] = [0x00, 0x00, 0x00, 0x01];
+
+/// AU size cap — matches legacy `MAX_H264_ACCESS_UNIT_BYTES` in rtp.rs.
+const MAX_AU_BYTES: usize = 2 * 1024 * 1024;
+
+/// Modular-minimum anchor for a set of sequence numbers: the candidate `c`
+/// for which every `seq.wrapping_sub(c) < 32768` (the unique such value for
+/// any set spanning less than half the u16 space). Sorting ascending by
+/// `seq.wrapping_sub(anchor)` then yields true modular sequence order —
+/// correct across the 65535→0 wrap and for reordered arrivals alike.
+fn modular_anchor(seqs: &[u16]) -> u16 {
+    'find: for candidate in seqs.iter().copied() {
+        for seq in seqs.iter() {
+            if seq.wrapping_sub(candidate) >= 32768 {
+                continue 'find;
+            }
+        }
+        return candidate;
+    }
+    seqs.first().copied().unwrap_or(0)
+}
+
+/// Count genuinely missing sequence numbers across the AU's packets in
+/// modular order. Reordered packets sort back into place and contribute no
+/// holes; duplicate seqs must already be deduplicated by the caller.
+fn compute_holes(payloads: &[(u16, Vec<u8>)]) -> u16 {
+    if payloads.len() <= 1 {
+        return 0;
+    }
+    let mut seqs: Vec<u16> = payloads.iter().map(|(seq, _)| *seq).collect();
+    let anchor = modular_anchor(&seqs);
+    seqs.sort_by_key(|seq| seq.wrapping_sub(anchor));
+    let mut holes: u32 = 0;
+    for pair in seqs.windows(2) {
+        holes += u32::from(pair[1].wrapping_sub(pair[0])).saturating_sub(1);
+    }
+    u16::try_from(holes).unwrap_or(u16::MAX)
+}
+
+/// Convert the AU's raw payloads to byte-exact Annex-B, mirroring the legacy
+/// `H264Packet::depacketize` semantics packet-for-packet over modular
+/// sequence order (byte-equivalent to the legacy marker-anchored sort for
+/// the contiguous AUs legacy completes): single NALs (`1..=23`) prefixed
+/// verbatim, STAP-A split into its NALs, FU-A fragments buffered and emitted
+/// as one reconstructed NAL on the end bit. `Err` corresponds to a legacy
+/// `depacketize` failure (=> legacy `Invalid`).
+fn build_annex_b(payloads: &[(u16, Vec<u8>)]) -> Result<Vec<u8>, ()> {
+    let seqs: Vec<u16> = payloads.iter().map(|(seq, _)| *seq).collect();
+    let anchor = modular_anchor(&seqs);
+    let mut sorted: Vec<&(u16, Vec<u8>)> = payloads.iter().collect();
+    sorted.sort_by_key(|(seq, _)| seq.wrapping_sub(anchor));
+    let mut out: Vec<u8> = Vec::new();
+    let mut fu_buffer: Option<Vec<u8>> = None;
+    for (_, packet) in sorted {
+        if packet.len() <= 1 {
+            return Err(());
+        }
+        let nal_type = packet[0] & 0x1F;
+        if packet.len() <= 2 && nal_type != 9 {
+            return Err(());
+        }
+        match nal_type {
+            1..=23 => {
+                out.extend_from_slice(&ANNEXB_START_CODE);
+                out.extend_from_slice(packet);
+            }
+            24 => {
+                // STAP-A: 1-byte indicator, then repeated [size:u16][nal]
+                // (offsets exactly as in the legacy depacketizer).
+                let mut offset = 1usize;
+                while offset < packet.len() {
+                    if offset + 2 > packet.len() {
+                        return Err(());
+                    }
+                    let size =
+                        (usize::from(packet[offset]) << 8) | usize::from(packet[offset + 1]);
+                    offset += 2;
+                    if offset + size > packet.len() {
+                        return Err(());
+                    }
+                    out.extend_from_slice(&ANNEXB_START_CODE);
+                    out.extend_from_slice(&packet[offset..offset + size]);
+                    offset += size;
+                }
+            }
+            28 => {
+                // FU-A: buffer fragments; emit once on the end bit with the
+                // NAL header reconstructed from the ENDING fragment (legacy
+                // semantics — a never-ended FU emits nothing, as legacy).
+                if fu_buffer.is_none() {
+                    fu_buffer = Some(Vec::new());
+                }
+                fu_buffer
+                    .as_mut()
+                    .expect("fu buffer just created")
+                    .extend_from_slice(&packet[2..]);
+                if packet[1] & 0x40 != 0 {
+                    // FU end bit (FU_END_BITMASK)
+                    let header = (packet[0] & 0x60) | (packet[1] & 0x1F);
+                    let buffer = fu_buffer.take().expect("buffer set above");
+                    out.extend_from_slice(&ANNEXB_START_CODE);
+                    out.push(header);
+                    out.extend_from_slice(&buffer);
+                }
+            }
+            _ => return Err(()),
+        }
+    }
+    Ok(out)
+}
+
 /// Parse a payload to extract NAL header and FU-A header info.
 fn parse_payload(payload: &[u8]) -> (NalHeader, Option<FuHeader>, bool) {
     if payload.is_empty() {
@@ -334,8 +487,13 @@ fn parse_payload(payload: &[u8]) -> (NalHeader, Option<FuHeader>, bool) {
 struct AuBuilder {
     /// RTP timestamp of the first packet in this AU.
     rtp_ts: u32,
-    /// Concatenated NAL/FU payload bytes, in sequence order.
-    data: Vec<u8>,
+    /// Per-packet `(seq, raw payload)` in arrival order, deduplicated (mirrors
+    /// legacy `PendingVideoFrame::insert`). Converted to Annex-B at resolution
+    /// time after sorting into modular sequence order (byte-equivalent to the
+    /// legacy marker-anchored sort for the contiguous AUs legacy completes).
+    payloads: Vec<(u16, Vec<u8>)>,
+    /// Cumulative raw payload bytes — feeds the >2 MiB oversize gate.
+    raw_len: usize,
     /// Whether the first packet was a verified AU start (FU-A start bit or
     /// single NAL).
     had_first_slice: bool,
@@ -343,16 +501,11 @@ struct AuBuilder {
     is_idr: bool,
     /// Maximum nal_ref_idc over all NALs in the AU.
     nal_ref_idc: u8,
-    /// Sequence number of the first packet (for gap detection).
-    first_seq: u16,
-    /// Sequence number of the most recently added packet.
-    last_seq: u16,
-    /// Count of missing sequence numbers inside the AU (modular-16-bit).
+    /// Count of missing sequence numbers inside the AU (computed at resolve,
+    /// modular-16-bit; reordered packets count no holes).
     holes: u16,
-    /// Total packet count in the AU.
+    /// Total unique packet count in the AU.
     packet_count: u16,
-    /// Whether the AU has been resolved (marker seen or discarded).
-    resolved: bool,
 }
 
 #[cfg(test)]
@@ -399,7 +552,9 @@ mod tests {
 
         // Send a single NAL (type Slice Non-IDR = 1)
         // First byte: forbidden_zero=0, nal_ref_idc=0, nal_unit_type=1 => 0x01
-        let payload = [0x01];
+        // 3+ bytes: the Annex-B contract mirrors legacy depacketize, which
+        // rejects <=2-byte non-AUD payloads with ErrShortPacket.
+        let payload = [0x01, 0x00, 0x00];
         let outcome = assembler.push(16, 90000, true, &payload, 1000).unwrap();
         match outcome {
             AssemblyOutcome::Complete(desc) => {
@@ -442,20 +597,21 @@ mod tests {
         let mut assembler = AccessUnitAssembler::new();
 
         // First AU: seq 0, 1 with marker at seq 1
-        let p0 = [0x01];
+        // (3+ byte payloads: legacy depacketize rejects <=2-byte non-AUD NALs.)
+        let p0 = [0x01, 0x00, 0x00];
         let _ = assembler.push(0, 90000, false, &p0, 1000);
-        let p1 = [0x01];
+        let p1 = [0x01, 0x00, 0x00];
         let _ = assembler.push(1, 90000, true, &p1, 2000).unwrap(); // resolves first AU
 
         // Now start new AU with seq 5 (not contiguous with seq 1 => gap)
         // After the first AU is resolved, the assembler is empty, and seq 5 starts a new AU.
-        let _ = assembler.push(5, 90000, false, &[0x01], 3000);
+        let _ = assembler.push(5, 90000, false, &[0x01, 0x00, 0x00], 3000);
         // gap_au should be 1 (gap between seq 1 and seq 5)
         assert_eq!(assembler.gap_au(), 1, "gap_au should be 1 after seq gap between AUs");
 
         // Continue the new AU
-        let _ = assembler.push(6, 90000, false, &[0x01], 4000);
-        let outcome = assembler.push(7, 90000, true, &[0x01], 5000).unwrap();
+        let _ = assembler.push(6, 90000, false, &[0x01, 0x00, 0x00], 4000);
+        let outcome = assembler.push(7, 90000, true, &[0x01, 0x00, 0x00], 5000).unwrap();
         // outcome already returned by push; assert on it directly
         match outcome {
             AssemblyOutcome::Complete(desc) => {
@@ -496,7 +652,8 @@ mod tests {
         let mut assembler = AccessUnitAssembler::new();
 
         // AU 1: single IDR packet with marker — resolves immediately.
-        let au1 = assembler.push(16, 90000, true, &[0x05], 1000).unwrap();
+        // (3+ bytes: legacy depacketize rejects <=2-byte non-AUD payloads.)
+        let au1 = assembler.push(16, 90000, true, &[0x05, 0x00, 0x00], 1000).unwrap();
         match au1 {
             AssemblyOutcome::Complete(desc) | AssemblyOutcome::Damaged(desc) => {
                 assert!(desc.is_idr, "AU containing an IDR NAL must report is_idr");
@@ -505,8 +662,8 @@ mod tests {
             AssemblyOutcome::Discarded { .. } => panic!("Should not be discarded"),
         }
         // AU 2: non-IDR packets only — independent of AU 1.
-        let _ = assembler.push(17, 90000, false, &[0x01], 1000);
-        let au2 = assembler.push(18, 90000, true, &[0x01], 2000).unwrap();
+        let _ = assembler.push(17, 90000, false, &[0x01, 0x00, 0x00], 1000);
+        let au2 = assembler.push(18, 90000, true, &[0x01, 0x00, 0x00], 2000).unwrap();
         match au2 {
             AssemblyOutcome::Complete(desc) | AssemblyOutcome::Damaged(desc) => {
                 assert!(!desc.is_idr, "AU without IDR NAL must not report is_idr");

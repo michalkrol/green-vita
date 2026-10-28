@@ -71,10 +71,11 @@ impl FuHeader {
         let start = (byte2 >> 7) & 1 == 1;
         let end = (byte2 >> 6) & 1 == 1;
 
-        // The FU-A indicator byte (byte1) carries the full NAL unit type in
-        // bits 0-4; the FU header (byte2) merely repeats those 5 bits, so the
-        // type comes entirely from byte1.
-        let nal_unit_type = byte1 & 0x1F;
+        // RFC 6184 §5.8: byte1 is the FU indicator (F|NRI|Type=28/29); the
+        // ORIGINAL NAL type lives in byte2 (FU header, bits 0-4) — the same
+        // byte the legacy depacketizer reconstructs the header from
+        // (`(b0 & 0x60) | (b1 & 0x1F)` in rtc-rtp's H264Packet).
+        let nal_unit_type = byte2 & 0x1F;
 
         Some(Self {
             start,
@@ -121,23 +122,20 @@ mod tests {
 
     #[test]
     fn test_fu_header_parse() {
-        // FU-A with start=1, end=0, nal_ref_idc=3, nal_unit_type=1 (SLICE_NON_IDR)
-        // byte1: nal_ref_idc=3 in bits 5-6, nal_unit_type_lower=1 in bits 0-4 => 0b_0011_0001 = 0x31
-        // Wait: (3 << 5) | 1 = 0x31. Byte1: forbidden_zero=0 (bit7=0), nal_ref_idc=3 (bits 5-6 = 11), type_lower=1 (bits 0-4 = 00001)
-        // byte2: start=1 (bit7=1), end=0 (bit6=0), upper_type=0 => 0b_1000_0000 = 0x80
-        // The FU-A indicator byte (byte1) carries the full NAL unit type in bits 0-4;
-        // the FU header (byte2) merely repeats those 5 bits, so the type comes entirely from byte1.
-        let payload = [0x61, 0x80];
+        // RFC 6184 FU-A packets: byte1 = indicator (F|NRI|Type=28),
+        // byte2 = FU header (S|E|R|original NAL type).
+        // start=1, end=0, nal_ref_idc=3, carried type=1 (SLICE_NON_IDR):
+        //   indicator = (3 << 5) | 28 = 0x7C, header = 0x80 | 1 = 0x81
+        let payload = [0x7C, 0x81];
         let fu = FuHeader::parse(&payload).unwrap();
         assert!(fu.start);
         assert!(!fu.end);
         assert_eq!(fu.nal_ref_idc, 3);
         assert_eq!(fu.nal_unit_type, 1);
 
-        // FU-A with start=0, end=1, nal_ref_idc=0, nal_unit_type=5 (IDR)
-        // byte1: (0 << 5) | 5 = 0x05
-        // byte2: start=0 (bit7=0), end=1 (bit6=1), upper=0 => 0b_0100_0000 = 0x40
-        let payload2 = [0x05, 0x40];
+        // start=0, end=1, nal_ref_idc=0, carried type=5 (IDR):
+        //   indicator = (0 << 5) | 28 = 0x1C, header = 0x40 | 5 = 0x45
+        let payload2 = [0x1C, 0x45];
         let fu2 = FuHeader::parse(&payload2).unwrap();
         assert!(!fu2.start);
         assert!(fu2.end);
@@ -162,13 +160,9 @@ mod tests {
 
     #[test]
     fn test_fu_header_parse_idr_detection() {
-        // FU-A carrying IDR: nal_unit_type should be 5
-        // Construct: byte1 with type=5 lower bits, byte2 with start=0, end=1
-        // nal_unit_type = ((upper << 5) | lower). We need upper and lower to combine to 5.
-        // If lower = 5 and upper = 0, then type = 5.
-        // byte1: (nal_ref_idc << 5) | 5. With nal_ref_idc=0 => 0x05
-        // byte2: start=0, end=1, upper=0 => 0x40
-        let payload = [0x05, 0x40];
+        // FU-A carrying IDR: original type (byte2 bits 0-4) must be 5.
+        //   indicator = (0 << 5) | 28 = 0x1C, header = 0x40 | 5 = 0x45
+        let payload = [0x1C, 0x45];
         let fu = FuHeader::parse(&payload).unwrap();
         assert!(fu.is_keyframe_nal());
     }

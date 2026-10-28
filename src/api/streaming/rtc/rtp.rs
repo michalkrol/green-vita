@@ -564,3 +564,571 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
     reader.reset();
     info
 }
+
+// ---------------------------------------------------------------------------
+// Differential fixtures — STAGE8-REDO-SPEC §5.1/§5.2.
+//
+// Each fixture replays an identical packet stream through (a) the LEGACY
+// authority (PendingVideoFrame + H264Packet, mirroring receive()'s control
+// flow) and (b) the new AccessUnitAssembler, asserting byte-identical AUs and
+// boundaries wherever legacy completes. The two sanctioned expected-delta
+// buckets (§3) are asserted explicitly; classification parity for the reject
+// class (legacy Invalid ↔ new Discarded) is asserted where relevant.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod diff_fixtures {
+    use super::*;
+    use crate::pipeline::media::assembler::{
+        AccessUnitAssembler, AssemblyOutcome, DiscardReason,
+    };
+    use rtc::rtp::Header;
+
+    const TS0: u32 = 90_000;
+    const TS1: u32 = 180_000;
+
+    #[derive(Debug, PartialEq)]
+    enum LegacyEvent {
+        Complete { at: usize, data: Vec<u8> },
+        Abandoned { at: usize },
+        Invalid { at: usize },
+    }
+
+    fn pkt(seq: u16, ts: u32, marker: bool, payload: &[u8]) -> Packet {
+        Packet {
+            header: Header {
+                sequence_number: seq,
+                timestamp: ts,
+                marker,
+                ..Default::default()
+            },
+            payload: Bytes::copy_from_slice(payload),
+        }
+    }
+
+    /// Legacy-valid single NAL: >= 3 bytes (legacy depacketize returns
+    /// ErrShortPacket for <= 2-byte non-AUD payloads).
+    fn single_nal(nal_type: u8, fill: u8) -> Vec<u8> {
+        vec![nal_type, fill, fill.wrapping_add(1)]
+    }
+
+    fn stap_a(nals: &[&[u8]]) -> Vec<u8> {
+        let mut payload = vec![0x78]; // nri=3, type=24 (STAP-A)
+        for nal in nals {
+            payload.extend_from_slice(&(nal.len() as u16).to_be_bytes());
+            payload.extend_from_slice(nal);
+        }
+        payload
+    }
+
+    /// Split `nal` into FU-A fragments of `frag_size` body bytes, sequenced
+    /// from `first_seq` (marker left false; caller sets it).
+    fn fu_packets(nal: &[u8], first_seq: u16, frag_size: usize) -> Vec<Packet> {
+        let indicator = (nal[0] & 0x60) | 28; // preserve nri, type = FU-A
+        let body = &nal[1..];
+        let chunks: Vec<&[u8]> = body.chunks(frag_size).collect();
+        let total = chunks.len();
+        let mut seq = first_seq;
+        let mut out = Vec::new();
+        for (k, chunk) in chunks.iter().enumerate() {
+            let mut fu_header = nal[0] & 0x1F;
+            if k == 0 {
+                fu_header |= 0x80; // start
+            }
+            if k + 1 == total {
+                fu_header |= 0x40; // end
+            }
+            let mut payload = vec![indicator, fu_header];
+            payload.extend_from_slice(chunk);
+            out.push(pkt(seq, 0, false, &payload)); // ts set by caller
+            seq = seq.wrapping_add(1);
+        }
+        out
+    }
+
+    /// Mirror of receive()'s byte-relevant control flow: force-out on newer
+    /// timestamp, stale-ts drop, last_frame gate, insert dedup, next_sequence
+    /// tracking. Damage/PLI side effects are out of scope (no worker here).
+    fn legacy_run(packets: &[Packet]) -> Vec<LegacyEvent> {
+        let mut events = Vec::new();
+        let mut pending: Option<PendingVideoFrame> = None;
+        let mut depacketizer = H264Packet::default();
+        let mut next_sequence: Option<u16> = None;
+        let mut last_frame_ts: Option<u32> = None;
+        for (i, packet) in packets.iter().enumerate() {
+            if packet.payload.is_empty() {
+                continue;
+            }
+            let ts = packet.header.timestamp;
+            if let Some(existing) = &pending
+                && existing.timestamp != ts
+            {
+                if !timestamp_is_newer(ts, existing.timestamp) {
+                    continue; // receive(): stale packet dropped
+                }
+                let incomplete = pending.take().expect("pending frame");
+                next_sequence = incomplete.marker_sequence().map(|s| s.wrapping_add(1));
+                depacketizer = H264Packet::default();
+                events.push(LegacyEvent::Abandoned { at: i });
+            }
+            if pending.is_none() {
+                if last_frame_ts.is_some_and(|last| !timestamp_is_newer(ts, last)) {
+                    continue; // receive(): last_frame_timestamp gate
+                }
+                pending = Some(PendingVideoFrame::new(packet.clone()));
+            } else {
+                pending.as_mut().expect("pending frame").insert(packet.clone());
+            }
+            match pending
+                .as_ref()
+                .expect("pending frame")
+                .assemble(&mut depacketizer, next_sequence)
+            {
+                FrameAssembly::Pending => {}
+                FrameAssembly::Invalid => {
+                    pending = None;
+                    next_sequence = None;
+                    events.push(LegacyEvent::Invalid { at: i });
+                }
+                FrameAssembly::Complete { data, marker_sequence } => {
+                    pending = None;
+                    next_sequence = Some(marker_sequence.wrapping_add(1));
+                    last_frame_ts = Some(ts);
+                    events.push(LegacyEvent::Complete {
+                        at: i,
+                        data: data.to_vec(),
+                    });
+                }
+            }
+        }
+        events
+    }
+
+    /// Run packets through the new assembler (1 ms inter-arrival), draining
+    /// the outcome queue after every push.
+    fn new_run(packets: &[Packet]) -> Vec<(usize, AssemblyOutcome)> {
+        let mut assembler = AccessUnitAssembler::new();
+        let mut events = Vec::new();
+        for (i, packet) in packets.iter().enumerate() {
+            let arrival_us = 1_000 + i as u64 * 1_000;
+            if let Some(outcome) = assembler.push(
+                packet.header.sequence_number,
+                packet.header.timestamp,
+                packet.header.marker,
+                &packet.payload,
+                arrival_us,
+            ) {
+                events.push((i, outcome));
+            }
+            while let Some(outcome) = assembler.poll_outcome() {
+                events.push((i, outcome));
+            }
+        }
+        events
+    }
+
+    fn legacy_completes(events: &[LegacyEvent]) -> Vec<(usize, Vec<u8>)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                LegacyEvent::Complete { at, data } => Some((*at, data.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn new_completes(events: &[(usize, AssemblyOutcome)]) -> Vec<(usize, Vec<u8>)> {
+        events
+            .iter()
+            .filter_map(|(at, outcome)| match outcome {
+                AssemblyOutcome::Complete(desc) => Some((*at, desc.data.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Core parity assertion: where legacy completes, the new path completes
+    /// the same AU bytes at the same packet index — and vice versa.
+    fn assert_parity(packets: &[Packet]) {
+        let legacy = legacy_completes(&legacy_run(packets));
+        let new = new_completes(&new_run(packets));
+        assert_eq!(
+            legacy, new,
+            "new path must produce legacy-identical AU bytes and boundaries"
+        );
+    }
+
+    // ---- §5.1 synthetic ----------------------------------------------------
+
+    #[test]
+    fn probe_annexb_start_code_is_four_bytes() {
+        let packets = vec![pkt(10, TS0, true, &single_nal(0x01, 0xAA))];
+        let legacy = legacy_run(&packets);
+        let data = match &legacy[..] {
+            [LegacyEvent::Complete { data, .. }] => data.clone(),
+            other => panic!("legacy should complete a marker'd single NAL: {other:?}"),
+        };
+        assert_eq!(&data[..4], &[0, 0, 0, 1], "legacy emits 4-byte start codes");
+        assert_eq!(&data[4..], &packets[0].payload[..], "NAL verbatim after start code");
+        assert_parity(&packets);
+    }
+
+    #[test]
+    fn parity_single_nal_p_frame() {
+        assert_parity(&[pkt(10, TS0, true, &single_nal(0x01, 0x01))]);
+    }
+
+    #[test]
+    fn parity_stap_a_sps_pps_split_in_order() {
+        let sps: &[u8] = &[0x67, 0x42, 0x00, 0x1E, 0xAB];
+        let pps: &[u8] = &[0x68, 0xCE, 0x06, 0xE2];
+        let packets = vec![pkt(20, TS0, true, &stap_a(&[sps, pps]))];
+        let legacy = legacy_run(&packets);
+        let data = match &legacy[..] {
+            [LegacyEvent::Complete { data, .. }] => data.clone(),
+            other => panic!("legacy should complete STAP-A: {other:?}"),
+        };
+        let mut expect = vec![0, 0, 0, 1];
+        expect.extend_from_slice(sps);
+        expect.extend_from_slice(&[0, 0, 0, 1]);
+        expect.extend_from_slice(pps);
+        assert_eq!(data, expect, "SPS then PPS, each start-code framed");
+        assert_parity(&packets);
+    }
+
+    #[test]
+    fn parity_idr_fu_a_multi_fragment() {
+        let mut idr = vec![0x65]; // nri=3, type=5 (IDR)
+        idr.extend(0..40u8);
+        let mut packets = fu_packets(&idr, 100, 10);
+        assert!(packets.len() >= 3, "need a fragmented IDR");
+        packets.last_mut().expect("non-empty").header.marker = true;
+        for packet in &mut packets {
+            packet.header.timestamp = TS0;
+        }
+        let legacy = legacy_run(&packets);
+        let data = match &legacy[..] {
+            [LegacyEvent::Complete { data, .. }] => data.clone(),
+            other => panic!("legacy should complete fragmented IDR: {other:?}"),
+        };
+        let mut expect = vec![0, 0, 0, 1];
+        expect.extend_from_slice(&idr);
+        assert_eq!(data, expect, "FU-A reassembles to one start-coded IDR NAL");
+        assert_parity(&packets);
+        let new = new_run(&packets);
+        match &new[0].1 {
+            AssemblyOutcome::Complete(desc) => assert!(desc.is_idr, "IDR flag must be set"),
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parity_multi_packet_p_frame() {
+        let packets = vec![
+            pkt(30, TS0, false, &single_nal(0x01, 0x10)),
+            pkt(31, TS0, false, &single_nal(0x01, 0x20)),
+            pkt(32, TS0, true, &single_nal(0x01, 0x30)),
+        ];
+        assert_parity(&packets);
+    }
+
+    #[test]
+    fn parity_sei_single() {
+        let sei = [0x06, 0x05, 0x00, 0x80, 0x11];
+        assert_parity(&[pkt(40, TS0, true, &sei)]);
+    }
+
+    // ---- §5.2 edge cases ---------------------------------------------------
+
+    #[test]
+    fn parity_reordered_within_frame_marker_last() {
+        // Arrival order 31, 30, 32(marker): legacy sorts by seq around the
+        // marker; the new path must apply the same key => identical bytes.
+        let packets = vec![
+            pkt(31, TS0, false, &single_nal(0x01, 0x20)),
+            pkt(30, TS0, false, &single_nal(0x01, 0x10)),
+            pkt(32, TS0, true, &single_nal(0x01, 0x30)),
+        ];
+        assert_parity(&packets);
+        let legacy = legacy_run(&packets);
+        let data = match &legacy[..] {
+            [LegacyEvent::Complete { data, .. }] => data.clone(),
+            other => panic!("{other:?}"),
+        };
+        // NALs must come out in SEQUENCE order (30, 31, 32), not arrival order.
+        assert_eq!(&data[5], &0x10, "first NAL fill byte must be seq 30's");
+    }
+
+    #[test]
+    fn bucket1_lost_middle_new_damaged_legacy_abandons() {
+        let packets = vec![
+            pkt(50, TS0, false, &single_nal(0x01, 0x10)),
+            // seq 51 lost
+            pkt(52, TS0, true, &single_nal(0x01, 0x30)),
+            pkt(53, TS1, true, &single_nal(0x01, 0x40)), // frame 2
+        ];
+        let legacy = legacy_run(&packets);
+        // Only frame 2 may complete on legacy (it starts exactly at frame-1's
+        // marker + 1); the gapped frame 1 must never be submitted.
+        let legacy_complete_indices: Vec<usize> = legacy_completes(&legacy)
+            .iter()
+            .map(|(at, _)| *at)
+            .collect();
+        assert_eq!(
+            legacy_complete_indices,
+            vec![2],
+            "legacy must never submit the gapped frame 1: {legacy:?}"
+        );
+        assert!(
+            legacy.contains(&LegacyEvent::Abandoned { at: 2 }),
+            "legacy abandons frame 1 on force-out: {legacy:?}"
+        );
+        let new = new_run(&packets);
+        match &new[0].1 {
+            AssemblyOutcome::Damaged(desc) => {
+                assert_eq!(desc.holes, 1, "one missing sequence number");
+                assert!(desc.data.is_empty(), "Damaged must carry no bytes (§4)");
+            }
+            other => panic!("expected Damaged for frame 1, got {other:?}"),
+        }
+        // Frame 2 (seq starts exactly at frame-1 marker + 1) completes
+        // identically on both paths.
+        assert_eq!(legacy_completes(&legacy), new_completes(&new));
+    }
+
+    #[test]
+    fn bucket1_lost_first_fu_start_never_submitted() {
+        let packets = vec![
+            pkt(70, TS0, false, &[0x7C, 0x05, 0xAA, 0xBB]), // FU continuation (no start)
+            pkt(71, TS0, true, &[0x7C, 0x45, 0xCC, 0xDD]),  // FU end fragment
+            pkt(72, TS1, true, &single_nal(0x01, 0x40)),    // frame 2
+        ];
+        let legacy = legacy_run(&packets);
+        assert!(
+            legacy_completes(&legacy).len() == 1,
+            "only frame 2 may complete on legacy: {legacy:?}"
+        );
+        assert!(legacy.contains(&LegacyEvent::Abandoned { at: 2 }));
+        let new = new_run(&packets);
+        match &new[0].1 {
+            AssemblyOutcome::Damaged(desc) => {
+                assert!(!desc.had_first_slice, "H3: unverified start");
+                assert!(desc.data.is_empty(), "§4: no bytes from Damaged");
+            }
+            other => panic!("expected Damaged, got {other:?}"),
+        }
+        assert_eq!(legacy_completes(&legacy), new_completes(&new));
+    }
+
+    #[test]
+    fn bucket2_markerless_frame_completes_only_via_forceout() {
+        let packets = vec![
+            pkt(80, TS0, false, &single_nal(0x01, 0x10)), // frame 1, marker lost
+            pkt(81, TS1, true, &single_nal(0x01, 0x20)),  // frame 2
+        ];
+        let legacy = legacy_run(&packets);
+        assert!(
+            legacy.contains(&LegacyEvent::Abandoned { at: 1 }),
+            "legacy abandons the markerless frame: {legacy:?}"
+        );
+        let new = new_run(&packets);
+        // New resolves frame 1 (contiguous + verified start) at the force-out.
+        let frame1_bytes = new_completes(&new)
+            .into_iter()
+            .find(|(at, _)| *at == 1)
+            .map(|(_, data)| data);
+        let mut expect_frame1 = vec![0, 0, 0, 1];
+        expect_frame1.extend_from_slice(&single_nal(0x01, 0x10));
+        assert_eq!(
+            frame1_bytes.as_deref(),
+            Some(&expect_frame1[..]),
+            "bucket 2: new completes the abandoned frame with correct bytes"
+        );
+        // Frame 2 completes identically on both.
+        let legacy_f2 = legacy_completes(&legacy);
+        let new_all = new_completes(&new);
+        assert_eq!(
+            legacy_f2.len(),
+            1,
+            "legacy completes only frame 2: {legacy:?}"
+        );
+        assert_eq!(
+            new_all.len(),
+            2,
+            "new completes frame 1 (bucket 2) + frame 2: {new:?}"
+        );
+        assert_eq!(
+            legacy_f2[0],
+            *new_all.last().expect("frame 2 event"),
+            "frame 2 bytes/boundary parity"
+        );
+    }
+
+    #[test]
+    fn bucket2_hold_expiry_completes_at_12ms() {
+        let payload = single_nal(0x01, 0x10);
+        let mut assembler = AccessUnitAssembler::new();
+        assert!(assembler.push(90, TS0, false, &payload, 100_000).is_none());
+        // Inside the hold window: no flush (regression guard: au_first_arrival_us
+        // must be anchored at AU start, else the first flush_due fires early).
+        assert!(
+            assembler.flush_due(105_000).is_none(),
+            "must not flush 5 ms into the 12 ms hold window"
+        );
+        let outcome = assembler
+            .flush_due(113_000)
+            .expect("flush after the 12 ms hold window");
+        match outcome {
+            AssemblyOutcome::Complete(desc) => {
+                let mut expect = vec![0, 0, 0, 1];
+                expect.extend_from_slice(&payload);
+                assert_eq!(desc.data, expect, "hold-expired AU is valid Annex-B");
+            }
+            other => panic!("expected Complete via hold expiry, got {other:?}"),
+        }
+        // Legacy has no hold mechanism: the markerless AU never completes.
+        assert!(
+            legacy_run(&[pkt(90, TS0, false, &payload)]).is_empty(),
+            "legacy never completes a markerless frame by itself"
+        );
+    }
+
+    #[test]
+    fn parity_duplicate_packet_mid_frame() {
+        let packets = vec![
+            pkt(100, TS0, false, &single_nal(0x01, 0x10)),
+            pkt(101, TS0, false, &single_nal(0x01, 0x20)),
+            pkt(101, TS0, false, &single_nal(0x01, 0x20)), // duplicate
+            pkt(102, TS0, true, &single_nal(0x01, 0x30)),
+        ];
+        assert_parity(&packets);
+        let new = new_run(&packets);
+        match &new[0].1 {
+            AssemblyOutcome::Complete(desc) => assert_eq!(desc.packet_count, 3, "dedup"),
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parity_sequence_wrap_across_frames() {
+        let packets = vec![
+            pkt(65_534, TS0, false, &single_nal(0x01, 0x10)),
+            pkt(65_535, TS0, true, &single_nal(0x01, 0x20)),
+            pkt(0, TS1, false, &single_nal(0x01, 0x30)), // wraps; expected seq = 0
+            pkt(1, TS1, true, &single_nal(0x01, 0x40)),
+        ];
+        assert_parity(&packets);
+        for (at, outcome) in new_run(&packets) {
+            if let AssemblyOutcome::Damaged(desc) = outcome {
+                panic!("no holes expected (at {at}): {desc:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn parity_timestamp_wrap_between_frames() {
+        let packets = vec![
+            pkt(10, 0xFFFF_FF00, true, &single_nal(0x01, 0x10)),
+            pkt(11, 0x0000_1000, true, &single_nal(0x01, 0x20)), // u32 wrap
+        ];
+        assert_parity(&packets);
+    }
+
+    #[test]
+    fn reject_oversize_is_rejected_by_both_paths() {
+        let big = vec![0x01u8; 100_000];
+        let mut packets = Vec::new();
+        for i in 0..21u16 {
+            let marker = i == 20;
+            packets.push(pkt(200 + i, TS0, marker, &big));
+        }
+        let legacy = legacy_run(&packets);
+        assert!(
+            legacy_completes(&legacy).is_empty(),
+            "legacy must not submit oversize: {legacy:?}"
+        );
+        assert!(
+            legacy.contains(&LegacyEvent::Invalid { at: 20 }),
+            "legacy rejects at the marker packet: {legacy:?}"
+        );
+        let new = new_run(&packets);
+        assert!(
+            new_completes(&new).is_empty(),
+            "new must not submit oversize: {new:?}"
+        );
+        assert!(
+            new.iter().any(|(_, outcome)| matches!(
+                outcome,
+                AssemblyOutcome::Discarded {
+                    reason: DiscardReason::Oversize
+                }
+            )),
+            "new classifies oversize: {new:?}"
+        );
+    }
+
+    #[test]
+    fn classification_malformed_stap_maps_legacy_invalid() {
+        // STAP-A whose declared size overruns the buffer → legacy depacketize
+        // Err → Invalid; new → Discarded{Malformed}. Neither submits bytes.
+        let bad_stap = [0x78, 0xFF, 0xFF, 0x67, 0x42];
+        let packets = vec![pkt(110, TS0, true, &bad_stap)];
+        assert_eq!(
+            legacy_run(&packets),
+            vec![LegacyEvent::Invalid { at: 0 }],
+            "legacy Invalid for malformed STAP-A"
+        );
+        assert!(
+            matches!(
+                new_run(&packets).as_slice(),
+                [(0, AssemblyOutcome::Discarded { reason: DiscardReason::Malformed })]
+            ),
+            "new Discarded{{Malformed}} for the same payload"
+        );
+    }
+
+    #[test]
+    fn parity_lost_marker_followed_by_next_timestamp() {
+        // §5.2: marker-less frame followed by next timestamp — legacy force-out
+        // path with an in-sequence follower (no expected-sequence mismatch).
+        let packets = vec![
+            pkt(120, TS0, false, &single_nal(0x01, 0x10)), // no marker
+            pkt(121, TS0, false, &single_nal(0x01, 0x20)),
+            pkt(122, TS1, true, &single_nal(0x01, 0x30)), // frame 2
+        ];
+        let legacy = legacy_run(&packets);
+        assert!(
+            legacy.contains(&LegacyEvent::Abandoned { at: 2 }),
+            "legacy force-outs the markerless frame: {legacy:?}"
+        );
+        let new = new_run(&packets);
+        // Bucket 2: new completes frame 1 where legacy abandoned it; frame 2
+        // completes on both with identical bytes.
+        assert_eq!(
+            new_completes(&new).len(),
+            2,
+            "new completes frame 1 (bucket 2) and frame 2: {new:?}"
+        );
+        assert_eq!(
+            legacy_completes(&legacy).len(),
+            1,
+            "legacy completes only frame 2: {legacy:?}"
+        );
+        let legacy_f2 = legacy_completes(&legacy);
+        let new_all = new_completes(&new);
+        assert_eq!(
+            legacy_f2.len(),
+            1,
+            "legacy completes only frame 2: {legacy:?}"
+        );
+        assert_eq!(
+            new_all.len(),
+            2,
+            "new completes frame 1 (bucket 2) + frame 2: {new:?}"
+        );
+        assert_eq!(
+            legacy_f2[0],
+            *new_all.last().expect("frame 2"),
+            "frame 2 bytes/boundary parity"
+        );
+    }
+}
