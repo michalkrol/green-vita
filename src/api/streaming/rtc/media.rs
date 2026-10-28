@@ -276,6 +276,10 @@ impl VideoReceiver {
         // Compute q_slope_mpm from the queue-delay estimator before draining.
         let q_slope_mpm = self.rtp.q_estimator.trend_us_per_s() * 60.0 / 1000.0;
         METRICS.q_slope_mpm.store(q_slope_mpm.round() as i64, Ordering::Relaxed);
+        // 7b: publish the live Q estimate so HUD/CSV q_us is fed (the drain
+        // below swaps it into the snapshot; it was never stored before ⇒ 0).
+        METRICS.q_us
+            .store(self.rtp.q_estimator.q_us(), Ordering::Relaxed);
         let snapshot = drain_metrics();
 
         // If render timing metadata is enabled, queue a metadata frame.

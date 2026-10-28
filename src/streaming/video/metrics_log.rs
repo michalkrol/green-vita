@@ -361,4 +361,65 @@ mod tests {
             row
         );
     }
+
+    #[test]
+    fn drained_row_carries_nonzero_q_us_for_delayed_stream() {
+        // 7b gate test: a synthetic delayed stream must surface a non-zero
+        // q_us through the production publish path (METRICS stores) and the
+        // drain into a real CSV row. At runtime media.rs status() performs
+        // the q_us store and rtp.rs the q_us_max fetch_max at push time.
+        use crate::pipeline::clock::queue_delay::{PacketInput, QueueDelayEstimator};
+        use crate::streaming::video::metrics::METRICS;
+        use std::sync::atomic::Ordering;
+
+        reset_session_metrics();
+
+        let mut estimator = QueueDelayEstimator::new();
+        // Flat phase: inter-arrival == inter-send ⇒ q ≈ 0.
+        for i in 0..50 {
+            let send_us = i as u64 * 20_000;
+            estimator
+                .push(PacketInput { send_us, arrival_us: send_us })
+                .unwrap();
+        }
+        // Step: 100 ms standing delay ⇒ q rises to ~100_000 µs.
+        for i in 0..50 {
+            let send_us = 50 as u64 * 20_000 + i as u64 * 20_000;
+            estimator
+                .push(PacketInput {
+                    send_us,
+                    arrival_us: send_us + 100_000,
+                })
+                .unwrap();
+        }
+        let q = estimator.q_us();
+        assert!(
+            q > 80_000,
+            "synthetic 100 ms delay should yield q > 80 ms, got {q}"
+        );
+
+        // Mirror the production stores (media.rs drain site / rtp.rs push site).
+        METRICS.q_us.store(q, Ordering::Relaxed);
+        METRICS.q_us_max.fetch_max(q.max(0) as u64, Ordering::Relaxed);
+
+        let snapshot = drain_metrics();
+        assert_eq!(snapshot.q_us, q, "drained q_us must carry the estimate");
+        assert!(
+            snapshot.q_us_max >= q as u64,
+            "drained q_us_max must carry the peak"
+        );
+
+        let row = csv_row_from_snapshot(&snapshot);
+        let header: Vec<&str> = HEADER.split(',').collect();
+        let fields: Vec<&str> = row.split(',').collect();
+        let idx = header
+            .iter()
+            .position(|h| *h == "q_us")
+            .expect("q_us column in header");
+        assert_ne!(
+            fields[idx], "0",
+            "CSV q_us must be non-zero for a delayed stream, row: {row}"
+        );
+        reset_session_metrics();
+    }
 }

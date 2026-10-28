@@ -240,6 +240,10 @@ impl VideoRtp {
                     send_us,
                     arrival_us,
                 });
+                // 7b: per-second Q peak maintained alongside the push (mirrors
+                // stream_slip_max_us below; clamp at 0 so a negative Q cannot
+                // wrap the u64 accumulator). drain_metrics() swaps it to 0.
+                METRICS.q_us_max.fetch_max(self.q_estimator.q_us().max(0) as u64, Ordering::Relaxed);
             }
         }
 
