@@ -345,9 +345,16 @@ fn replay_real_capture_through_both_paths() {
 /// dual-path replay as the gate test, but keeps the raw AuDescriptor and
 /// attributes every case to the `is_complete` clause that failed:
 /// `marker_seen && holes == 0 && packet_count > 0 && had_first_slice`.
+/// `B1_DUMP` env var overrides the fixture path (fresh-capture re-runs).
 #[test]
 fn dump_bucket1_clause_failures() {
-    let dump = parse_dump(DUMP);
+    let owned: Vec<u8> = match std::env::var("B1_DUMP") {
+        Ok(p) if !p.is_empty() => {
+            std::fs::read(&p).unwrap_or_else(|e| panic!("B1_DUMP {p}: {e}"))
+        }
+        _ => DUMP.to_vec(),
+    };
+    let dump = parse_dump(&owned);
     let packets: Vec<Packet> = dump
         .iter()
         .map(|p| pkt(p.seq, p.ts, p.marker, &p.payload))
@@ -417,8 +424,9 @@ fn dump_bucket1_clause_failures() {
                 .find(|p| p.marker)
                 .map(|p| p.t_us.saturating_sub(first_t));
             println!(
-                "B1#{examples} ts={} via_hold={}: failed=[{}{}] holes={} count={} first_seq={} last_seq={} had_first_slice={} marker={} || legacy=({}-{} x{} {}B) head_match={} marker_delay_us={:?} legacy_lens=[{}]",
+                "B1#{examples} ts={} t0_us={} via_hold={}: failed=[{}{}] holes={} count={} first_seq={} last_seq={} had_first_slice={} marker={} || legacy=({}-{} x{} {}B) head_match={} marker_delay_us={:?} legacy_lens=[{}]",
                 desc.rtp_ts,
+                first_t,
                 via_hold,
                 if f_marker { "marker " } else { "" },
                 if f_first { "first_slice " } else { "" },
