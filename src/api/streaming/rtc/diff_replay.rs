@@ -75,6 +75,8 @@ fn legacy_records(events: &[LegacyEvent], packets: &[Packet]) -> Vec<ShadowRecor
                     last_seq,
                     packet_count: seqs.len() as u16,
                     bytes_hash: Some(hash_bytes(data)),
+                    digests: Box::new([]),
+                    data: bytes::Bytes::copy_from_slice(data),
                 }
             }
             LegacyEvent::Abandoned { at, ts } => {
@@ -87,6 +89,8 @@ fn legacy_records(events: &[LegacyEvent], packets: &[Packet]) -> Vec<ShadowRecor
                     last_seq,
                     packet_count: seqs.len() as u16,
                     bytes_hash: None,
+                    digests: Box::new([]),
+                    data: bytes::Bytes::new(),
                 }
             }
             LegacyEvent::Invalid { at, ts } => {
@@ -99,6 +103,8 @@ fn legacy_records(events: &[LegacyEvent], packets: &[Packet]) -> Vec<ShadowRecor
                     last_seq,
                     packet_count: seqs.len() as u16,
                     bytes_hash: None,
+                    digests: Box::new([]),
+                    data: bytes::Bytes::new(),
                 }
             }
         })
@@ -117,25 +123,25 @@ fn new_records(dump: &[DumpPacket]) -> Vec<NewRec> {
     for p in dump {
         if let Some(outcome) = assembler.push(p.seq, p.ts, p.marker, &p.payload, p.t_us) {
             out.push(NewRec {
-                rec: ShadowRecord::from_new(outcome),
+                rec: ShadowRecord::from_new(outcome, Box::new([])),
                 via_hold: false,
             });
         }
         while let Some(outcome) = assembler.poll_outcome() {
             out.push(NewRec {
-                rec: ShadowRecord::from_new(outcome),
+                rec: ShadowRecord::from_new(outcome, Box::new([])),
                 via_hold: false,
             });
         }
         if let Some(outcome) = assembler.flush_due(p.t_us) {
             out.push(NewRec {
-                rec: ShadowRecord::from_new(outcome),
+                rec: ShadowRecord::from_new(outcome, Box::new([])),
                 via_hold: true,
             });
         }
         while let Some(outcome) = assembler.poll_outcome() {
             out.push(NewRec {
-                rec: ShadowRecord::from_new(outcome),
+                rec: ShadowRecord::from_new(outcome, Box::new([])),
                 via_hold: false,
             });
         }

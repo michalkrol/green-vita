@@ -141,6 +141,9 @@ impl MetricsCsvLog {
     /// Must be called once at session end (from RtcWorker::drop).
     /// Tolerant of path being unavailable (off-device: silently skip).
     pub(crate) fn flush(&self) {
+        // Session-end mismatch-evidence flush (RAM-buffered capture from the
+        // shadow comparator; no-op when no event fired this session).
+        crate::api::streaming::rtc::rtp::mismatch_log::session_flush();
         let buffer = self.rows.lock().unwrap_or_else(|_| panic!("metrics_csv_log flush mutex poisoned"));
         let path = std::path::Path::new("ux0:data/xcloud-rust/metrics.csv");
         // Ensure directory exists (no-op if already exists on-device; off-device will fail)

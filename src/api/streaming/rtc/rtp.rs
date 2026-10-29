@@ -90,6 +90,9 @@ pub(crate) struct VideoRtp {
     /// 8a shadow: pairs legacy and new outcomes by RTP timestamp and counts
     /// matches/mismatches. Never touches legacy state.
     shadow_cmp: ShadowComparator,
+    /// Arrival-order packet digests for the mismatch-evidence capture
+    /// (observe-only; fixed-capacity, no hot-path allocation).
+    arrival: mismatch_log::ArrivalRing,
 }
 
 struct PendingVideoFrame {
@@ -205,6 +208,7 @@ impl VideoRtp {
             q_estimator: QueueDelayEstimator::new(),
             shadow: AccessUnitAssembler::new(),
             shadow_cmp: ShadowComparator::new(),
+            arrival: mismatch_log::ArrivalRing::new(),
         }
     }
 
@@ -239,6 +243,15 @@ impl VideoRtp {
             packet.header.sequence_number,
             packet_timestamp,
             packet.header.marker,
+            &packet.payload,
+        );
+
+        // Mismatch-evidence arrival ring (observe-only): per-packet
+        // (seq, len, payload hash) in arrival order for the frame in
+        // flight; fixed-capacity arrays, zero heap traffic.
+        self.arrival.push(
+            packet_timestamp,
+            packet.header.sequence_number,
             &packet.payload,
         );
 
@@ -331,6 +344,8 @@ impl VideoRtp {
                     last_seq,
                     packet_count: seqs.len() as u16,
                     bytes_hash: None,
+                    digests: Box::new([]),
+                    data: bytes::Bytes::new(),
                 });
                 self.next_sequence = incomplete
                     .marker_sequence()
@@ -390,6 +405,8 @@ impl VideoRtp {
                         last_seq,
                         packet_count: seqs.len() as u16,
                         bytes_hash: None,
+                        digests: Box::new([]),
+                        data: bytes::Bytes::new(),
                     });
                 }
                 self.next_sequence = None;
@@ -420,6 +437,18 @@ impl VideoRtp {
                 last_seq,
                 packet_count: seqs.len() as u16,
                 bytes_hash: Some(hash_bytes(&data)),
+                // Evidence: the packets THIS path kept (arrival order,
+                // post-legacy-dedup) + the assembled bytes (refcount clone).
+                digests: completed
+                    .packets
+                    .iter()
+                    .map(|packet| mismatch_log::PacketDigest {
+                        seq: packet.header.sequence_number,
+                        len: packet.payload.len() as u16,
+                        hash: hash_bytes(&packet.payload),
+                    })
+                    .collect(),
+                data: data.clone(),
             });
         }
         // 8b (STAGE8-REDO-SPEC §6.1): legacy post-assembly body extracted
@@ -585,7 +614,15 @@ impl VideoRtp {
         if via_hold && matches!(outcome, AssemblyOutcome::Complete(_)) {
             METRICS.sh_hold_saved.fetch_add(1, Ordering::Relaxed);
         }
-        self.shadow_cmp.observe_new(outcome);
+        // Mismatch-evidence digests are only needed for Complete outcomes:
+        // copy the arrival-ring list here so the comparator owns it until
+        // pairing. Observe-only — no pending/submit/timing contact.
+        let digests = if let AssemblyOutcome::Complete(desc) = &outcome {
+            self.arrival.digests_for(desc.rtp_ts)
+        } else {
+            Box::new([])
+        };
+        self.shadow_cmp.observe_new(outcome, digests);
     }
 
     fn record_damage(&mut self, worker: &VideoDecodeWorker) {
@@ -681,10 +718,12 @@ mod tests {
 /// Very small inline xorshift64* PRNG — no external crates.
 /// State is a u64; next_u64() advances and returns the new state; below(n)
 /// returns a uniform [0, n) u64.
+#[cfg(test)]
 struct XorShift64 {
     state: u64,
 }
 
+#[cfg(test)]
 impl XorShift64 {
     const fn from_seed(seed: u64) -> Self {
         // Seed of 0 is disallowed (xorshift requires odd/non-zero).
@@ -723,6 +762,7 @@ impl XorShift64 {
 }
 
 // Helper: create a Packet with the given fields.
+#[cfg(test)]
 fn make_pkt(seq: u16, ts: u32, marker: bool, payload: &[u8]) -> rtc::rtp::Packet {
     rtc::rtp::Packet {
         header: rtc::rtp::Header {
@@ -736,6 +776,7 @@ fn make_pkt(seq: u16, ts: u32, marker: bool, payload: &[u8]) -> rtc::rtp::Packet
 }
 
 // Helper: build a STAP-A packet containing SPS and PPS NALs.
+#[cfg(test)]
 fn make_stap_a(sps: &[u8], pps: &[u8]) -> Vec<u8> {
     let mut payload = vec![0x78]; // nri=3, type=24 (STAP-A)
     payload.extend_from_slice(&(sps.len() as u16).to_be_bytes());
@@ -747,6 +788,7 @@ fn make_stap_a(sps: &[u8], pps: &[u8]) -> Vec<u8> {
 
 // Helper: build FU-A fragments for a NAL body, starting at the given seq.
 // Inlined to avoid needing pub(crate) visibility on diff_fixtures helpers.
+#[cfg(test)]
 fn make_fu_fragments_inline(nal_body: &[u8], first_seq: u16, frag_size: usize, ts: u32, marker: bool) -> Vec<rtc::rtp::Packet> {
     let indicator = (nal_body[0] & 0x60) | 28; // preserve nri, type = FU-A
     let body = &nal_body[1..]; // drop NAL type byte
@@ -1144,20 +1186,36 @@ struct ShadowRecord {
     last_seq: u16,
     packet_count: u16,
     bytes_hash: Option<u64>,
+    /// Mismatch-evidence (observe-only): arrival-order (seq, len, hash)
+    /// digests of the packets this path kept for the AU. Populated on
+    /// Complete records; empty for reject-class records.
+    digests: Box<[mismatch_log::PacketDigest]>,
+    /// Mismatch-evidence: the assembled output bytes (refcount clone on the
+    /// legacy side, zero-copy adoption on the new side). Empty for rejects.
+    data: bytes::Bytes,
 }
 
 impl ShadowRecord {
-    /// Build a shadow-side record from a new-path outcome.
-    fn from_new(outcome: AssemblyOutcome) -> Self {
+    /// Build a shadow-side record from a new-path outcome. `digests` is the
+    /// arrival-ring evidence copy for Complete outcomes (empty otherwise).
+    fn from_new(
+        outcome: AssemblyOutcome,
+        digests: Box<[mismatch_log::PacketDigest]>,
+    ) -> Self {
         match outcome {
-            AssemblyOutcome::Complete(desc) => ShadowRecord {
-                ts: desc.rtp_ts,
-                class: ShadowClass::Complete,
-                first_seq: desc.first_seq,
-                last_seq: desc.last_seq,
-                packet_count: desc.packet_count,
-                bytes_hash: Some(hash_bytes(&desc.data)),
-            },
+            AssemblyOutcome::Complete(desc) => {
+                let data = bytes::Bytes::from(desc.data);
+                ShadowRecord {
+                    ts: desc.rtp_ts,
+                    class: ShadowClass::Complete,
+                    first_seq: desc.first_seq,
+                    last_seq: desc.last_seq,
+                    packet_count: desc.packet_count,
+                    bytes_hash: Some(hash_bytes(&data)),
+                    digests,
+                    data,
+                }
+            }
             AssemblyOutcome::Damaged(desc) => ShadowRecord {
                 ts: desc.rtp_ts,
                 class: ShadowClass::Damaged,
@@ -1165,6 +1223,8 @@ impl ShadowRecord {
                 last_seq: desc.last_seq,
                 packet_count: desc.packet_count,
                 bytes_hash: None,
+                digests: Box::new([]),
+                data: bytes::Bytes::new(),
             },
             AssemblyOutcome::Discarded { reason: _, rtp_ts } => ShadowRecord {
                 ts: rtp_ts,
@@ -1173,6 +1233,8 @@ impl ShadowRecord {
                 last_seq: 0,
                 packet_count: 0, // Discarded carries no packet bounds
                 bytes_hash: None,
+                digests: Box::new([]),
+                data: bytes::Bytes::new(),
             },
         }
     }
@@ -1235,8 +1297,12 @@ impl ShadowComparator {
         self.try_match();
     }
 
-    fn observe_new(&mut self, outcome: AssemblyOutcome) {
-        let record = ShadowRecord::from_new(outcome);
+    fn observe_new(
+        &mut self,
+        outcome: AssemblyOutcome,
+        digests: Box<[mismatch_log::PacketDigest]>,
+    ) {
+        let record = ShadowRecord::from_new(outcome, digests);
         self.new.push(record);
         if self.new.len() > 64 {
             self.new.remove(0);
@@ -1297,6 +1363,20 @@ impl ShadowComparator {
             }
             PairVerdict::BytesMismatch => {
                 METRICS.sh_bytes_mismatch.fetch_add(1, Ordering::Relaxed);
+                // Evidence snapshot (≤16/session, RAM, flushed at session
+                // end): the only allocation point that fires on a mismatch.
+                mismatch_log::capture(
+                    legacy.ts,
+                    legacy.first_seq,
+                    legacy.last_seq,
+                    legacy.packet_count,
+                    &legacy.digests,
+                    &new_rec.digests,
+                    &legacy.data,
+                    &new_rec.data,
+                    legacy.bytes_hash,
+                    new_rec.bytes_hash,
+                );
             }
             PairVerdict::ClassMismatch => {
                 METRICS.sh_class_mismatch.fetch_add(1, Ordering::Relaxed);
@@ -1328,6 +1408,8 @@ mod shadow_tests {
             last_seq: 12,
             packet_count: 3,
             bytes_hash: hash,
+            digests: Box::new([]),
+            data: bytes::Bytes::new(),
         }
     }
 
@@ -1398,16 +1480,19 @@ mod shadow_tests {
         let outcome = assembler
             .push(10, 90_000, true, &payload, 1_000)
             .expect("marker resolves");
-        let record = ShadowRecord::from_new(outcome);
+        let record = ShadowRecord::from_new(outcome, Box::new([]));
         assert_eq!(record.class, ShadowClass::Complete);
         assert_eq!(record.ts, 90_000);
         assert_eq!((record.first_seq, record.last_seq), (10, 10));
         assert!(record.bytes_hash.is_some());
 
-        let discarded = ShadowRecord::from_new(AssemblyOutcome::Discarded {
-            reason: DiscardReason::Malformed,
-            rtp_ts: 180_000,
-        });
+        let discarded = ShadowRecord::from_new(
+            AssemblyOutcome::Discarded {
+                reason: DiscardReason::Malformed,
+                rtp_ts: 180_000,
+            },
+            Box::new([]),
+        );
         assert_eq!(discarded.class, ShadowClass::Discarded);
         assert_eq!(discarded.ts, 180_000);
     }
@@ -1988,6 +2073,11 @@ mod diff_fixtures {
         assert_eq!(legacy_f2[0], new_all[0], "frame 2 bytes/boundary parity");
     }
 }
+
+// Mismatch-evidence capture (8b investigation): RAM-buffered snapshots of
+// sh_bytes_mismatch events, flushed at session end from metrics_log.
+#[path = "mismatch_log.rs"]
+pub(crate) mod mismatch_log;
 
 // Real-capture fixture replay (§5.3) — separate file, child of this module so
 // it can reuse the legacy harness above.
