@@ -1235,3 +1235,79 @@ fn test_event_early_marker_gives_empty_not_786() {
     }
     assert!(late.is_none(), "D: late end fragment dropped by rule 4");
 }
+
+/// Event-matrix E: THE ROOT-CAUSE MECHANISM.
+///
+/// Legacy drops a packet whose ts differs from the open pending frame and is
+/// not newer (rtp.rs:325-330 `return`), but the shadow's rule 4 only guards
+/// `last_resolved_ts` — a non-newer, different-ts packet that is NEWER than
+/// the last resolved frame falls through assembler.rs:151-157 and gets
+/// inserted into the OPEN AU anyway.
+///
+/// Device event reconstruction:
+///   1. prior frame ts=89970 completes -> both paths armed
+///      (shadow last_resolved_ts = 89970; legacy last_frame_timestamp = 89970)
+///   2. frame T=90000: 37236..37239 (FU-A) accumulate on both paths
+///   3. THE ALTERED PACKET arrives: seq 37240, 782-B single-NAL, no marker,
+///      with a STALE ts 89995 (T_prev < 89995 < T):
+///        - legacy: pending.ts(90000) != 89995 && !newer -> DROPPED (line 329)
+///        - shadow: rule 4 passes (89995 newer than 89970); current_au(90000)
+///          not-newer branch puts the AU back and CONTINUES -> seq 37240
+///          STORED into AU 90000 (first-wins)
+///   4. real FU-end (37240, 90000, marker) arrives: legacy stores it
+///      (dup-free) -> 5594; shadow dedupes the payload (37240 exists) but
+///      processes the marker -> resolves -> build_annex_b sees the 782-B
+///      single-NAL tail -> EXACTLY 786.
+///
+/// Observed on host: shadow yields 786 while the legacy model yields 5594 —
+/// the captured mismatch in full. After the §11 fix (mirror legacy's 328-330
+/// guard: drop non-newer different-ts packets while an AU is open) this
+/// assertion flips to 5594 parity.
+#[cfg(test)]
+#[test]
+fn test_event_stale_ts_packet_mechanism_yields_786() {
+    let mut assembler = AccessUnitAssembler::new();
+
+    // Step 1: prior frame completes -> arms rule 4 with last_resolved_ts=89970.
+    let prior = make_single_nal(10);
+    match assembler.push(100, 89970, true, &prior, 100) {
+        Some(AssemblyOutcome::Complete(desc)) => assert_eq!(desc.data.len(), 14),
+        other => panic!("prior frame must complete, got {:?}", other),
+    }
+
+    // Step 2: frame 90000 accumulates 37236..37239 (FU-A stream).
+    let start_data: Vec<u8> = (0..1117).map(|_| 0xAA).collect();
+    let mid_data: Vec<u8> = (0..1118).map(|_| 0xBB).collect();
+    let end_data: Vec<u8> = (0..1118).map(|_| 0xCC).collect();
+    let pkt0 = make_fu_a_start(&start_data);
+    let pkt1 = make_fu_a_middle(&mid_data);
+    let pkt2 = make_fu_a_middle(&mid_data);
+    let pkt3 = make_fu_a_middle(&mid_data);
+    let pkt4 = make_fu_a_end(&end_data);
+    let _ = assembler.push(37236, 90000, false, &pkt0, 1000);
+    let _ = assembler.push(37237, 90000, false, &pkt1, 2000);
+    let _ = assembler.push(37238, 90000, false, &pkt2, 3000);
+    let _ = assembler.push(37239, 90000, false, &pkt3, 4000);
+
+    // Step 3: the stale-ts packet — legacy would DROP this (rtp.rs:329).
+    let altered = make_single_nal(782);
+    let stale = assembler.push(37240, 89995, false, &altered, 4500);
+    eprintln!("=== Matrix E: stale-ts packet push -> {:?}", compact(&stale));
+
+    // Step 4: real FU end with marker -> shadow dedupes payload, honours marker.
+    let outcome = assembler.push(37240, 90000, true, &pkt4, 5000);
+
+    eprintln!("=== Matrix E: final -> {}", compact(&outcome));
+    match outcome {
+        Some(AssemblyOutcome::Complete(desc)) => {
+            assert_eq!(desc.data.len(), 786,
+                "MECHANISM: stale-ts packet absorbed -> 786, got {}", desc.data.len());
+            assert_eq!(desc.packet_count, 5, "event count 5");
+            assert_eq!(desc.first_seq, 37236, "event first_seq");
+            assert_eq!(desc.last_seq, 37240, "event last_seq");
+            assert_eq!(desc.holes, 0, "event holes 0");
+            assert_eq!(desc.rtp_ts, 90000, "recorded under the open frame's ts");
+        }
+        other => panic!("MECHANISM: expected Complete(786), got {:?}", other),
+    }
+}
