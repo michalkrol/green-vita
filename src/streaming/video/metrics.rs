@@ -64,6 +64,8 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) au_submitted: u64,
     pub(crate) au_no_startcode: u64,
     pub(crate) au_idr_submitted: u64,
+    pub(crate) sh_reject_bound_artifact: u64,
+    pub(crate) late_after_resolve: u64,
 }
 
 pub(crate) struct VideoMetrics {
@@ -126,6 +128,8 @@ pub(crate) struct VideoMetrics {
     pub(crate) au_submitted: AtomicU64,
     pub(crate) au_no_startcode: AtomicU64,
     pub(crate) au_idr_submitted: AtomicU64,
+    pub(crate) sh_reject_bound_artifact: AtomicU64,
+    pub(crate) late_after_resolve: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -188,6 +192,8 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     au_submitted: AtomicU64::new(0),
     au_no_startcode: AtomicU64::new(0),
     au_idr_submitted: AtomicU64::new(0),
+    sh_reject_bound_artifact: AtomicU64::new(0),
+    late_after_resolve: AtomicU64::new(0),
 };
 
 
@@ -340,6 +346,10 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         au_submitted: METRICS.au_submitted.swap(0, Ordering::Relaxed),
         au_no_startcode: METRICS.au_no_startcode.swap(0, Ordering::Relaxed),
         au_idr_submitted: METRICS.au_idr_submitted.swap(0, Ordering::Relaxed),
+        sh_reject_bound_artifact: METRICS
+            .sh_reject_bound_artifact
+            .swap(0, Ordering::Relaxed),
+        late_after_resolve: METRICS.late_after_resolve.swap(0, Ordering::Relaxed),
     }
 }
 
@@ -397,6 +407,8 @@ pub(crate) fn reset_session_metrics() {
     METRICS.au_submitted.store(0, Ordering::Relaxed);
     METRICS.au_no_startcode.store(0, Ordering::Relaxed);
     METRICS.au_idr_submitted.store(0, Ordering::Relaxed);
+    METRICS.sh_reject_bound_artifact.store(0, Ordering::Relaxed);
+    METRICS.late_after_resolve.store(0, Ordering::Relaxed);
 }
 
     /// Flush the RAM-buffered metrics CSV log to disk once at session end.

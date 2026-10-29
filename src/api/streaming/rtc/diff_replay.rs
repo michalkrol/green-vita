@@ -212,11 +212,14 @@ fn replay_real_capture_through_both_paths() {
     let mut bucket1 = 0usize;
     let mut bucket2 = 0usize;
     let mut bound_mismatch = 0usize;
+    let mut bound_non_bucket1 = 0usize;
+    let mut reject_artifact = 0usize;
     let mut hold_bytes = 0usize;
     let mut unexplained_bytes = Vec::new();
     let mut bound_breakdown: Vec<(ShadowClass, ShadowClass, bool, usize)> = Vec::new();
 
     for pair in &pairs {
+        let verdict = classify_pair(&pair.legacy, &pair.new_rec);
         let same_bounds = (pair.legacy.first_seq, pair.legacy.last_seq, pair.legacy.packet_count)
             == (
                 pair.new_rec.first_seq,
@@ -226,22 +229,37 @@ fn replay_real_capture_through_both_paths() {
         let bounds_compared =
             pair.legacy.packet_count > 0 && pair.new_rec.packet_count > 0;
         if bounds_compared && !same_bounds {
-            bound_mismatch += 1;
+            // §11.3a: both-reject pairs are exempt from the boundary gate and
+            // counted separately (mirror of ShadowComparator::compare).
+            let both_reject = matches!(
+                pair.legacy.class,
+                ShadowClass::Abandoned | ShadowClass::Invalid
+            ) && matches!(
+                pair.new_rec.class,
+                ShadowClass::Damaged | ShadowClass::Discarded
+            );
+            if both_reject {
+                reject_artifact += 1;
+            } else {
+                bound_mismatch += 1;
+                if verdict != PairVerdict::BucketDamagedOldComplete {
+                    bound_non_bucket1 += 1;
+                }
+            }
             let key = (pair.legacy.class, pair.new_rec.class, pair.via_hold);
             match bound_breakdown.iter_mut().find(|k| k.0 == key.0 && k.1 == key.1 && k.2 == key.2) {
                 Some(entry) => entry.3 += 1,
                 None => bound_breakdown.push((key.0, key.1, key.2, 1)),
             }
         }
-        match classify_pair(&pair.legacy, &pair.new_rec) {
+        match verdict {
             PairVerdict::Match => match_count += 1,
             PairVerdict::BytesMismatch => {
                 bytes_mismatch += 1;
                 if pair.via_hold {
                     hold_bytes += 1;
-                } else {
-                    unexplained_bytes.push(pair);
                 }
+                unexplained_bytes.push(pair);
             }
             PairVerdict::ClassMismatch => class_mismatch += 1,
             PairVerdict::BucketDamagedOldComplete => bucket1 += 1,
@@ -261,7 +279,7 @@ fn replay_real_capture_through_both_paths() {
         unmatched_new
     );
     println!(
-        "match={match_count} bytes_mismatch={bytes_mismatch} (via_hold={hold_bytes}) class_mismatch={class_mismatch} bucket1={bucket1} bucket2={bucket2} bound_mismatch={bound_mismatch}"
+        "match={match_count} bytes_mismatch={bytes_mismatch} (via_hold={hold_bytes}) class_mismatch={class_mismatch} bucket1={bucket1} bucket2={bucket2} gated_bound={bound_mismatch} (outside bucket1={bound_non_bucket1}) reject_artifact={reject_artifact}"
     );
     println!("bound_mismatch breakdown (legacy_class, new_class, via_hold, count):");
     for (l, n, hold, count) in &bound_breakdown {
@@ -280,23 +298,35 @@ fn replay_real_capture_through_both_paths() {
         );
     }
 
-    // ---- gates -------------------------------------------------------------
+    // ---- gates (§11.3 amended precondition, replay edition) ---------------
     assert!(
         class_mismatch == 0,
         "unexpected class pairs: {class_mismatch}"
     );
+    assert_eq!(
+        bytes_mismatch, 0,
+        "§11.3: byte mismatches must reach 0 after the assembler fix"
+    );
+    assert_eq!(
+        bound_non_bucket1, 0,
+        "§11.3: bound mismatches only in bucket 1 (lost leading packet)"
+    );
+    assert_eq!(
+        unmatched_legacy, 0,
+        "legacy events with no new counterpart"
+    );
+    assert_eq!(
+        unmatched_new, 0,
+        "§11.5: unused new records after the rule-4 fix = defect signal"
+    );
+    // §11.3a: both-reject boundary artifacts are exempt but rate-limited —
+    // the fixture shows 1 in 18.4 s; well above ~2 means something else broke.
+    assert!(
+        reject_artifact <= 2,
+        "§11.3a: reject-bound artifacts above ~2 per 18 s of replay: {reject_artifact}"
+    );
     assert!(
         unexplained_bytes.is_empty(),
-        "{} byte mismatches are NOT hold-related — genuine divergence: {}",
-        unexplained_bytes.len(),
-        unexplained_bytes
-            .iter()
-            .take(10)
-            .map(|p| format!("ts={}", p.legacy.ts))
-            .collect::<Vec<_>>()
-            .join(", ")
+        "byte mismatches present (see above)"
     );
-    // Unmatched legacy must not occur: every legacy event has a new-path
-    // counterpart with the same RTP timestamp.
-    assert_eq!(unmatched_legacy, 0, "legacy events with no new counterpart");
 }
