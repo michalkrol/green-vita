@@ -226,6 +226,14 @@ impl VideoRtp {
 
         let packet_timestamp = packet.header.timestamp;
 
+        crate::streaming::video::rtp_dump_log::record(
+            SHADOW_CLOCK.elapsed().as_micros() as u64,
+            packet.header.sequence_number,
+            packet_timestamp,
+            packet.header.marker,
+            &packet.payload,
+        );
+
         // 8a shadow (STAGE8-REDO-SPEC §3): feed every non-empty video packet
         // to the new assembler alongside the legacy path. Behaviour-neutral by
         // construction — it never touches pending, worker, keyframe_requested

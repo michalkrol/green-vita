@@ -103,6 +103,8 @@ impl RtcWorker {
                     }
                 }
                 crate::streaming::video::metrics::flush_csv_log();
+                // Flush the RAM-buffered RTP dump log to ux0: at session end.
+                crate::streaming::video::rtp_dump_log::flush_rtp_dump();
             })
             .context("failed to spawn RTC worker thread")?;
 
@@ -146,6 +148,8 @@ impl Drop for RtcWorker {
         // Flush the RAM-buffered metrics CSV log to ux0: at session end.
         // This is the ONLY ux0: write path; no filesystem I/O during the session.
         crate::streaming::video::metrics::flush_csv_log();
+        // Flush the RAM-buffered RTP dump log to ux0: at session end.
+        crate::streaming::video::rtp_dump_log::flush_rtp_dump();
         send_lossy(&self.commands_tx, RtcWorkerCommand::Stop);
     }
 }

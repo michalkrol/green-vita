@@ -107,6 +107,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         // Initialize the RAM-buffered metrics CSV log for this session.
         // It outlives the session so the flush at end sees all rows.
         crate::streaming::video::metrics::init_csv_log();
+        // Initialize the RAM-buffered RTP dump log for this session.
+        crate::streaming::video::rtp_dump_log::init_rtp_dump();
         video.reset_lag_anchor();
 
         Ok(Self {
