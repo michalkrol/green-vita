@@ -84,7 +84,7 @@ pub struct AccessUnitAssembler {
     /// age out). Documented as acceptable since this is not the packet hot path.
     resolved_queue: VecDeque<AssemblyOutcome>,
     /// Monotonic timestamp (µs) of the first packet in the current AU, used
-    /// for the 12 ms hold window check.
+    /// for the ~40 ms markerless backstop in `flush_due` (§11 rule 2).
     au_first_arrival_us: u64,
     /// Accumulated between-AU gap counter (whole AUs the console skipped/lost
     /// between frames, §6.6 bullet 4).
@@ -94,6 +94,12 @@ pub struct AccessUnitAssembler {
     gap_hole: u64,
     /// Sequence number of the last closed AU, used for gap_au tracking.
     last_closed_seq: u16,
+    /// Rule 4 (§11): RTP timestamp of the most recently resolved AU. Packets
+    /// at/older than this are late stragglers: dropped, counted in
+    /// `late_after_resolve`, never allowed to open an AU (phantom guard).
+    last_resolved_ts: Option<u32>,
+    /// Count of packets dropped by the rule-4 phantom guard (§11).
+    late_after_resolve: u64,
 }
 
 impl AccessUnitAssembler {
@@ -106,6 +112,8 @@ impl AccessUnitAssembler {
             gap_au: 0,
             gap_hole: 0,
             last_closed_seq: 0,
+            last_resolved_ts: None,
+            late_after_resolve: 0,
         }
     }
 
@@ -119,6 +127,16 @@ impl AccessUnitAssembler {
     ///
     /// Sequence numbers are resolved modular-16-bit (u16 wrapping).
     pub fn push(&mut self, seq: u16, timestamp: u32, marker: bool, payload: &[u8], arrival_us: u64) -> Option<AssemblyOutcome> {
+        // Rule 4 (§11): packets at/older than the last resolved AU's
+        // timestamp are late stragglers — drop and count them; they never
+        // open an AU (kills the phantom same-ts AU after a hold/timer fire).
+        if let Some(last) = self.last_resolved_ts
+            && !timestamp_is_newer(timestamp, last)
+        {
+            self.late_after_resolve = self.late_after_resolve.saturating_add(1);
+            return None;
+        }
+
         // If a newer timestamp arrives while an older AU is open, resolve the
         // older one first, then start the new AU (bullet 6).
         // Take the AU out of self.current_au to avoid double-borrowing self.
@@ -168,11 +186,13 @@ impl AccessUnitAssembler {
                 self.gap_au = self.gap_au.saturating_add(1);
             }
             self.last_closed_seq = seq; // Initialize for future gap checks
-            self.au_first_arrival_us = arrival_us; // 12 ms hold anchor for flush_due
+            self.au_first_arrival_us = arrival_us; // hold-window anchor for flush_due
             self.current_au = Some(AuBuilder {
                 rtp_ts: timestamp,
                 payloads: vec![(seq, payload.to_vec())],
                 raw_len: payload.len(),
+                marker_seen: marker,
+                marker_seen_at_us: arrival_us,
                 had_first_slice: is_verified_start,
                 is_idr: fu_header
                     .map_or_else(|| NalHeader::is_keyframe_nal(nal_header.nal_unit_type), |fh| fh.is_keyframe_nal()),
@@ -208,15 +228,38 @@ impl AccessUnitAssembler {
         // Check marker bit: if marker is set, the AU is resolved (bullet 5)
         // This applies whether we just started a new AU or continued an existing one
         if marker {
-            // Take the AU out and resolve it (avoid double borrow of self)
-            let mut resolved_au = self.current_au.take().unwrap();
-            // Record the AU's end sequence for gap_au tracking
-            self.last_closed_seq = seq;
-            let outcome = self.resolve_au_now(&mut resolved_au, arrival_us);
-            self.resolved_queue.push_back(outcome);
+            // Rule 2 (§11): mark the AU's marker first (Complete requires it),
+            // then: marker + contiguous resolves NOW; marker with holes holds
+            // the AU open for ≤12 ms of fill (A19) — closed by a fill,
+            // flush_due, or a newer timestamp; never by a timer into Complete
+            // (resolve_au_now also requires holes==0).
+            {
+                let au = self.current_au.as_mut().expect("AU open during push");
+                au.marker_seen = true;
+                au.marker_seen_at_us = arrival_us;
+            }
+            let holes_now = {
+                let au = self.current_au.as_ref().expect("AU open during push");
+                compute_holes(&au.payloads)
+            };
+            if holes_now == 0 {
+                let mut resolved_au = self.current_au.take().unwrap();
+                let outcome = self.resolve_au_now(&mut resolved_au, arrival_us);
+                self.resolved_queue.push_back(outcome);
+                return self.resolved_queue.pop_front();
+            }
+        }
 
-            // Return the resolved outcome
-            return self.resolved_queue.pop_front();
+        // Rule 2 (§11): a marker-waiting AU whose holes just filled completes
+        // immediately — the same instant the legacy contiguity gate fires,
+        // which is what makes Complete bytes byte-identical to legacy.
+        if let Some(au) = self.current_au.as_ref() {
+            if au.marker_seen && compute_holes(&au.payloads) == 0 {
+                let mut resolved = self.current_au.take().unwrap();
+                let outcome = self.resolve_au_now(&mut resolved, arrival_us);
+                self.resolved_queue.push_back(outcome);
+                return self.resolved_queue.pop_front();
+            }
         }
 
         // Check oversize limit (>2 MiB) (bullet 8)
@@ -254,10 +297,17 @@ impl AccessUnitAssembler {
         let holes = compute_holes(&au.payloads);
         au.holes = holes;
         let (first_seq, last_seq) = seq_bounds(&au.payloads);
+        // Every resolution consumes this timestamp: close the gap anchor and
+        // arm the rule-4 phantom guard (§11).
+        self.last_closed_seq = last_seq;
+        self.last_resolved_ts = Some(au.rtp_ts);
         self.gap_hole = self.gap_hole.saturating_add(holes as u64);
 
-        // Determine outcome: contiguous + verified start => Complete, else Damaged (bullet 5)
-        let is_complete = holes == 0 && au.packet_count > 0 && au.had_first_slice;
+        // Rule 2 (§11): Complete = marker seen + contiguous + verified start
+        // + at least one packet. A timer or force-out resolution of a
+        // markerless AU therefore yields Damaged by construction.
+        let is_complete =
+            au.marker_seen && holes == 0 && au.packet_count > 0 && au.had_first_slice;
 
         if !is_complete {
             // §4: Damaged outcomes carry no bytes the integration may submit.
@@ -295,6 +345,12 @@ impl AccessUnitAssembler {
                 rtp_ts: au.rtp_ts,
             };
         }
+        // Rule 2 (§11): Complete requires a seen marker — assert it (backed
+        // by unit tests that timer/force-out resolution never Completes).
+        assert!(
+            au.marker_seen,
+            "Complete AU without a marker (§11 rule 2 violation)"
+        );
         au.payloads.clear();
         AssemblyOutcome::Complete(AuDescriptor {
             rtp_ts: au.rtp_ts,
@@ -315,20 +371,33 @@ impl AccessUnitAssembler {
     /// Returns one outcome per call (queues internally if several AUs age out;
     /// documented as acceptable since this is not the packet hot path).
     pub fn flush_due(&mut self, now_us: u64) -> Option<AssemblyOutcome> {
-        let mut au = self.current_au.take()?;
-        // Check if the AU exceeds the 12 ms hold window
-        let au_age = now_us.saturating_sub(self.au_first_arrival_us);
-        if au_age > 12_000 {
-            // Resolve the AU; contiguous+verified => Complete, else Damaged (bullet 7)
-            let outcome = self.resolve_au_now(&mut au, now_us);
-            self.resolved_queue.push_back(outcome);
-        } else {
-            // AU is still within the hold window, put it back
-            self.current_au = Some(au);
-            return None; // No outcome resolved this call
+        // Rule 2 (§11): a timer NEVER produces Complete. Marker + holes gets
+        // ≤12 ms of fill (A19); a markerless AU gets the ~40 ms backstop —
+        // both resolve through resolve_au_now, which requires the marker for
+        // Complete and therefore yields Damaged.
+        let deadline = match self.current_au.as_ref() {
+            None => return None,
+            Some(au) if au.marker_seen => {
+                now_us.saturating_sub(au.marker_seen_at_us) > MARKER_FILL_WINDOW_US
+            }
+            Some(_) => {
+                now_us.saturating_sub(self.au_first_arrival_us) > MARKERLESS_BACKSTOP_US
+            }
+        };
+        if !deadline {
+            return None;
         }
+        let mut au = self.current_au.take().expect("AU present for deadline");
+        let outcome = self.resolve_au_now(&mut au, now_us);
+        self.resolved_queue.push_back(outcome);
         // Return one outcome per call (queue internally if several age out)
         self.resolved_queue.pop_front()
+    }
+
+    /// Rule 4 (§11): packets dropped as late stragglers after their AU's
+    /// timestamp was already resolved (phantom-guard counter).
+    pub fn late_after_resolve(&self) -> u64 {
+        self.late_after_resolve
     }
 
     /// Drain one resolved outcome from the internal queue. `push` may queue an
@@ -367,6 +436,14 @@ fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
 
 /// Annex-B start code used by the legacy `H264Packet` path (`is_avc=false`).
 const ANNEXB_START_CODE: [u8; 4] = [0x00, 0x00, 0x00, 0x01];
+
+/// Rule 2 (§11): fill window after a marker arrives on an AU that still has
+/// holes (A19 reorder window).
+const MARKER_FILL_WINDOW_US: u64 = 12_000;
+
+/// Rule 2 (§11): backstop for a markerless AU — resolves Damaged, never
+/// Complete (legacy requires the marker too, just via force-out).
+const MARKERLESS_BACKSTOP_US: u64 = 40_000;
 
 /// AU size cap — matches legacy `MAX_H264_ACCESS_UNIT_BYTES` in rtp.rs.
 const MAX_AU_BYTES: usize = 2 * 1024 * 1024;
@@ -545,6 +622,13 @@ struct AuBuilder {
     holes: u16,
     /// Total unique packet count in the AU.
     packet_count: u16,
+    /// Rule 2 (§11): whether the marker bit has been seen for this AU.
+    /// `Complete` requires this; it starts the 12 ms fill window when set on
+    /// an AU that still has holes.
+    marker_seen: bool,
+    /// µs arrival time of the marker packet (anchor of the ≤12 ms fill
+    /// window). Only meaningful when `marker_seen`.
+    marker_seen_at_us: u64,
 }
 
 #[cfg(test)]
@@ -617,15 +701,23 @@ mod tests {
         let payload1 = [0x01];
         let _ = assembler.push(1, 90000, false, &payload1, 1000);
 
-        // Packet seq=3, has marker (this should resolve the AU with holes=1)
+        // Packet seq=3, has marker: holes>0 → §11 rule 2 — the AU waits
+        // ≤12 ms for fill instead of resolving at the marker.
         let payload3 = [0x01];
-        let outcome = assembler.push(3, 90000, true, &payload3, 1000).unwrap();
-        match outcome {
-            AssemblyOutcome::Damaged(desc) => {
+        assert!(
+            assembler.push(3, 90000, true, &payload3, 1000).is_none(),
+            "marker with holes must wait for fill (§11 rule 2)"
+        );
+        assert!(
+            assembler.flush_due(12_000).is_none(),
+            "11 ms into the 12 ms fill window (marker at 1000 µs)"
+        );
+        match assembler.flush_due(13_001) {
+            Some(AssemblyOutcome::Damaged(desc)) => {
                 assert_eq!(desc.holes, 1, "Should have 1 hole (seq 2 missing)");
                 assert_eq!(desc.packet_count, 3);
             }
-            _ => panic!("Should be Damaged with holes"),
+            other => panic!("Should be Damaged with holes after the window, got {other:?}"),
         }
     }
 
@@ -642,15 +734,16 @@ mod tests {
         let p1 = [0x01, 0x00, 0x00];
         let _ = assembler.push(1, 90000, true, &p1, 2000).unwrap(); // resolves first AU
 
-        // Now start new AU with seq 5 (not contiguous with seq 1 => gap)
-        // After the first AU is resolved, the assembler is empty, and seq 5 starts a new AU.
-        let _ = assembler.push(5, 90000, false, &[0x01, 0x00, 0x00], 3000);
+        // Now start new AU with seq 5 (not contiguous with seq 1 => gap).
+        // Distinct frame timestamp: rule 4 (§11) drops same-ts packets after
+        // a resolve, and real frames always advance the RTP timestamp.
+        let _ = assembler.push(5, 180000, false, &[0x01, 0x00, 0x00], 3000);
         // gap_au should be 1 (gap between seq 1 and seq 5)
         assert_eq!(assembler.gap_au(), 1, "gap_au should be 1 after seq gap between AUs");
 
         // Continue the new AU
-        let _ = assembler.push(6, 90000, false, &[0x01, 0x00, 0x00], 4000);
-        let outcome = assembler.push(7, 90000, true, &[0x01, 0x00, 0x00], 5000).unwrap();
+        let _ = assembler.push(6, 180000, false, &[0x01, 0x00, 0x00], 4000);
+        let outcome = assembler.push(7, 180000, true, &[0x01, 0x00, 0x00], 5000).unwrap();
         // outcome already returned by push; assert on it directly
         match outcome {
             AssemblyOutcome::Complete(desc) => {
@@ -700,9 +793,10 @@ mod tests {
             }
             AssemblyOutcome::Discarded { .. } => panic!("Should not be discarded"),
         }
-        // AU 2: non-IDR packets only — independent of AU 1.
-        let _ = assembler.push(17, 90000, false, &[0x01, 0x00, 0x00], 1000);
-        let au2 = assembler.push(18, 90000, true, &[0x01, 0x00, 0x00], 2000).unwrap();
+        // AU 2: non-IDR packets only — distinct frame timestamp (rule 4, §11,
+        // drops same-ts packets once AU 1's timestamp is resolved).
+        let _ = assembler.push(17, 180000, false, &[0x01, 0x00, 0x00], 1000);
+        let au2 = assembler.push(18, 180000, true, &[0x01, 0x00, 0x00], 2000).unwrap();
         match au2 {
             AssemblyOutcome::Complete(desc) | AssemblyOutcome::Damaged(desc) => {
                 assert!(!desc.is_idr, "AU without IDR NAL must not report is_idr");
@@ -746,14 +840,83 @@ mod tests {
         let _ = assembler.push(0, 90000, false, &[0x01], 1000);
         // Packet seq=2, no marker (gap at seq 1)
         let _ = assembler.push(2, 90000, false, &[0x01], 2000);
-        // Packet seq=3, has marker (should resolve with holes=1, gap_hole incremented)
-        let outcome = assembler.push(3, 90000, true, &[0x01], 3000).unwrap();
-        match outcome {
-            AssemblyOutcome::Damaged(desc) => {
+        // Packet seq=3, has marker: §11 rule 2 — marker with holes waits
+        // ≤12 ms for fill, then resolves Damaged.
+        let _ = assembler.push(3, 90000, true, &[0x01], 3000);
+        assert!(
+            assembler.flush_due(15_000).is_none(),
+            "inside the 12 ms fill window (marker at 3000 µs)"
+        );
+        match assembler.flush_due(20_000) {
+            Some(AssemblyOutcome::Damaged(desc)) => {
                 assert_eq!(desc.holes, 1, "Should have 1 hole (seq 1 missing)");
                 assert_eq!(assembler.gap_hole(), 1, "gap_hole should be incremented");
             }
-            _ => panic!("Should be Damaged with holes"),
+            other => panic!("Should be Damaged with holes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rule2_marker_with_holes_completes_when_filled() {
+        // §11 rule 2: marker + holes waits ≤12 ms; a straggler that fills the
+        // hole completes the AU at that instant — the same moment legacy's
+        // contiguity gate fires, which is what keeps bytes byte-identical.
+        let mut assembler = AccessUnitAssembler::new();
+        let p = [0x01u8, 0x00, 0x00];
+        let _ = assembler.push(10, 70_000, false, &p, 1_000);
+        // seq 11 missing; marker on 12 → wait
+        assert!(assembler.push(12, 70_000, true, &p, 2_000).is_none());
+        // straggler arrives inside the window → Complete immediately
+        match assembler.push(11, 70_000, false, &p, 6_000) {
+            Some(AssemblyOutcome::Complete(desc)) => {
+                assert_eq!(desc.packet_count, 3, "full frame collected");
+                assert_eq!((desc.first_seq, desc.last_seq), (10, 12));
+                assert_eq!(desc.holes, 0);
+                assert!(!desc.data.is_empty(), "Complete carries Annex-B bytes");
+            }
+            other => panic!("fill within the window must Complete, got {other:?}"),
+        }
+        assert_eq!(assembler.late_after_resolve(), 0, "no rule-4 drops yet");
+    }
+
+    #[test]
+    fn rule2_forceout_of_markerless_is_damaged_never_complete() {
+        let mut assembler = AccessUnitAssembler::new();
+        let p = [0x01u8, 0x00, 0x00];
+        let _ = assembler.push(20, 80_000, false, &p, 1_000);
+        match assembler.push(21, 160_000, false, &p, 5_000) {
+            Some(AssemblyOutcome::Damaged(desc)) => {
+                assert!(desc.data.is_empty(), "§4: Damaged carries no bytes");
+                assert_eq!(desc.rtp_ts, 80_000, "the forced-out frame's ts");
+            }
+            other => panic!("markerless force-out must be Damaged, got {other:?}"),
+        }
+        assert_eq!(assembler.late_after_resolve(), 0);
+    }
+
+    #[test]
+    fn rule4_late_stragglers_dropped_and_counted() {
+        // §11 rule 4: after a ts is resolved, same/older-ts packets are late
+        // stragglers — dropped, counted, and never allowed to open an AU.
+        let mut assembler = AccessUnitAssembler::new();
+        let p = [0x01u8, 0x00, 0x00];
+        let _ = assembler.push(30, 60_000, false, &p, 1_000);
+        let complete = assembler.push(31, 60_000, true, &p, 2_000);
+        assert!(matches!(complete, Some(AssemblyOutcome::Complete(_))));
+        assert!(assembler.push(32, 60_000, false, &p, 13_000).is_none());
+        assert!(assembler.push(30, 60_000, false, &p, 14_000).is_none());
+        assert_eq!(assembler.late_after_resolve(), 2, "same-ts drops counted");
+        assert!(
+            assembler.push(33, 10_000, false, &p, 15_000).is_none(),
+            "an older timestamp is dropped too"
+        );
+        assert_eq!(assembler.late_after_resolve(), 3);
+        // A newer frame still opens normally after the guard.
+        match assembler.push(40, 150_000, true, &p, 20_000) {
+            Some(AssemblyOutcome::Complete(desc)) => {
+                assert_eq!(desc.rtp_ts, 150_000, "phantom guard must not eat new frames")
+            }
+            other => panic!("newer frame must open, got {other:?}"),
         }
     }
 }
