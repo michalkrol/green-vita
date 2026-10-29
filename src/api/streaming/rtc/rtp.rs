@@ -1,8 +1,6 @@
 use crate::streaming::video::{self, STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker, metrics::METRICS};
 use crate::pipeline::clock::queue_delay::QueueDelayEstimator;
-use crate::pipeline::media::assembler::{
-    seq_bounds_of, AccessUnitAssembler, AssemblyOutcome,
-};
+use crate::pipeline::media::assembler::{AccessUnitAssembler, AssemblyOutcome};
 use std::sync::LazyLock;
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
@@ -10,6 +8,8 @@ use h264_reader::nal::sps::SeqParameterSet;
 use h264_reader::nal::{Nal, RefNal, UnitType};
 use h264_reader::push::NalInterest;
 use rtc::rtp::Packet;
+// 8b (§6.3): test-only — the differential-fuzz oracle's depacketizer.
+#[cfg(test)]
 use rtc::rtp::codec::h264::H264Packet;
 use rtc::rtp::codec::opus::OpusPacket;
 use rtc::rtp::packetizer::Depacketizer;
@@ -63,8 +63,8 @@ impl AudioRtp {
 }
 
 pub(crate) struct VideoRtp {
-    depacketizer: H264Packet,
-    pending: Option<PendingVideoFrame>,
+    // 8b (§6.3): `depacketizer: H264Packet` + `pending: Option<PendingVideoFrame>`
+    // deleted — the legacy collector is out of production (test-only oracle).
     next_sequence: Option<u16>,
     last_frame_timestamp: Option<u32>,
     source_frame_duration_us: Option<u64>,
@@ -95,17 +95,23 @@ pub(crate) struct VideoRtp {
     arrival: mismatch_log::ArrivalRing,
 }
 
-/// 8b (STAGE8-REDO-SPEC §6.2): decode-authority selector — consumed at ONE
-/// dispatch call site (`handle_shadow_outcome`).
+/// 8b (STAGE8-REDO-SPEC §6.2/§6.3): decode-authority selector — consumed at
+/// ONE dispatch call site (`handle_shadow_outcome`).
 /// `false` = 8a state: legacy `PendingVideoFrame`/`H264Packet` owns decode
 /// submission; the new assembler feeds the comparator only (behaviour-neutral).
 /// `true` = 8b state: new-assembler outcomes drive `finish_au` and the
-/// mirrored statement arms; the legacy collector is deleted (§6.3).
-const NEW_AUTHORITY: bool = false;
+/// mirrored statement arms; the legacy collector is out of production
+/// (§6.3: kept `#[cfg(test)]` only as the differential-fuzz oracle).
+const NEW_AUTHORITY: bool = true;
 
+/// 8b (§6.3): the legacy collector. DELETED from production — `VideoRtp` no
+/// longer holds one; it survives `#[cfg(test)]` solely as the oracle the
+/// randomized differential fuzz compares the new authority against.
+#[cfg(test)]
 struct PendingVideoFrame {
     timestamp: u32,
-    first_packet_at: Instant,
+    // 8b (§6.3): `first_packet_at` removed — only the deleted legacy
+    // finish_au call site read it; the oracle never does.
     packets: Vec<Packet>,
 }
 
@@ -117,17 +123,19 @@ struct ResolvedAu {
     first_packet_at: Instant,
 }
 
+/// 8b (§6.3): legacy assembly result — test-only alongside its collector.
+#[cfg(test)]
 enum FrameAssembly {
     Pending,
     Complete { data: Bytes, marker_sequence: u16 },
     Invalid,
 }
 
+#[cfg(test)]
 impl PendingVideoFrame {
     fn new(packet: Packet) -> Self {
         Self {
             timestamp: packet.header.timestamp,
-            first_packet_at: Instant::now(),
             packets: vec![packet],
         }
     }
@@ -199,8 +207,7 @@ impl PendingVideoFrame {
 impl VideoRtp {
     pub(crate) fn new() -> Self {
         Self {
-            depacketizer: H264Packet::default(),
-            pending: None,
+            // 8b (§6.3): legacy `depacketizer`/`pending` fields deleted.
             next_sequence: None,
             last_frame_timestamp: None,
             source_frame_duration_us: None,
@@ -345,41 +352,10 @@ impl VideoRtp {
             }
         }
 
-        if let Some(pending) = &self.pending
-            && pending.timestamp != packet_timestamp
-        {
-            if !timestamp_is_newer(packet_timestamp, pending.timestamp) {
-                return stats;
-            }
-            if let Some(incomplete) = self.pending.take() {
-                // 8a shadow: record the legacy abandon before the frame is
-                // dropped (pairing happens by RTP timestamp).
-                let seqs: Vec<u16> = incomplete
-                    .packets
-                    .iter()
-                    .map(|p| p.header.sequence_number)
-                    .collect();
-                let (first_seq, last_seq) = seq_bounds_of(&seqs);
-                self.shadow_cmp.observe_legacy(ShadowRecord {
-                    ts: incomplete.timestamp,
-                    class: ShadowClass::Abandoned,
-                    first_seq,
-                    last_seq,
-                    packet_count: seqs.len() as u16,
-                    bytes_hash: None,
-                    digests: Box::new([]),
-                    data: bytes::Bytes::new(),
-                }, &self.arrival);
-                self.next_sequence = incomplete
-                    .marker_sequence()
-                    .map(|sequence| sequence.wrapping_add(1));
-                self.depacketizer = H264Packet::default();
-                *keyframe_requested = true;
-                self.record_damage(worker);
-                frame_was_damaged = true;
-                stats.dropped = stats.dropped.saturating_add(1);
-            }
-        }
+        // 8b (§6.3): legacy force-out abandon (pending.ts guard + abandon
+        // arm) deleted — the new assembler owns stale-ts rejection (rule 4 +
+        // the in-flight parity drop) and Damaged outcomes mirror the arm's
+        // statements in dispatch_new_authority.
         // Video-timing census (extmap id=7): parse six 16-bit stage deltas.
         if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == 7)
             && ext.payload.len() == 13
@@ -391,103 +367,10 @@ impl VideoRtp {
             self.vt_exit_count += 1;
         }
 
-        if self.pending.is_none() {
-            if self
-                .last_frame_timestamp
-                .is_some_and(|last| !timestamp_is_newer(packet_timestamp, last))
-            {
-                return stats;
-            }
-            self.pending = Some(PendingVideoFrame::new(packet));
-        } else if let Some(pending) = &mut self.pending {
-            pending.insert(packet);
-        }
-
-        let assembly = self
-            .pending
-            .as_ref()
-            .map(|pending| pending.assemble(&mut self.depacketizer, self.next_sequence));
-        let Some(assembly) = assembly else {
-            return stats;
-        };
-        let (data, marker_sequence) = match assembly {
-            FrameAssembly::Pending => return stats,
-            FrameAssembly::Invalid => {
-                // 8a shadow: record the legacy Invalid event before dropping.
-                if let Some(invalid) = self.pending.take() {
-                    let seqs: Vec<u16> = invalid
-                        .packets
-                        .iter()
-                        .map(|p| p.header.sequence_number)
-                        .collect();
-                    let (first_seq, last_seq) = seq_bounds_of(&seqs);
-                    self.shadow_cmp.observe_legacy(ShadowRecord {
-                        ts: invalid.timestamp,
-                        class: ShadowClass::Invalid,
-                        first_seq,
-                        last_seq,
-                        packet_count: seqs.len() as u16,
-                        bytes_hash: None,
-                        digests: Box::new([]),
-                        data: bytes::Bytes::new(),
-                    }, &self.arrival);
-                }
-                self.next_sequence = None;
-                *keyframe_requested = true;
-                self.record_damage(worker);
-                stats.dropped = stats.dropped.saturating_add(1);
-                return stats;
-            }
-            FrameAssembly::Complete {
-                data,
-                marker_sequence,
-            } => (data, marker_sequence),
-        };
-        let completed = self.pending.take().expect("assembled pending video frame");
-        {
-            // 8a shadow: record the legacy Complete event (bytes hashed for
-            // byte-parity comparison against the new path).
-            let seqs: Vec<u16> = completed
-                .packets
-                .iter()
-                .map(|p| p.header.sequence_number)
-                .collect();
-            let (first_seq, last_seq) = seq_bounds_of(&seqs);
-            self.shadow_cmp.observe_legacy(ShadowRecord {
-                ts: completed.timestamp,
-                class: ShadowClass::Complete,
-                first_seq,
-                last_seq,
-                packet_count: seqs.len() as u16,
-                bytes_hash: Some(hash_bytes(&data)),
-                // Evidence: the packets THIS path kept (arrival order,
-                // post-legacy-dedup) + the assembled bytes (refcount clone).
-                digests: completed
-                    .packets
-                    .iter()
-                    .map(|packet| mismatch_log::PacketDigest {
-                        seq: packet.header.sequence_number,
-                        len: packet.payload.len() as u16,
-                        hash: hash_bytes(&packet.payload),
-                    })
-                    .collect(),
-                data: data.clone(),
-            }, &self.arrival);
-        }
-        // 8b (STAGE8-REDO-SPEC §6.1): legacy post-assembly body extracted
-        // verbatim as finish_au; the authority switch is a call-site change.
-        let stats = self.finish_au(
-            ResolvedAu {
-                data,
-                marker_sequence,
-                timestamp: completed.timestamp,
-                first_packet_at: completed.first_packet_at,
-            },
-            worker,
-            keyframe_requested,
-            stats,
-            frame_was_damaged,
-        );
+        // 8b (§6.3): the legacy insert → assemble → observe → finish_au
+        // chain is deleted. Outcomes for this packet were already dispatched
+        // through handle_shadow_outcome at the top of receive(); the new
+        // authority owns collection, resolution and submission.
         stats
     }
 
@@ -1399,6 +1282,11 @@ impl ShadowComparator {
         }
     }
 
+    /// 8b (§6.3): legacy-record ingestion — no production caller remains
+    /// once the collector is deleted (the comparator's legacy side is inert
+    /// by design post-switch; sh_* counters freeze instead of climbing
+    /// sh_new_unmatched). Kept for the method's pairing logic and tests.
+    #[allow(dead_code)]
     fn observe_legacy(
         &mut self,
         record: ShadowRecord,

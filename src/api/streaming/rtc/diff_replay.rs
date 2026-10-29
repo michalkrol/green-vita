@@ -10,6 +10,8 @@
 
 use super::diff_fixtures::{legacy_run, pkt, LegacyEvent};
 use super::*;
+// 8b (§6.3): rtp.rs no longer imports this in production — import directly.
+use crate::pipeline::media::assembler::seq_bounds_of;
 
 /// Committed capture (4,370,431 bytes, 4,459 records).
 const DUMP: &[u8] = include_bytes!("testdata/rtp-dump-dd90619.bin");
