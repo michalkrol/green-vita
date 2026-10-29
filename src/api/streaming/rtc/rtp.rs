@@ -657,7 +657,35 @@ impl VideoRtp {
         self.damage_score = 0;
     }
     
-    pub(crate) fn flush_expired(&mut self, _worker: &VideoDecodeWorker, _kr: &mut bool, _stats: &mut crate::api::streaming::rtc::rtp::VideoSampleStats) {}
+    /// 8b (§6.4): the idle-time flush hook — `flush_due` goes LIVE only here
+    /// (§6.4). receive() flushes on packet arrival; this covers pump ticks
+    /// where no fresh video arrives: a markerless AU past the ~40 ms
+    /// backstop resolves as Damaged → the abandon-arm mirror runs
+    /// (next_sequence/keyframe/record_damage), and queued outcomes drain
+    /// through the same authority dispatch. `frame_was_damaged` is local —
+    /// no Complete follows within this hook, so the damage-decay flag has
+    /// no consumer here (legacy's force-out body was already a no-op stub).
+    pub(crate) fn flush_expired(
+        &mut self,
+        worker: &VideoDecodeWorker,
+        keyframe_requested: &mut bool,
+        stats: &mut VideoSampleStats,
+    ) {
+        let now = SHADOW_CLOCK.elapsed().as_micros() as u64;
+        let mut frame_was_damaged = false;
+        if let Some(outcome) = self.shadow.flush_due(now) {
+            self.handle_shadow_outcome(
+                outcome, true, worker, keyframe_requested, stats,
+                &mut frame_was_damaged,
+            );
+        }
+        while let Some(outcome) = self.shadow.poll_outcome() {
+            self.handle_shadow_outcome(
+                outcome, false, worker, keyframe_requested, stats,
+                &mut frame_was_damaged,
+            );
+        }
+    }
     pub(crate) fn reset_lag_anchor(&mut self) { self.stream_clock_anchor = None; }
     /// Drift instrumentation: (slip_ms, wall_ms, media_ms).  slip = wall time
     /// since the session anchor minus media time (RTP clock at 90 kHz) advanced
