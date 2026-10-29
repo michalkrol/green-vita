@@ -12,12 +12,18 @@ use rtc::rtp::Packet;
 #[cfg(test)]
 use rtc::rtp::codec::h264::H264Packet;
 use rtc::rtp::codec::opus::OpusPacket;
+// 8b (§6.3): test-only — `depacketize()`'s trait scope for the cfg(test)
+// legacy oracle's assemble(); no production caller remains.
+#[cfg(test)]
 use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 const MAX_PENDING_AUDIO_PACKETS: usize = 32;
+// 8b (§6.3): only the cfg(test) legacy oracle's assemble() reads this now —
+// the production size gate lives in the assembler (MAX_AU_BYTES, same 2 MiB).
+#[cfg(test)]
 const MAX_H264_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
 const VIDEO_RTP_CLOCK_RATE: u32 = 90_000;
 const AUDIO_MAX_LATE_PACKETS: u16 = 32;
@@ -1161,6 +1167,9 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// 8b (§6.3): `Abandoned`/`Invalid` are legacy classes — their only production
+// constructors were the deleted legacy arms; comparator tests still build them.
+#[allow(dead_code)]
 enum ShadowClass {
     /// Legacy `FrameAssembly::Complete` / new `AssemblyOutcome::Complete`.
     Complete,
