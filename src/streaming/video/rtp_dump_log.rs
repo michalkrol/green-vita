@@ -163,7 +163,7 @@ impl RtpDumpLog {
 /// back to `true` only to recapture.
 /// RECATURE 2026-10-29: on for the 8b-era startup/bucket-1 fixture (report
 /// §6.1); flip back to `false` once pulled.
-pub(crate) const RTP_DUMP: bool = true;
+pub(crate) const RTP_DUMP: bool = false;
 
 /// Magic+version prefix for the binary dump file: 8 bytes `RTPDUMP1`.
 const MAGIC_PREFIX: &[u8; 8] = b"RTPDUMP1";
