@@ -22,10 +22,15 @@ use std::sync::Mutex;
 /// Hard cap on retained snapshots per session (senior's instruction: ~16).
 pub(crate) const MAX_EVENTS: usize = 16;
 /// Per-frame digest capacity (arrival ring); overflow is counted, not stored.
-const MAX_FRAME_PKTS: usize = 256;
+/// 64 covers worst observed frames (~36 packets at 11.7 Mbps bursts) with
+/// ~2x headroom; bigger AUs degrade to a truncated digest list.
+const MAX_FRAME_PKTS: usize = 64;
 /// Recent frames kept in the arrival ring (only used until both paths resolve
-/// a frame, so a handful of slots is plenty).
-const MAX_RING_FRAMES: usize = 8;
+/// a frame — the markerless backstop is 40 ms ≈ 1-2 frames, so 4 slots is
+/// generous). Kept deliberately small: the ring lives inside `VideoRtp`,
+/// which is constructed as a local on the `green-vita-rtc` worker thread's
+/// default-size stack (total ring ≈ 2.1 KB).
+const MAX_RING_FRAMES: usize = 4;
 /// NAL start codes are reported when within this many bytes of the diff.
 const NAL_SCAN_WINDOW: u64 = 64;
 /// Maximum NAL probes recorded per event (both sides combined).
