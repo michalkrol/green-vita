@@ -70,6 +70,18 @@ impl XboxStreamingBackend {
                 }
                 RtcWorkerEvent::Closed => return Some(PlaybackBackendEvent::Closed),
                 RtcWorkerEvent::Error(message) => {
+                    // Investigation: persist the real error on-device (the UI
+                    // only surfaces a generic "stream session entered an error
+                    // state"), appended so repeated attempts are all kept.
+                    use std::io::Write as _;
+                    eprintln!("RTC worker error: {message}");
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("ux0:data/xcloud-rust/worker-error.log")
+                    {
+                        let _ = writeln!(file, "{message}");
+                    }
                     return Some(PlaybackBackendEvent::Error(message));
                 }
             }

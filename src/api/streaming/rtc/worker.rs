@@ -95,10 +95,19 @@ impl RtcWorker {
                             RtcWorkerEvent::Error(format!("{error:#}")),
                         );
                     }
-                    Err(_) => {
+                    Err(panic) => {
+                        // Keep the real panic message (investigation: the
+                        // generic text hid the actual failure cause).
+                        let detail = panic
+                            .downcast_ref::<&str>()
+                            .map(|text| (*text).to_owned())
+                            .or_else(|| panic.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "non-string panic payload".to_owned());
                         send_important_event(
                             &events_tx,
-                            RtcWorkerEvent::Error("RTC worker thread panicked".to_owned()),
+                            RtcWorkerEvent::Error(format!(
+                                "RTC worker thread panicked: {detail}"
+                            )),
                         );
                     }
                 }
