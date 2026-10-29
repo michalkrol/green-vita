@@ -149,11 +149,18 @@ impl AccessUnitAssembler {
                     self.resolved_queue.push_back(outcome);
                     // current_au stays None; start fresh below.
                 } else {
-                    // Older timestamp arrives while older AU is still open.
-                    // Per spec, we ignore it (the older AU continues); the new
-                    // packet will be buffered and byte-ordered when the AU resolves.
-                    // Put the AU back since we didn't resolve it.
+                    // Older timestamp arrives while an older AU is still open.
+                    // LEGACY PARITY (rtp.rs:325-330): the open frame continues
+                    // and the stale-ts packet is DROPPED. It must never be
+                    // inserted into the open AU — this fall-through was the
+                    // root cause of the captured 786-byte mismatch event: a
+                    // stale-ts copy at seq 37240 poisoned the AU's first-wins
+                    // set while legacy discarded it at the pending.ts guard.
+                    // (Rule 4 covers the post-resolve case; this is the
+                    // in-flight-AU case. The old comment here said "we ignore
+                    // it" but control fell through into the insert path.)
                     self.current_au = Some(au);
+                    return None;
                 }
             } else {
                 // Same timestamp - treat as continuing the existing AU.
@@ -1236,36 +1243,30 @@ fn test_event_early_marker_gives_empty_not_786() {
     assert!(late.is_none(), "D: late end fragment dropped by rule 4");
 }
 
-/// Event-matrix E: THE ROOT-CAUSE MECHANISM.
+/// Event-matrix E: ROOT-CAUSE REGRESSION — stale-ts packets are DROPPED.
 ///
 /// Legacy drops a packet whose ts differs from the open pending frame and is
-/// not newer (rtp.rs:325-330 `return`), but the shadow's rule 4 only guards
-/// `last_resolved_ts` — a non-newer, different-ts packet that is NEWER than
-/// the last resolved frame falls through assembler.rs:151-157 and gets
-/// inserted into the OPEN AU anyway.
-///
-/// Device event reconstruction:
+/// not newer (rtp.rs:325-330 `return`). The pre-fix shadow instead fell
+/// through assembler.rs:151-157 ("we ignore it" comment did not match the
+/// code) and inserted the packet into the OPEN AU — the root cause of the
+/// captured 786-byte mismatch:
 ///   1. prior frame ts=89970 completes -> both paths armed
-///      (shadow last_resolved_ts = 89970; legacy last_frame_timestamp = 89970)
 ///   2. frame T=90000: 37236..37239 (FU-A) accumulate on both paths
-///   3. THE ALTERED PACKET arrives: seq 37240, 782-B single-NAL, no marker,
-///      with a STALE ts 89995 (T_prev < 89995 < T):
-///        - legacy: pending.ts(90000) != 89995 && !newer -> DROPPED (line 329)
-///        - shadow: rule 4 passes (89995 newer than 89970); current_au(90000)
-///          not-newer branch puts the AU back and CONTINUES -> seq 37240
-///          STORED into AU 90000 (first-wins)
-///   4. real FU-end (37240, 90000, marker) arrives: legacy stores it
-///      (dup-free) -> 5594; shadow dedupes the payload (37240 exists) but
-///      processes the marker -> resolves -> build_annex_b sees the 782-B
-///      single-NAL tail -> EXACTLY 786.
+///   3. altered packet: seq 37240, 782-B single-NAL, no marker, STALE ts
+///      89995 (T_prev < 89995 < T):
+///        - legacy: pending.ts guard -> DROPPED (rtp.rs:329)
+///        - pre-fix shadow: rule 4 passes (89995 newer than 89970) and the
+///          not-newer branch fell through -> seq 37240 STORED first-wins
+///   4. real FU-end (37240, 90000, marker): legacy stores it -> 5594;
+///      pre-fix shadow deduped the payload but honoured the marker ->
+///      build_annex_b saw the 782-B single-NAL tail -> EXACTLY 786 with
+///      count 5 / bounds 37236-37240 / holes 0, matching the event log.
 ///
-/// Observed on host: shadow yields 786 while the legacy model yields 5594 —
-/// the captured mismatch in full. After the §11 fix (mirror legacy's 328-330
-/// guard: drop non-newer different-ts packets while an AU is open) this
-/// assertion flips to 5594 parity.
+/// This test pins the FIX: the stale-ts push must return None (dropped) and
+/// the frame must assemble to legacy's 5594.
 #[cfg(test)]
 #[test]
-fn test_event_stale_ts_packet_mechanism_yields_786() {
+fn test_event_stale_ts_packet_dropped_parity() {
     let mut assembler = AccessUnitAssembler::new();
 
     // Step 1: prior frame completes -> arms rule 4 with last_resolved_ts=89970.
@@ -1289,25 +1290,27 @@ fn test_event_stale_ts_packet_mechanism_yields_786() {
     let _ = assembler.push(37238, 90000, false, &pkt2, 3000);
     let _ = assembler.push(37239, 90000, false, &pkt3, 4000);
 
-    // Step 3: the stale-ts packet — legacy would DROP this (rtp.rs:329).
+    // Step 3: the stale-ts packet — must be DROPPED (legacy rtp.rs:329 parity).
     let altered = make_single_nal(782);
     let stale = assembler.push(37240, 89995, false, &altered, 4500);
-    eprintln!("=== Matrix E: stale-ts packet push -> {:?}", compact(&stale));
+    eprintln!("=== Matrix E: stale-ts push -> {:?}", stale);
+    assert!(stale.is_none(),
+        "stale-ts packet while AU open must be dropped, not absorbed");
 
-    // Step 4: real FU end with marker -> shadow dedupes payload, honours marker.
+    // Step 4: real FU end with marker -> stored (dup-free) -> legacy's 5594.
     let outcome = assembler.push(37240, 90000, true, &pkt4, 5000);
 
     eprintln!("=== Matrix E: final -> {}", compact(&outcome));
     match outcome {
         Some(AssemblyOutcome::Complete(desc)) => {
-            assert_eq!(desc.data.len(), 786,
-                "MECHANISM: stale-ts packet absorbed -> 786, got {}", desc.data.len());
-            assert_eq!(desc.packet_count, 5, "event count 5");
-            assert_eq!(desc.first_seq, 37236, "event first_seq");
-            assert_eq!(desc.last_seq, 37240, "event last_seq");
-            assert_eq!(desc.holes, 0, "event holes 0");
+            assert_eq!(desc.data.len(), 5594,
+                "FIX: stale-ts drop restores legacy 5594, got {}", desc.data.len());
+            assert_eq!(desc.packet_count, 5, "count 5");
+            assert_eq!(desc.first_seq, 37236, "first_seq");
+            assert_eq!(desc.last_seq, 37240, "last_seq");
+            assert_eq!(desc.holes, 0, "holes 0");
             assert_eq!(desc.rtp_ts, 90000, "recorded under the open frame's ts");
         }
-        other => panic!("MECHANISM: expected Complete(786), got {:?}", other),
+        other => panic!("FIX: expected Complete(5594), got {:?}", other),
     }
 }
