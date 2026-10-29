@@ -1023,3 +1023,215 @@ fn test_fu_a_full_assembly_basic() {
         other => panic!("Expected Complete outcome, got {:?}", other),
     }
 }
+
+/// A single-NAL (non-FU) type-1 payload of exactly `total_len` bytes:
+/// [NAL header 0x41][payload...]. Used to model an altered/duplicate copy
+/// of seq 37240 in the captured mismatch event (786 = 4 + 782).
+#[cfg(test)]
+fn make_single_nal(total_len: usize) -> Vec<u8> {
+    let mut payload = vec![0x41]; // forbidden=0, NRI=1, type=1
+    payload.resize(total_len, 0xDD);
+    payload
+}
+
+/// Event-matrix A: THE 786 REPRODUCTION.
+///
+/// The captured mismatch (seq 37236..37240, count 5, holes 0, legacy=5594,
+/// new=786) can ONLY be produced by build_annex_b if seq 37240's *stored*
+/// copy is a non-FU packet: the FU buffer then accumulates
+/// start+3 mids (1117+3*1118 = 4471 B, never ended), and the single-NAL
+/// branch emits 4 + 782 = 786 bytes — an exact match for the event.
+///
+/// Here the 782-byte single-NAL copy of 37240 arrives with marker=true
+/// (as the real end packet did), so the AU resolves at its push.
+#[cfg(test)]
+#[test]
+fn test_event_altered_37240_single_nal_yields_786() {
+    let mut assembler = AccessUnitAssembler::new();
+    let start_data: Vec<u8> = (0..1117).map(|_| 0xAA).collect();
+    let mid_data: Vec<u8> = (0..1118).map(|_| 0xBB).collect();
+
+    let pkt0 = make_fu_a_start(&start_data);
+    let pkt1 = make_fu_a_middle(&mid_data);
+    let pkt2 = make_fu_a_middle(&mid_data);
+    let pkt3 = make_fu_a_middle(&mid_data);
+    // seq 37240: ALTERED copy — 782-byte single-NAL, NOT the 1120-byte FU end.
+    let pkt4_altered = make_single_nal(782);
+
+    let _ = assembler.push(37236, 90000, false, &pkt0, 1000);
+    let _ = assembler.push(37237, 90000, false, &pkt1, 2000);
+    let _ = assembler.push(37238, 90000, false, &pkt2, 3000);
+    let _ = assembler.push(37239, 90000, false, &pkt3, 4000);
+    let outcome = assembler.push(37240, 90000, true, &pkt4_altered, 5000);
+
+    eprintln!("=== Matrix A: altered 37240 single-NAL (782 B) ===");
+    eprintln!("Outcome: {:?}", outcome);
+
+    match outcome {
+        Some(AssemblyOutcome::Complete(desc)) => {
+            assert_eq!(desc.data.len(), 786,
+                "THE EVENT: single-NAL tail must yield exactly 4+782 = 786, got {}",
+                desc.data.len());
+            assert_eq!(desc.packet_count, 5, "event packet_count = 5");
+            assert_eq!(desc.first_seq, 37236, "event first_seq");
+            assert_eq!(desc.last_seq, 37240, "event last_seq");
+            assert_eq!(desc.holes, 0, "event holes = 0");
+            assert_eq!(&desc.data[0..4], &[0x00, 0x00, 0x00, 0x01], "Annex-B start code");
+            assert_eq!(desc.data[4] & 0x1F, 1, "first NAL type 1 (event probe t1)");
+            assert_eq!(desc.data.len() - 5, 781, "single-NAL body = 781 (786-4-1)");
+        }
+        other => panic!("Expected Complete(786), got {:?}", other),
+    }
+}
+
+/// Event-matrix B: duplicate copy arriving AFTER the AU resolved (rule-4
+/// drop). The 782-byte altered copy must be ignored — output stays 5594,
+/// proving a post-resolution duplicate cannot be the event.
+#[cfg(test)]
+#[test]
+fn test_event_dup_after_original_keeps_5594() {
+    let mut assembler = AccessUnitAssembler::new();
+    let start_data: Vec<u8> = (0..1117).map(|_| 0xAA).collect();
+    let mid_data: Vec<u8> = (0..1118).map(|_| 0xBB).collect();
+    let end_data: Vec<u8> = (0..1118).map(|_| 0xCC).collect();
+    let altered = make_single_nal(782);
+
+    let pkt0 = make_fu_a_start(&start_data);
+    let pkt1 = make_fu_a_middle(&mid_data);
+    let pkt2 = make_fu_a_middle(&mid_data);
+    let pkt3 = make_fu_a_middle(&mid_data);
+    let pkt4 = make_fu_a_end(&end_data);
+
+    let _ = assembler.push(37236, 90000, false, &pkt0, 1000);
+    let _ = assembler.push(37237, 90000, false, &pkt1, 2000);
+    let _ = assembler.push(37238, 90000, false, &pkt2, 3000);
+    let _ = assembler.push(37239, 90000, false, &pkt3, 4000);
+    // Original FU end WITH marker resolves the AU …
+    let resolved = assembler.push(37240, 90000, true, &pkt4, 5000);
+    // … then a late altered duplicate of the same seq arrives post-resolve.
+    let late = assembler.push(37240, 90000, false, &altered, 6000);
+
+    eprintln!("=== Matrix B: original first, late dup ===");
+    eprintln!("resolved_is_some={} late_is_some={} late_after_resolve={}",
+        resolved.is_some(), late.is_some(), assembler.late_after_resolve());
+
+    match resolved {
+        Some(AssemblyOutcome::Complete(desc)) => {
+            assert_eq!(desc.data.len(), 5594,
+                "marker on original must keep 5594, got {}", desc.data.len());
+        }
+        other => panic!("Expected Complete(5594), got {:?}", other),
+    }
+    assert!(late.is_none(), "post-resolve same-ts dup must be dropped by rule 4");
+    assert_eq!(assembler.late_after_resolve(), 1, "late dup counted");
+}
+
+/// Event-matrix C: altered copy arrives BEFORE the original FU end
+/// (pre-resolution) — first-wins dedup stores the 782-byte single-NAL for
+/// seq 37240; the real FU end is then a duplicate. OBSERVED BEHAVIOUR: the
+/// duplicate's payload is dropped but its MARKER still resolves the AU, so
+/// the completion is built from the STORED (altered) set -> exactly 786.
+/// This is the full event shape: count=5, bounds 37236/37240, holes=0,
+/// legacy (first-wins over its own pending) would have kept the real FU end
+/// -> 5594. Two arrival orders, both must give 786, never 5594:
+///   C1: altered copy interleaved mid-AU (no marker), real end last.
+///   C2: altered copy opens the AU (no marker), real end last.
+#[cfg(test)]
+fn compact(outcome: &Option<AssemblyOutcome>) -> String {
+    match outcome {
+        None => "None".to_string(),
+        Some(AssemblyOutcome::Complete(d)) =>
+            format!("Complete(len={}, count={}, first={}, last={}, holes={})",
+                d.data.len(), d.packet_count, d.first_seq, d.last_seq, d.holes),
+        Some(other) => format!("{:?}", other),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_event_dup_before_original() {
+    let start_data: Vec<u8> = (0..1117).map(|_| 0xAA).collect();
+    let mid_data: Vec<u8> = (0..1118).map(|_| 0xBB).collect();
+    let end_data: Vec<u8> = (0..1118).map(|_| 0xCC).collect();
+    let pkt0 = make_fu_a_start(&start_data);
+    let pkt1 = make_fu_a_middle(&mid_data);
+    let pkt2 = make_fu_a_middle(&mid_data);
+    let pkt3 = make_fu_a_middle(&mid_data);
+    let pkt4 = make_fu_a_end(&end_data);
+    let altered = make_single_nal(782);
+
+    // C1: altered copy interleaved mid-AU (after 37238), no marker.
+    let mut a1 = AccessUnitAssembler::new();
+    let _ = a1.push(37236, 90000, false, &pkt0, 1000);
+    let _ = a1.push(37237, 90000, false, &pkt1, 2000);
+    let _ = a1.push(37238, 90000, false, &pkt2, 3000);
+    let _ = a1.push(37240, 90000, false, &altered, 4000); // altered copy (stored first)
+    let _ = a1.push(37239, 90000, false, &pkt3, 5000);
+    // real FU end = duplicate: payload dropped, marker still processed
+    let c1 = a1.push(37240, 90000, true, &pkt4, 6000);
+
+    // C2: altered copy opens the AU (no marker), real end last with marker.
+    let mut a2 = AccessUnitAssembler::new();
+    let _ = a2.push(37240, 90000, false, &altered, 1000);
+    let _ = a2.push(37236, 90000, false, &pkt0, 2000);
+    let _ = a2.push(37237, 90000, false, &pkt1, 3000);
+    let _ = a2.push(37238, 90000, false, &pkt2, 4000);
+    let _ = a2.push(37239, 90000, false, &pkt3, 5000);
+    let c2 = a2.push(37240, 90000, true, &pkt4, 6000); // marker on the DUP copy
+
+    eprintln!("=== Matrix C: altered copy stored first ===");
+    eprintln!("C1 (interleaved): {}", compact(&c1));
+    eprintln!("C2 (opens AU):    {}", compact(&c2));
+
+    for (name, c) in [("C1", &c1), ("C2", &c2)] {
+        match c {
+            Some(AssemblyOutcome::Complete(desc)) => {
+                assert_eq!(desc.data.len(), 786,
+                    "{}: stored altered copy must yield 786, got {}", name, desc.data.len());
+                assert_eq!(desc.packet_count, 5, "{}: event count 5", name);
+                assert_eq!(desc.first_seq, 37236, "{}: event first_seq", name);
+                assert_eq!(desc.last_seq, 37240, "{}: event last_seq", name);
+                assert_eq!(desc.holes, 0, "{}: event holes 0", name);
+            }
+            other => panic!("{}: expected Complete(786), got {:?}", name, other),
+        }
+    }
+}
+
+/// Event-matrix D: marker on an EARLY packet (37239), end fragment 37240
+/// arrives after resolution (dropped by rule 4). The FU buffer never ends,
+/// so build_annex_b returns EMPTY — documenting that this shape gives 0,
+/// not 786, and is therefore NOT the captured event.
+#[cfg(test)]
+#[test]
+fn test_event_early_marker_gives_empty_not_786() {
+    let mut assembler = AccessUnitAssembler::new();
+    let start_data: Vec<u8> = (0..1117).map(|_| 0xAA).collect();
+    let mid_data: Vec<u8> = (0..1118).map(|_| 0xBB).collect();
+    let end_data: Vec<u8> = (0..1118).map(|_| 0xCC).collect();
+
+    let pkt0 = make_fu_a_start(&start_data);
+    let pkt1 = make_fu_a_middle(&mid_data);
+    let pkt2 = make_fu_a_middle(&mid_data);
+    let pkt3 = make_fu_a_middle(&mid_data);
+    let pkt4 = make_fu_a_end(&end_data);
+
+    let _ = assembler.push(37236, 90000, false, &pkt0, 1000);
+    let _ = assembler.push(37237, 90000, false, &pkt1, 2000);
+    let _ = assembler.push(37238, 90000, false, &pkt2, 3000);
+    let early = assembler.push(37239, 90000, true, &pkt3, 4000); // marker EARLY
+    let late = assembler.push(37240, 90000, false, &pkt4, 5000);
+
+    eprintln!("=== Matrix D: early marker on 37239 ===");
+    eprintln!("early={:?} late={:?}", early, late);
+
+    match early {
+        Some(AssemblyOutcome::Complete(desc)) => {
+            assert_eq!(desc.data.len(), 0,
+                "D: FU never ended -> empty output, got {}", desc.data.len());
+            assert_eq!(desc.packet_count, 4, "resolved with 4 packets");
+        }
+        other => panic!("D: expected Complete(empty), got {:?}", other),
+    }
+    assert!(late.is_none(), "D: late end fragment dropped by rule 4");
+}
