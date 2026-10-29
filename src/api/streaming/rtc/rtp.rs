@@ -1003,13 +1003,13 @@ mod diff_fixtures {
     const TS1: u32 = 180_000;
 
     #[derive(Debug, PartialEq)]
-    enum LegacyEvent {
-        Complete { at: usize, data: Vec<u8> },
-        Abandoned { at: usize },
-        Invalid { at: usize },
+    pub(crate) enum LegacyEvent {
+        Complete { at: usize, ts: u32, data: Vec<u8> },
+        Abandoned { at: usize, ts: u32 },
+        Invalid { at: usize, ts: u32 },
     }
 
-    fn pkt(seq: u16, ts: u32, marker: bool, payload: &[u8]) -> Packet {
+    pub(crate) fn pkt(seq: u16, ts: u32, marker: bool, payload: &[u8]) -> Packet {
         Packet {
             header: Header {
                 sequence_number: seq,
@@ -1064,7 +1064,7 @@ mod diff_fixtures {
     /// Mirror of receive()'s byte-relevant control flow: force-out on newer
     /// timestamp, stale-ts drop, last_frame gate, insert dedup, next_sequence
     /// tracking. Damage/PLI side effects are out of scope (no worker here).
-    fn legacy_run(packets: &[Packet]) -> Vec<LegacyEvent> {
+    pub(crate) fn legacy_run(packets: &[Packet]) -> Vec<LegacyEvent> {
         let mut events = Vec::new();
         let mut pending: Option<PendingVideoFrame> = None;
         let mut depacketizer = H264Packet::default();
@@ -1084,7 +1084,10 @@ mod diff_fixtures {
                 let incomplete = pending.take().expect("pending frame");
                 next_sequence = incomplete.marker_sequence().map(|s| s.wrapping_add(1));
                 depacketizer = H264Packet::default();
-                events.push(LegacyEvent::Abandoned { at: i });
+                events.push(LegacyEvent::Abandoned {
+                    at: i,
+                    ts: incomplete.timestamp,
+                });
             }
             if pending.is_none() {
                 if last_frame_ts.is_some_and(|last| !timestamp_is_newer(ts, last)) {
@@ -1103,7 +1106,7 @@ mod diff_fixtures {
                 FrameAssembly::Invalid => {
                     pending = None;
                     next_sequence = None;
-                    events.push(LegacyEvent::Invalid { at: i });
+                    events.push(LegacyEvent::Invalid { at: i, ts });
                 }
                 FrameAssembly::Complete { data, marker_sequence } => {
                     pending = None;
@@ -1111,6 +1114,7 @@ mod diff_fixtures {
                     last_frame_ts = Some(ts);
                     events.push(LegacyEvent::Complete {
                         at: i,
+                        ts,
                         data: data.to_vec(),
                     });
                 }
@@ -1146,7 +1150,7 @@ mod diff_fixtures {
         events
             .iter()
             .filter_map(|event| match event {
-                LegacyEvent::Complete { at, data } => Some((*at, data.clone())),
+                LegacyEvent::Complete { at, data, .. } => Some((*at, data.clone())),
                 _ => None,
             })
             .collect()
@@ -1295,7 +1299,7 @@ mod diff_fixtures {
             "legacy must never submit the gapped frame 1: {legacy:?}"
         );
         assert!(
-            legacy.contains(&LegacyEvent::Abandoned { at: 2 }),
+            legacy.contains(&LegacyEvent::Abandoned { at: 2, ts: TS0 }),
             "legacy abandons frame 1 on force-out: {legacy:?}"
         );
         let new = new_run(&packets);
@@ -1323,7 +1327,7 @@ mod diff_fixtures {
             legacy_completes(&legacy).len() == 1,
             "only frame 2 may complete on legacy: {legacy:?}"
         );
-        assert!(legacy.contains(&LegacyEvent::Abandoned { at: 2 }));
+        assert!(legacy.contains(&LegacyEvent::Abandoned { at: 2, ts: TS0 }));
         let new = new_run(&packets);
         match &new[0].1 {
             AssemblyOutcome::Damaged(desc) => {
@@ -1343,7 +1347,7 @@ mod diff_fixtures {
         ];
         let legacy = legacy_run(&packets);
         assert!(
-            legacy.contains(&LegacyEvent::Abandoned { at: 1 }),
+            legacy.contains(&LegacyEvent::Abandoned { at: 1, ts: TS0 }),
             "legacy abandons the markerless frame: {legacy:?}"
         );
         let new = new_run(&packets);
@@ -1463,7 +1467,7 @@ mod diff_fixtures {
             "legacy must not submit oversize: {legacy:?}"
         );
         assert!(
-            legacy.contains(&LegacyEvent::Invalid { at: 20 }),
+            legacy.contains(&LegacyEvent::Invalid { at: 20, ts: TS0 }),
             "legacy rejects at the marker packet: {legacy:?}"
         );
         let new = new_run(&packets);
@@ -1491,7 +1495,7 @@ mod diff_fixtures {
         let packets = vec![pkt(110, TS0, true, &bad_stap)];
         assert_eq!(
             legacy_run(&packets),
-            vec![LegacyEvent::Invalid { at: 0 }],
+            vec![LegacyEvent::Invalid { at: 0, ts: TS0 }],
             "legacy Invalid for malformed STAP-A"
         );
         assert!(
@@ -1517,7 +1521,7 @@ mod diff_fixtures {
         ];
         let legacy = legacy_run(&packets);
         assert!(
-            legacy.contains(&LegacyEvent::Abandoned { at: 2 }),
+            legacy.contains(&LegacyEvent::Abandoned { at: 2, ts: TS0 }),
             "legacy force-outs the markerless frame: {legacy:?}"
         );
         let new = new_run(&packets);
@@ -1552,3 +1556,9 @@ mod diff_fixtures {
         );
     }
 }
+
+// Real-capture fixture replay (§5.3) — separate file, child of this module so
+// it can reuse the legacy harness above.
+#[cfg(test)]
+#[path = "diff_replay.rs"]
+mod diff_replay;

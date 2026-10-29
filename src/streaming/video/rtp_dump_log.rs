@@ -158,8 +158,10 @@ impl RtpDumpLog {
 //
 
 /// Enable/disable RTP dump capture for the 8a device gate.
-/// Flip to `false` after the fixture capture is pulled.
-pub(crate) const RTP_DUMP: bool = true;
+/// `true` during the 8a capture run; flipped to `false` once the fixture was
+/// pulled and committed (testdata/rtp-dump-dd90619.bin, spec §5.3) — flip
+/// back to `true` only to recapture.
+pub(crate) const RTP_DUMP: bool = false;
 
 /// Magic+version prefix for the binary dump file: 8 bytes `RTPDUMP1`.
 const MAGIC_PREFIX: &[u8; 8] = b"RTPDUMP1";
@@ -368,10 +370,21 @@ mod tests {
     fn global_flush_writes_binary_with_magic_and_record() {
         let _guard = lock_globals();
         init_rtp_dump();
-        assert!(
+        // Flag-agnostic: record() must mirror the RTP_DUMP const either way.
+        assert_eq!(
             record(5_000, 0x1234, 90_000, true, &[0xDE, 0xAD, 0xBE, 0xEF]),
-            "record inside an active session window must be accepted"
+            RTP_DUMP,
+            "record() must follow the RTP_DUMP flag"
         );
+        // Exercise the serializer regardless of the flag via the log directly.
+        {
+            let mut guard = RTP_DUMP_LOG.lock().unwrap();
+            let log = guard.as_mut().expect("init must publish the log");
+            assert!(
+                log.record_internal(5_000, 0x1234, 90_000, true, &[0xDE, 0xAD, 0xBE, 0xEF]),
+                "record_internal must accept inside the window"
+            );
+        }
         flush_rtp_dump();
         let path = std::path::Path::new("ux0:data/xcloud-rust/rtp-dump.bin");
         let content = std::fs::read(path)
@@ -398,10 +411,13 @@ mod tests {
             RTP_DUMP_LOG.lock().unwrap().is_some(),
             "init must publish the log"
         );
-        assert!(record(6_000, 7, 90_000, false, &[1, 2, 3]));
-        assert!(
-            !record(20_000_000, 8, 90_000, false, &[1, 2, 3]),
-            "the 20 s gate applies through the global path too"
+        // Flag-agnostic: while disabled the const gate must reject outright;
+        // while enabled the active session must accept. Post-flush (inactive)
+        // recording must always be off.
+        assert_eq!(
+            record(6_000, 7, 90_000, false, &[1, 2, 3]),
+            RTP_DUMP,
+            "record() inside an active session must follow the flag"
         );
         flush_rtp_dump();
         assert!(
