@@ -70,6 +70,14 @@ pub struct AuDescriptor {
     /// boundary comparison for the 8a shadow comparator (§3).
     pub first_seq: u16,
     pub last_seq: u16,
+    /// Whether any packet with the RTP marker bit was seen for this AU.
+    /// §6.2 (8b): the authority path mirrors legacy's `marker_sequence()`
+    /// abandon-arm statement `next_sequence = marker_seq.map(+1)`.
+    pub marker_seen: bool,
+    /// Monotonic µs (SHADOW_CLOCK) of this AU's first packet. §6.2 (8b):
+    /// feeds `ResolvedAu::first_packet_at` so `rtp_assembly_*` metrics keep
+    /// their first-packet-to-submit meaning on the authority path.
+    pub first_arrival_us: u64,
 }
 
 // Holds state for assembling one access unit from a stream of RTP packets.
@@ -329,6 +337,8 @@ impl AccessUnitAssembler {
                 packet_count: au.packet_count,
                 first_seq,
                 last_seq,
+                marker_seen: au.marker_seen,
+                first_arrival_us: self.au_first_arrival_us,
             });
         }
 
@@ -369,6 +379,8 @@ impl AccessUnitAssembler {
             packet_count: au.packet_count,
             first_seq,
             last_seq,
+            marker_seen: au.marker_seen,
+            first_arrival_us: self.au_first_arrival_us,
         })
     }
 

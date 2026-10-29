@@ -158,6 +158,8 @@ mod tests {
             packet_count: 1,
             first_seq: 0,
             last_seq: 0,
+            marker_seen: true,
+            first_arrival_us: 0,
         }
     }
 
@@ -173,6 +175,8 @@ mod tests {
             packet_count: 1,
             first_seq: 0,
             last_seq: 0,
+            marker_seen: true,
+            first_arrival_us: 0,
         }
     }
 

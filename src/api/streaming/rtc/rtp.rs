@@ -95,6 +95,14 @@ pub(crate) struct VideoRtp {
     arrival: mismatch_log::ArrivalRing,
 }
 
+/// 8b (STAGE8-REDO-SPEC §6.2): decode-authority selector — consumed at ONE
+/// dispatch call site (`handle_shadow_outcome`).
+/// `false` = 8a state: legacy `PendingVideoFrame`/`H264Packet` owns decode
+/// submission; the new assembler feeds the comparator only (behaviour-neutral).
+/// `true` = 8b state: new-assembler outcomes drive `finish_au` and the
+/// mirrored statement arms; the legacy collector is deleted (§6.3).
+const NEW_AUTHORITY: bool = false;
+
 struct PendingVideoFrame {
     timestamp: u32,
     first_packet_at: Instant,
@@ -256,29 +264,44 @@ impl VideoRtp {
         );
 
         // 8a shadow (STAGE8-REDO-SPEC §3): feed every non-empty video packet
-        // to the new assembler alongside the legacy path. Behaviour-neutral by
-        // construction — it never touches pending, worker, keyframe_requested
-        // or stats; outcomes only feed the comparator counters. flush_due runs
-        // here in shadow only (§3).
+        // to the new assembler alongside the legacy path. §6.2 (8b): every
+        // outcome now flows through handle_shadow_outcome — comparator-only
+        // while NEW_AUTHORITY is false; finish_au + mirrored abandon/invalid
+        // statement arms once flipped true (§6.3). Queue-drain-before-direct
+        // order mirrors legacy: an older AU forced out by this packet's newer
+        // timestamp resolves logically BEFORE the AU this packet completes.
         let shadow_now = SHADOW_CLOCK.elapsed().as_micros() as u64;
         let late_before = self.shadow.late_after_resolve();
-        if let Some(outcome) = self.shadow.push(
+        let direct = self.shadow.push(
             packet.header.sequence_number,
             packet_timestamp,
             packet.header.marker,
             &packet.payload,
             shadow_now,
-        ) {
-            self.observe_shadow(outcome, false);
-        }
+        );
         while let Some(outcome) = self.shadow.poll_outcome() {
-            self.observe_shadow(outcome, false);
+            self.handle_shadow_outcome(
+                outcome, false, worker, keyframe_requested, &mut stats,
+                &mut frame_was_damaged,
+            );
+        }
+        if let Some(outcome) = direct {
+            self.handle_shadow_outcome(
+                outcome, false, worker, keyframe_requested, &mut stats,
+                &mut frame_was_damaged,
+            );
         }
         if let Some(outcome) = self.shadow.flush_due(shadow_now) {
-            self.observe_shadow(outcome, true);
+            self.handle_shadow_outcome(
+                outcome, true, worker, keyframe_requested, &mut stats,
+                &mut frame_was_damaged,
+            );
         }
         while let Some(outcome) = self.shadow.poll_outcome() {
-            self.observe_shadow(outcome, false);
+            self.handle_shadow_outcome(
+                outcome, false, worker, keyframe_requested, &mut stats,
+                &mut frame_was_damaged,
+            );
         }
         // Rule-4 phantom-guard drops (§11) mirrored into METRICS for the
         // 8a-v2 gate report.
@@ -623,6 +646,96 @@ impl VideoRtp {
             Box::new([])
         };
         self.shadow_cmp.observe_new(outcome, digests, &self.arrival);
+    }
+
+    /// §6.2 (8b): THE single dispatch point for new-assembler outcomes.
+    /// `NEW_AUTHORITY == false` delegates to the 8a comparator sink (device
+    /// behaviour identical to the shadow build); `true` runs the authority
+    /// body. Switching = flipping the const — no call-site restructure.
+    fn handle_shadow_outcome(
+        &mut self,
+        outcome: AssemblyOutcome,
+        via_hold: bool,
+        worker: &VideoDecodeWorker,
+        keyframe_requested: &mut bool,
+        stats: &mut VideoSampleStats,
+        frame_was_damaged: &mut bool,
+    ) {
+        if NEW_AUTHORITY {
+            self.dispatch_new_authority(
+                outcome, via_hold, worker, keyframe_requested, stats,
+                frame_was_damaged,
+            );
+        } else {
+            self.observe_shadow(outcome, via_hold);
+        }
+    }
+
+    /// §6.2 (8b): the NEW authority's per-outcome body.
+    /// - `Complete` → `finish_au` (§6.1 checklist order unchanged). The AU's
+    ///   first-packet Instant is reconstructed from the descriptor's
+    ///   `first_arrival_us` on the same SHADOW_CLOCK timeline `arrival_us`
+    ///   was recorded on, so `rtp_assembly_*` keeps its meaning.
+    /// - `Damaged` → mirrors the legacy ABANDON arm statements:
+    ///   `next_sequence = marker_seq + 1` iff a marker was seen (legacy:
+    ///   `marker_sequence().map(+1)` — the flag packet is the AU's highest
+    ///   seq, RTP marker semantics), `keyframe_requested`, `record_damage`,
+    ///   `frame_was_damaged = true`, `stats.dropped`.
+    /// - `Discarded` → mirrors the legacy INVALID arm: `next_sequence = None`,
+    ///   `keyframe_requested`, `record_damage`, `stats.dropped` — and
+    ///   deliberately does NOT set `frame_was_damaged` (the legacy asymmetry).
+    /// The legacy `depacketizer` reset has no counterpart by design: the
+    /// collector and its H264Packet state are deleted in §6.3, so no
+    /// cross-frame depacketize state exists to reset.
+    fn dispatch_new_authority(
+        &mut self,
+        outcome: AssemblyOutcome,
+        via_hold: bool,
+        worker: &VideoDecodeWorker,
+        keyframe_requested: &mut bool,
+        stats: &mut VideoSampleStats,
+        frame_was_damaged: &mut bool,
+    ) {
+        if via_hold && matches!(outcome, AssemblyOutcome::Complete(_)) {
+            METRICS.sh_hold_saved.fetch_add(1, Ordering::Relaxed);
+        }
+        match outcome {
+            AssemblyOutcome::Complete(desc) => {
+                let au = ResolvedAu {
+                    data: bytes::Bytes::from(desc.data),
+                    marker_sequence: desc.last_seq,
+                    timestamp: desc.rtp_ts,
+                    first_packet_at: *SHADOW_CLOCK
+                        + std::time::Duration::from_micros(desc.first_arrival_us),
+                };
+                let taken = std::mem::take(stats);
+                *stats = self.finish_au(
+                    au,
+                    worker,
+                    keyframe_requested,
+                    taken,
+                    *frame_was_damaged,
+                );
+            }
+            AssemblyOutcome::Damaged(desc) => {
+                // Legacy abandon arm statements (observe_legacy record and
+                // depacketizer reset excepted — see fn doc).
+                self.next_sequence = desc
+                    .marker_seen
+                    .then(|| desc.last_seq.wrapping_add(1));
+                *keyframe_requested = true;
+                self.record_damage(worker);
+                *frame_was_damaged = true;
+                stats.dropped = stats.dropped.saturating_add(1);
+            }
+            AssemblyOutcome::Discarded { .. } => {
+                // Legacy Invalid arm statements; frame_was_damaged untouched.
+                self.next_sequence = None;
+                *keyframe_requested = true;
+                self.record_damage(worker);
+                stats.dropped = stats.dropped.saturating_add(1);
+            }
+        }
     }
 
     fn record_damage(&mut self, worker: &VideoDecodeWorker) {
