@@ -346,7 +346,7 @@ impl VideoRtp {
                     bytes_hash: None,
                     digests: Box::new([]),
                     data: bytes::Bytes::new(),
-                });
+                }, &self.arrival);
                 self.next_sequence = incomplete
                     .marker_sequence()
                     .map(|sequence| sequence.wrapping_add(1));
@@ -407,7 +407,7 @@ impl VideoRtp {
                         bytes_hash: None,
                         digests: Box::new([]),
                         data: bytes::Bytes::new(),
-                    });
+                    }, &self.arrival);
                 }
                 self.next_sequence = None;
                 *keyframe_requested = true;
@@ -449,7 +449,7 @@ impl VideoRtp {
                     })
                     .collect(),
                 data: data.clone(),
-            });
+            }, &self.arrival);
         }
         // 8b (STAGE8-REDO-SPEC §6.1): legacy post-assembly body extracted
         // verbatim as finish_au; the authority switch is a call-site change.
@@ -622,7 +622,7 @@ impl VideoRtp {
         } else {
             Box::new([])
         };
-        self.shadow_cmp.observe_new(outcome, digests);
+        self.shadow_cmp.observe_new(outcome, digests, &self.arrival);
     }
 
     fn record_damage(&mut self, worker: &VideoDecodeWorker) {
@@ -1286,7 +1286,11 @@ impl ShadowComparator {
         }
     }
 
-    fn observe_legacy(&mut self, record: ShadowRecord) {
+    fn observe_legacy(
+        &mut self,
+        record: ShadowRecord,
+        ring: &mismatch_log::ArrivalRing,
+    ) {
         self.legacy.push(record);
         if self.legacy.len() > 64 {
             self.legacy.remove(0);
@@ -1294,13 +1298,14 @@ impl ShadowComparator {
                 .sh_legacy_unmatched
                 .fetch_add(1, Ordering::Relaxed);
         }
-        self.try_match();
+        self.try_match(ring);
     }
 
     fn observe_new(
         &mut self,
         outcome: AssemblyOutcome,
         digests: Box<[mismatch_log::PacketDigest]>,
+        ring: &mismatch_log::ArrivalRing,
     ) {
         let record = ShadowRecord::from_new(outcome, digests);
         self.new.push(record);
@@ -1308,25 +1313,30 @@ impl ShadowComparator {
             self.new.remove(0);
             METRICS.sh_new_unmatched.fetch_add(1, Ordering::Relaxed);
         }
-        self.try_match();
+        self.try_match(ring);
     }
 
     /// Pair pending records by RTP timestamp and apply counters.
-    fn try_match(&mut self) {
+    fn try_match(&mut self, ring: &mismatch_log::ArrivalRing) {
         let mut i = 0;
         while i < self.legacy.len() {
             let ts = self.legacy[i].ts;
             if let Some(j) = self.new.iter().position(|record| record.ts == ts) {
                 let new_rec = self.new.remove(j);
                 let legacy_rec = self.legacy.remove(i);
-                self.compare(&legacy_rec, &new_rec);
+                self.compare(&legacy_rec, &new_rec, ring);
             } else {
                 i += 1;
             }
         }
     }
 
-    fn compare(&mut self, legacy: &ShadowRecord, new_rec: &ShadowRecord) {
+    fn compare(
+        &mut self,
+        legacy: &ShadowRecord,
+        new_rec: &ShadowRecord,
+        ring: &mismatch_log::ArrivalRing,
+    ) {
         // Boundary comparison (§11.3a): gated only when at least one side is
         // Complete; both-reject pairs are exempt (their packet sets depend on
         // when each path stopped collecting — neither is submitted) and are
@@ -1376,6 +1386,10 @@ impl ShadowComparator {
                     &new_rec.data,
                     legacy.bytes_hash,
                     new_rec.bytes_hash,
+                    ring
+                        .payload_blob_for(legacy.ts)
+                        .as_ref()
+                        .map(|(lens, bytes)| (lens.as_slice(), bytes.as_slice())),
                 );
             }
             PairVerdict::ClassMismatch => {

@@ -73,6 +73,11 @@ pub(crate) struct MismatchSnapshot {
     /// are identical (hash collision) — reported explicitly as such.
     pub diff_offset: Option<usize>,
     pub nals: Box<[NalProbe]>,
+    /// Payload evidence (only the first MAX_PAYLOAD_EVENTS events): packet
+    /// payloads in arrival order, concatenated; `payload_lens` gives each
+    /// packet's length. Truncated at a packet boundary to MAX_EVENT_PAYLOAD.
+    pub payload_lens: Box<[u16]>,
+    pub payload_bytes: Box<[u8]>,
 }
 
 static EVENTS: Mutex<Vec<MismatchSnapshot>> = Mutex::new(Vec::new());
@@ -92,6 +97,9 @@ pub(crate) fn capture(
     new_data: &[u8],
     legacy_hash: Option<u64>,
     new_hash: Option<u64>,
+    // Arrival-order payload blob for the AU (see MAX_EVENT_PAYLOAD);
+    // `None` when unavailable.
+    blob: Option<(&[u16], &[u8])>,
 ) {
     let mut events = EVENTS
         .lock()
@@ -101,6 +109,17 @@ pub(crate) fn capture(
     }
     let diff_offset = first_diff(legacy_data, new_data);
     let nals = nal_probes(legacy_data, new_data, diff_offset);
+    let payload_events = events
+        .iter()
+        .filter(|event| !event.payload_bytes.is_empty())
+        .count();
+    let (payload_lens, payload_bytes) = match blob {
+        Some((lens, bytes)) if payload_events < MAX_PAYLOAD_EVENTS && !bytes.is_empty() => (
+            lens.to_vec().into_boxed_slice(),
+            bytes.to_vec().into_boxed_slice(),
+        ),
+        _ => (Box::new([]) as Box<[u16]>, Box::new([]) as Box<[u8]>),
+    };
     events.push(MismatchSnapshot {
         ts,
         first_seq,
@@ -114,6 +133,8 @@ pub(crate) fn capture(
         new_hash,
         diff_offset,
         nals: nals.into_boxed_slice(),
+        payload_lens,
+        payload_bytes,
     });
 }
 
@@ -218,8 +239,33 @@ fn render_locked(events: &[MismatchSnapshot]) -> String {
             ));
         }
         text.push('\n');
+        if !event.payload_bytes.is_empty() {
+            text.push_str(&format!(
+                "  payload: {} packets, {} bytes (arrival order)\n",
+                event.payload_lens.len(),
+                event.payload_bytes.len(),
+            ));
+            let mut offset = 0usize;
+            for (index, len) in event.payload_lens.iter().enumerate() {
+                let end = (offset + usize::from(*len)).min(event.payload_bytes.len());
+                text.push_str(&format!(
+                    "    pkt{} len={} hex={}\n",
+                    index,
+                    len,
+                    hex_encode(&event.payload_bytes[offset..end])
+                ));
+                offset = end;
+                if offset >= event.payload_bytes.len() {
+                    break;
+                }
+            }
+        }
     }
     text
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn fmt_digests(digests: &[PacketDigest]) -> String {
@@ -239,18 +285,31 @@ pub(crate) struct ArrivalRing {
     cursor: usize,
 }
 
-#[derive(Clone, Copy)]
 struct ArrivalFrame {
     ts: u32,
     len: usize,
     overflow: u16,
     packets: [PacketDigest; MAX_FRAME_PKTS],
+    /// Raw packet payloads in arrival order (concatenated; lengths in
+    /// `payload_lens`). Reused across slot rotations — `clear()` keeps the
+    /// capacity, so this allocates once per slot in steady state. Capped at
+    /// MAX_FRAME_PAYLOAD bytes; overflow counted like digests.
+    payloads: Vec<u8>,
+    payload_lens: [u16; MAX_FRAME_PKTS],
+    payload_bytes: usize,
 }
+
+/// Per-frame payload storage cap (one HD frame at 5-12 Mbps is 6-25 KB).
+const MAX_FRAME_PAYLOAD: usize = 64 * 1024;
+/// Per-event payload blob cap in the mismatch log (senior's spec: ~8 KB).
+pub(crate) const MAX_EVENT_PAYLOAD: usize = 8 * 1024;
+/// At most this many mismatch events carry the full payload blob.
+pub(crate) const MAX_PAYLOAD_EVENTS: usize = 4;
 
 impl ArrivalRing {
     pub(crate) fn new() -> Self {
         Self {
-            frames: [None; MAX_RING_FRAMES],
+            frames: std::array::from_fn(|_| None),
             cursor: 0,
         }
     }
@@ -269,9 +328,14 @@ impl ArrivalRing {
                 if frame.ts == ts {
                     if frame.len < MAX_FRAME_PKTS {
                         frame.packets[frame.len] = digest;
+                        frame.payload_lens[frame.len] = payload.len() as u16;
                         frame.len += 1;
                     } else {
                         frame.overflow = frame.overflow.saturating_add(1);
+                    }
+                    if frame.payload_bytes + payload.len() <= MAX_FRAME_PAYLOAD {
+                        frame.payloads.extend_from_slice(payload);
+                        frame.payload_bytes += payload.len();
                     }
                     return;
                 }
@@ -286,19 +350,67 @@ impl ArrivalRing {
                 index
             }
         };
-        self.frames[index] = Some(ArrivalFrame {
+        let slot = self.frames[index].get_or_insert(ArrivalFrame {
             ts,
-            len: 1,
+            len: 0,
             overflow: 0,
             packets: [PacketDigest {
                 seq: 0,
                 len: 0,
                 hash: 0,
             }; MAX_FRAME_PKTS],
+            payloads: Vec::new(),
+            payload_lens: [0; MAX_FRAME_PKTS],
+            payload_bytes: 0,
         });
-        if let Some(frame) = self.frames[index].as_mut() {
-            frame.packets[0] = digest;
+        // Slot rotation: reset frame state but KEEP payload capacity.
+        slot.ts = ts;
+        slot.len = 0;
+        slot.overflow = 0;
+        slot.payloads.clear();
+        slot.payload_bytes = 0;
+        if slot.len < MAX_FRAME_PKTS {
+            slot.packets[0] = digest;
+            slot.payload_lens[0] = payload.len() as u16;
+            slot.len = 1;
         }
+        if payload.len() <= MAX_FRAME_PAYLOAD {
+            slot.payloads.extend_from_slice(payload);
+            slot.payload_bytes = payload.len();
+        }
+    }
+
+    /// Owned payload blob for `ts`: concatenated packet payloads plus their
+    /// lengths, in arrival order (duplicates included). Capped at
+    /// MAX_EVENT_PAYLOAD for the event log; None when the frame is unknown
+    /// or carried no bytes.
+    pub(crate) fn payload_blob_for(&self, ts: u32) -> Option<(Vec<u16>, Vec<u8>)> {
+        for slot in &self.frames {
+            if let Some(frame) = slot
+                && frame.ts == ts
+                && frame.payload_bytes > 0
+            {
+                let lens: Vec<u16> = frame.payload_lens[..frame.len].to_vec();
+                let total: usize = lens.iter().map(|len| usize::from(*len)).sum();
+                let bytes = if total > MAX_EVENT_PAYLOAD {
+                    // Truncate at a packet boundary ≤ cap.
+                    let mut used = 0usize;
+                    let mut cut = 0usize;
+                    for (index, len) in lens.iter().enumerate() {
+                        if used + usize::from(*len) > MAX_EVENT_PAYLOAD {
+                            break;
+                        }
+                        used += usize::from(*len);
+                        cut = index + 1;
+                    }
+                    (lens[..cut].to_vec(), frame.payloads[..used].to_vec())
+                } else {
+                    (lens, frame.payloads[..total].to_vec())
+                };
+                return Some(bytes);
+            }
+        }
+        None
     }
 
     /// Owned copy of the digest list for `ts` (empty if the ring has already
@@ -435,8 +547,11 @@ mod tests {
             new_hash,
         );
 
+        let mut ring = ArrivalRing::new();
+        ring.push(TS, 100, &[0x41, 0x9a, 0x11, 0x22, 0x33]);
+        ring.push(TS, 101, &[0x41, 0x44, 0x55]);
         let mut comparator = ShadowComparator::new();
-        comparator.compare(&legacy, &new_rec);
+        comparator.compare(&legacy, &new_rec, &ring);
 
         assert_eq!(count(), 1, "exactly one snapshot for one mismatch");
         let text = render();
@@ -466,6 +581,11 @@ mod tests {
         // NAL types around the offset (SPS=7, IDR=5).
         assert!(text.contains("nals:"), "nal line present");
         assert!(text.contains("=t7") && text.contains("=t5"), "nal types");
+        // Payload evidence (arrival blob) present for this event.
+        assert!(
+            text.contains("payload: 2 packets, 8 bytes"),
+            "payload blob rendered"
+        );
         clear();
     }
 
@@ -489,6 +609,7 @@ mod tests {
                 b"aaab",
                 Some(1),
                 Some(2),
+                None,
             );
         }
         assert_eq!(count(), MAX_EVENTS, "store capped at MAX_EVENTS");
@@ -514,7 +635,7 @@ mod tests {
             hash,
         );
         let mut comparator = ShadowComparator::new();
-        comparator.compare(&legacy, &new_rec);
+        comparator.compare(&legacy, &new_rec, &ArrivalRing::new());
         assert_eq!(count(), 0, "identical pair captures nothing");
         assert_eq!(render(), "", "empty render");
         clear();
@@ -536,6 +657,7 @@ mod tests {
                 b"xxyx",
                 Some(3),
                 Some(4),
+                None,
             );
         }
         assert_eq!(count(), 3);
