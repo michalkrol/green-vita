@@ -240,6 +240,7 @@ impl VideoRtp {
         // or stats; outcomes only feed the comparator counters. flush_due runs
         // here in shadow only (§3).
         let shadow_now = SHADOW_CLOCK.elapsed().as_micros() as u64;
+        let late_before = self.shadow.late_after_resolve();
         if let Some(outcome) = self.shadow.push(
             packet.header.sequence_number,
             packet_timestamp,
@@ -257,6 +258,14 @@ impl VideoRtp {
         }
         while let Some(outcome) = self.shadow.poll_outcome() {
             self.observe_shadow(outcome, false);
+        }
+        // Rule-4 phantom-guard drops (§11) mirrored into METRICS for the
+        // 8a-v2 gate report.
+        let late_delta = self.shadow.late_after_resolve() - late_before;
+        if late_delta > 0 {
+            METRICS
+                .late_after_resolve
+                .fetch_add(late_delta, Ordering::Relaxed);
         }
 
         // Drift instrumentation (log only, no behaviour change): establish the
@@ -839,7 +848,10 @@ impl ShadowComparator {
     }
 
     fn compare(&mut self, legacy: &ShadowRecord, new_rec: &ShadowRecord) {
-        // Boundary comparison (§3): only when both sides report packet bounds.
+        // Boundary comparison (§11.3a): gated only when at least one side is
+        // Complete; both-reject pairs are exempt (their packet sets depend on
+        // when each path stopped collecting — neither is submitted) and are
+        // counted separately so they stay visible.
         if legacy.packet_count > 0 && new_rec.packet_count > 0 {
             let same_bounds = (legacy.first_seq, legacy.last_seq, legacy.packet_count)
                 == (
@@ -848,9 +860,22 @@ impl ShadowComparator {
                     new_rec.packet_count,
                 );
             if !same_bounds {
-                METRICS
-                    .sh_bound_mismatch
-                    .fetch_add(1, Ordering::Relaxed);
+                let both_reject = matches!(
+                    legacy.class,
+                    ShadowClass::Abandoned | ShadowClass::Invalid
+                ) && matches!(
+                    new_rec.class,
+                    ShadowClass::Damaged | ShadowClass::Discarded
+                );
+                if both_reject {
+                    METRICS
+                        .sh_reject_bound_artifact
+                        .fetch_add(1, Ordering::Relaxed);
+                } else {
+                    METRICS
+                        .sh_bound_mismatch
+                        .fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
         match classify_pair(legacy, new_rec) {
@@ -1340,7 +1365,7 @@ mod diff_fixtures {
     }
 
     #[test]
-    fn bucket2_markerless_frame_completes_only_via_forceout() {
+    fn markerless_frame_damaged_on_forceout_never_completes() {
         let packets = vec![
             pkt(80, TS0, false, &single_nal(0x01, 0x10)), // frame 1, marker lost
             pkt(81, TS1, true, &single_nal(0x01, 0x20)),  // frame 2
@@ -1351,19 +1376,18 @@ mod diff_fixtures {
             "legacy abandons the markerless frame: {legacy:?}"
         );
         let new = new_run(&packets);
-        // New resolves frame 1 (contiguous + verified start) at the force-out.
-        let frame1_bytes = new_completes(&new)
-            .into_iter()
-            .find(|(at, _)| *at == 1)
-            .map(|(_, data)| data);
-        let mut expect_frame1 = vec![0, 0, 0, 1];
-        expect_frame1.extend_from_slice(&single_nal(0x01, 0x10));
-        assert_eq!(
-            frame1_bytes.as_deref(),
-            Some(&expect_frame1[..]),
-            "bucket 2: new completes the abandoned frame with correct bytes"
-        );
-        // Frame 2 completes identically on both.
+        // §11 rule 2: the markerless frame resolves Damaged at the force-out —
+        // never Complete (the old Complete-on-forceout was the hold defect).
+        match &new[0].1 {
+            AssemblyOutcome::Damaged(desc) => {
+                assert!(
+                    desc.data.is_empty(),
+                    "§4: Damaged carries no bytes"
+                );
+            }
+            other => panic!("markerless force-out must be Damaged, got {other:?}"),
+        }
+        // Both paths submit exactly frame 2, byte-identical.
         let legacy_f2 = legacy_completes(&legacy);
         let new_all = new_completes(&new);
         assert_eq!(
@@ -1373,39 +1397,42 @@ mod diff_fixtures {
         );
         assert_eq!(
             new_all.len(),
-            2,
-            "new completes frame 1 (bucket 2) + frame 2: {new:?}"
+            1,
+            "new completes only frame 2: {new:?}"
         );
         assert_eq!(
             legacy_f2[0],
-            *new_all.last().expect("frame 2 event"),
+            new_all[0],
             "frame 2 bytes/boundary parity"
         );
     }
 
     #[test]
-    fn bucket2_hold_expiry_completes_at_12ms() {
+    fn markerless_resolves_damaged_only_at_40ms_backstop() {
+        // §11 rule 2: a timer NEVER yields Complete. Markerless AUs resolve
+        // Damaged at the ~40 ms backstop — the old 12 ms Complete-on-timer is
+        // exactly the defect the 8a gate exposed (280 byte mismatches).
         let payload = single_nal(0x01, 0x10);
         let mut assembler = AccessUnitAssembler::new();
         assert!(assembler.push(90, TS0, false, &payload, 100_000).is_none());
-        // Inside the hold window: no flush (regression guard: au_first_arrival_us
-        // must be anchored at AU start, else the first flush_due fires early).
         assert!(
-            assembler.flush_due(105_000).is_none(),
-            "must not flush 5 ms into the 12 ms hold window"
+            assembler.flush_due(113_000).is_none(),
+            "13 ms: a markerless AU must NOT resolve on a timer"
         );
-        let outcome = assembler
-            .flush_due(113_000)
-            .expect("flush after the 12 ms hold window");
-        match outcome {
-            AssemblyOutcome::Complete(desc) => {
-                let mut expect = vec![0, 0, 0, 1];
-                expect.extend_from_slice(&payload);
-                assert_eq!(desc.data, expect, "hold-expired AU is valid Annex-B");
+        assert!(
+            assembler.flush_due(139_000).is_none(),
+            "39 ms: still inside the 40 ms backstop"
+        );
+        match assembler.flush_due(141_000) {
+            Some(AssemblyOutcome::Damaged(desc)) => {
+                assert!(
+                    desc.data.is_empty(),
+                    "backstop resolution must be Damaged with no bytes"
+                );
             }
-            other => panic!("expected Complete via hold expiry, got {other:?}"),
+            other => panic!("expected Damaged at the 40 ms backstop, got {other:?}"),
         }
-        // Legacy has no hold mechanism: the markerless AU never completes.
+        // Legacy never completes a markerless frame on its own either.
         assert!(
             legacy_run(&[pkt(90, TS0, false, &payload)]).is_empty(),
             "legacy never completes a markerless frame by itself"
@@ -1525,18 +1552,14 @@ mod diff_fixtures {
             "legacy force-outs the markerless frame: {legacy:?}"
         );
         let new = new_run(&packets);
-        // Bucket 2: new completes frame 1 where legacy abandoned it; frame 2
-        // completes on both with identical bytes.
-        assert_eq!(
-            new_completes(&new).len(),
-            2,
-            "new completes frame 1 (bucket 2) and frame 2: {new:?}"
-        );
-        assert_eq!(
-            legacy_completes(&legacy).len(),
-            1,
-            "legacy completes only frame 2: {legacy:?}"
-        );
+        // §11 rule 2: markerless frame 1 resolves Damaged at the force-out
+        // (never Complete); only frame 2 is submitted — byte-identical.
+        match &new[0].1 {
+            AssemblyOutcome::Damaged(desc) => {
+                assert!(desc.data.is_empty(), "§4: Damaged carries no bytes");
+            }
+            other => panic!("markerless force-out must be Damaged, got {other:?}"),
+        }
         let legacy_f2 = legacy_completes(&legacy);
         let new_all = new_completes(&new);
         assert_eq!(
@@ -1546,14 +1569,10 @@ mod diff_fixtures {
         );
         assert_eq!(
             new_all.len(),
-            2,
-            "new completes frame 1 (bucket 2) + frame 2: {new:?}"
+            1,
+            "new completes only frame 2: {new:?}"
         );
-        assert_eq!(
-            legacy_f2[0],
-            *new_all.last().expect("frame 2"),
-            "frame 2 bytes/boundary parity"
-        );
+        assert_eq!(legacy_f2[0], new_all[0], "frame 2 bytes/boundary parity");
     }
 }
 
