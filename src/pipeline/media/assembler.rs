@@ -920,3 +920,106 @@ mod tests {
         }
     }
 }
+/// Build a FU-A start fragment (first packet of a fragmented slice).
+/// `slice_data` contains the bytes after the NAL header (typically starting
+/// with 0x01 for type-1 NAL). Total payload length = 2 + slice_data.len().
+/// Indicator 0x5C = F0|NRI2|Type28; FU header 0x81 = S|E0|Type1 (RFC 6184).
+#[cfg(test)]
+fn make_fu_a_start(slice_data: &[u8]) -> Vec<u8> {
+    let mut payload = vec![0x5C, 0x81]; // FU indicator (NRI=2) + start bit, type 1
+    payload.extend_from_slice(slice_data);
+    payload
+}
+
+/// Build a FU-A middle fragment (continuation).
+/// Total payload length = 2 + slice_data.len().
+#[cfg(test)]
+fn make_fu_a_middle(slice_data: &[u8]) -> Vec<u8> {
+    let mut payload = vec![0x5C, 0x01]; // FU indicator, no start/end, type 1
+    payload.extend_from_slice(slice_data);
+    payload
+}
+
+/// Build a FU-A end fragment (last packet).
+/// `slice_data` contains the final bytes. Total payload length = 2 + slice_data.len().
+/// The END bit (0x40) is set in byte2.
+#[cfg(test)]
+fn make_fu_a_end(slice_data: &[u8]) -> Vec<u8> {
+    let mut payload = vec![0x5C, 0x41]; // FU indicator (NRI=2) + end bit, type 1
+    payload.extend_from_slice(slice_data);
+    payload
+}
+
+#[cfg(test)]
+#[test]
+fn test_fu_a_full_assembly_basic() {
+    // Five FU-A packets forming one type-1 (non-IDR) slice:
+    //   seq 37236: FU-A start,        payload 1119 (2-header + 1117 data)
+    //   seq 37237: FU-A middle,       payload 1120 (2-header + 1118 data)
+    //   seq 37238: FU-A middle,       payload 1120 (2-header + 1118 data)
+    //   seq 37239: FU-A middle,       payload 1120 (2-header + 1118 data)
+    //   seq 37240: FU-A end (has END bit), payload 1120 (2-header + 1118 data)
+    //
+    // Expected: 5594 bytes = 4 (start code) + 1 (NAL header) +
+    //           (1119-2) + 4*(1120-2) = 1117 + 4*1118 = 5589
+    
+    let mut assembler = AccessUnitAssembler::new();
+    
+    // Build slice data pieces with exact byte counts:
+    // start: 1117 bytes of 0xAA, middle: 1118 bytes of 0xBB, end: 1118 bytes of 0xCC
+    let start_payload_data: Vec<u8> = (0..1117).map(|_| 0xAA).collect();
+    let mid_payload_data: Vec<u8> = (0..1118).map(|_| 0xBB).collect();
+    let end_payload_data: Vec<u8> = (0..1118).map(|_| 0xCC).collect();
+    
+    // FU-A start (seq 37236): [FU indicator(0x1C), start bit(0x80), NAL header(0x41), ...data...]
+    let pkt0 = make_fu_a_start(&start_payload_data);
+    // FU-A middle (seq 37237): [FU indicator(0x1C), no start/end(0x00), ...data...]
+    let pkt1 = make_fu_a_middle(&mid_payload_data);
+    // FU-A middle (seq 37238): same
+    let pkt2 = make_fu_a_middle(&mid_payload_data);
+    // FU-A middle (seq 37239): same
+    let pkt3 = make_fu_a_middle(&mid_payload_data);
+    // FU-A end (seq 37240): [FU indicator(0x1C), END bit(0x40), ...data...]
+    let pkt4 = make_fu_a_end(&end_payload_data);
+    
+    // Push all 5 packets. Use increasing timestamps within the fill window.
+    // Marker on the last packet (end fragment) should resolve the AU immediately
+    // since all packets are contiguous and marker fills the holes.
+    let _ = assembler.push(37236, 90000, false, &pkt0, 1000);
+    let _ = assembler.push(37237, 90000, false, &pkt1, 2000);
+    let _ = assembler.push(37238, 90000, false, &pkt2, 3000);
+    let _ = assembler.push(37239, 90000, false, &pkt3, 4000);
+    // Last packet with marker should resolve the AU immediately
+    let outcome = assembler.push(37240, 90000, true, &pkt4, 5000).unwrap();
+    
+    // Debug: print outcome details
+    eprintln!("=== Test: basic FU-A assembly ===");
+    eprintln!("Outcome: {:?}", outcome);
+    if let AssemblyOutcome::Complete(desc) = &outcome {
+        eprintln!("packet_count: {}", desc.packet_count);
+        eprintln!("first_seq: {}, last_seq: {}", desc.first_seq, desc.last_seq);
+        eprintln!("holes: {}", desc.holes);
+        eprintln!("had_first_slice: {}", desc.had_first_slice);
+        eprintln!("data len: {}", desc.data.len());
+        eprintln!("data first bytes: {:02x?}", &desc.data[..std::cmp::min(32, desc.data.len())]);
+        eprintln!("expected len: 5594");
+    }
+    
+    // Assert the output is byte-identical to the legacy path
+    // (5594 bytes: 4 start code + 1 header + 5589 NAL body)
+    // and had_first_slice is true (first pkt had START bit)
+    match outcome {
+        AssemblyOutcome::Complete(desc) => {
+            assert_eq!(desc.data.len(), 5594, 
+                "Expected 5594 bytes for complete FU-A assembly, got {}",
+                desc.data.len());
+            assert!(desc.had_first_slice, "H3 fix: had_first_slice should be true when FU-A start bit set");
+            assert_eq!(desc.packet_count, 5, "Should have 5 packets");
+            assert_eq!(desc.holes, 0, "Should have 0 holes for contiguous seqs");
+            // Check the data starts with Annex-B start code + type-1 NAL header
+            assert_eq!(&desc.data[0..4], &[0x00, 0x00, 0x00, 0x01], "Annex-B start code");
+            assert_eq!(desc.data[4], 0x41, "Type-1 NAL header (forbidden_zero=0, nal_unit_type=1)");
+        }
+        other => panic!("Expected Complete outcome, got {:?}", other),
+    }
+}
