@@ -98,6 +98,14 @@ struct PendingVideoFrame {
     packets: Vec<Packet>,
 }
 
+/// 8b (STAGE8-REDO-SPEC §6.1): a completed AU handed to `finish_au`.
+struct ResolvedAu {
+    data: Bytes,
+    marker_sequence: u16,
+    timestamp: u32,
+    first_packet_at: Instant,
+}
+
 enum FrameAssembly {
     Pending,
     Complete { data: Bytes, marker_sequence: u16 },
@@ -414,8 +422,44 @@ impl VideoRtp {
                 bytes_hash: Some(hash_bytes(&data)),
             });
         }
+        // 8b (STAGE8-REDO-SPEC §6.1): legacy post-assembly body extracted
+        // verbatim as finish_au; the authority switch is a call-site change.
+        let stats = self.finish_au(
+            ResolvedAu {
+                data,
+                marker_sequence,
+                timestamp: completed.timestamp,
+                first_packet_at: completed.first_packet_at,
+            },
+            worker,
+            keyframe_requested,
+            stats,
+            frame_was_damaged,
+        );
+        stats
+    }
+
+    /// 8b (STAGE8-REDO-SPEC §6.1): the legacy post-assembly body, moved
+    /// verbatim. Executes once per Complete AU, in checklist order:
+    /// assembly metrics -> slip -> next_sequence -> frame duration +
+    /// last_frame_timestamp -> inspect_h264_access_unit -> size gates ->
+    /// waiting_for_keyframe gate (+D0b) -> damage decay -> submit_access_unit
+    /// (+queue_full handling).
+    fn finish_au(
+        &mut self,
+        au: ResolvedAu,
+        worker: &VideoDecodeWorker,
+        keyframe_requested: &mut bool,
+        mut stats: VideoSampleStats,
+        frame_was_damaged: bool,
+    ) -> VideoSampleStats {
+        let ResolvedAu {
+            data,
+            marker_sequence,
+            ..
+        } = au;
         // Record both average and worst-case RTP assembly time for the stream HUD.
-        let assembly_us = completed.first_packet_at.elapsed().as_micros() as u64;
+        let assembly_us = au.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS
             .rtp_assembly_sum_us
             .fetch_add(assembly_us, Ordering::Relaxed);
@@ -460,7 +504,7 @@ impl VideoRtp {
 
         self.next_sequence = Some(marker_sequence.wrapping_add(1));
         stats.source_frame_duration_us = self.last_frame_timestamp.map(|previous| {
-            u64::from(completed.timestamp.wrapping_sub(previous)) * 1_000_000
+            u64::from(au.timestamp.wrapping_sub(previous)) * 1_000_000
                 / u64::from(VIDEO_RTP_CLOCK_RATE)
         });
         if let Some(duration) = stats.source_frame_duration_us {
@@ -470,7 +514,7 @@ impl VideoRtp {
                     .unwrap_or(duration),
             );
         }
-        self.last_frame_timestamp = Some(completed.timestamp);
+        self.last_frame_timestamp = Some(au.timestamp);
 
         let unit = inspect_h264_access_unit(&data);
         stats.encoded_resolution = unit.resolution;
