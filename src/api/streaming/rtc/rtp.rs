@@ -670,6 +670,375 @@ mod tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// RANDOMIZED DIFFERENTIAL TEST
+// §5.4: run identical packet streams through both the LEGACY and NEW
+// assembly paths with a seeded PRNG, asserting byte-identical AU output for
+// all Complete-vs-Complete pairs.  Designed to surface the rare legacy-vs-new
+// byte disagreements observed on device (1 in 57,757 AUs).
+// ---------------------------------------------------------------------------
+
+/// Very small inline xorshift64* PRNG — no external crates.
+/// State is a u64; next_u64() advances and returns the new state; below(n)
+/// returns a uniform [0, n) u64.
+struct XorShift64 {
+    state: u64,
+}
+
+impl XorShift64 {
+    const fn from_seed(seed: u64) -> Self {
+        // Seed of 0 is disallowed (xorshift requires odd/non-zero).
+        let state = seed | 1;
+        Self { state }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        // Xorshift64* : xor with left-shift, then multiply by odd constant.
+        // Constant 0x254A_5555_5555_5551 works well for 64-bit.
+        let mut z = self.state;
+        z ^= z << 13;
+        z ^= z >> 7;
+        z ^= z << 17;
+        self.state = z.wrapping_mul(0x254A_5555_5555_5551u64);
+        self.state
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        // Uniform [0, n). Uses rejection sampling to avoid modulo bias.
+        if n == 0 { return 0; }
+        if n == 1 { return 0; }
+        // Compute the minimum value that would cause modulo bias.
+        // We want the largest multiple of n that is <= u64::MAX.
+        // limit = ((u64::MAX + 1) / n) * n, but we compute it without overflow.
+        // u64::MAX + 1 wraps to 0, so: limit = u64::MAX - (u64::MAX % n) + 1
+        // but this can overflow when n=1 (already handled) or when the result wraps.
+        // Safe approach: reject any r >= n * (u64::MAX / n)
+        let quota = u64::MAX / n;     // number of complete groups of n
+        let bound = quota * n;        // last valid value (always < u64::MAX since quota < n when n > 1)
+        loop {
+            let r = self.next_u64();
+            if r < bound { return r % n; }
+        }
+    }
+}
+
+// Helper: create a Packet with the given fields.
+fn make_pkt(seq: u16, ts: u32, marker: bool, payload: &[u8]) -> rtc::rtp::Packet {
+    rtc::rtp::Packet {
+        header: rtc::rtp::Header {
+            sequence_number: seq,
+            timestamp: ts,
+            marker,
+            ..Default::default()
+        },
+        payload: bytes::Bytes::copy_from_slice(payload),
+    }
+}
+
+// Helper: build a STAP-A packet containing SPS and PPS NALs.
+fn make_stap_a(sps: &[u8], pps: &[u8]) -> Vec<u8> {
+    let mut payload = vec![0x78]; // nri=3, type=24 (STAP-A)
+    payload.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+    payload.extend_from_slice(sps);
+    payload.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+    payload.extend_from_slice(pps);
+    payload
+}
+
+// Helper: build FU-A fragments for a NAL body, starting at the given seq.
+// Inlined to avoid needing pub(crate) visibility on diff_fixtures helpers.
+fn make_fu_fragments_inline(nal_body: &[u8], first_seq: u16, frag_size: usize, ts: u32, marker: bool) -> Vec<rtc::rtp::Packet> {
+    let indicator = (nal_body[0] & 0x60) | 28; // preserve nri, type = FU-A
+    let body = &nal_body[1..]; // drop NAL type byte
+    let chunks: Vec<&[u8]> = body.chunks(frag_size).collect();
+    let total = chunks.len();
+    let mut seq = first_seq;
+    let mut out = Vec::new();
+    for (k, chunk) in chunks.iter().enumerate() {
+        let mut fu_header = nal_body[0] & 0x1F;
+        if k == 0 { fu_header |= 0x80; } // start bit
+        if k + 1 == total { fu_header |= 0x40; } // end bit
+        let mut payload = vec![indicator, fu_header];
+        payload.extend_from_slice(chunk);
+        out.push(rtc::rtp::Packet {
+            header: rtc::rtp::Header {
+                sequence_number: seq,
+                timestamp: ts,
+                marker,
+                ..Default::default()
+            },
+            payload: bytes::Bytes::copy_from_slice(&payload),
+        });
+        seq = seq.wrapping_add(1);
+    }
+    out
+}
+
+// Core randomized differential test: run identical packet streams through
+// both the LEGACY and NEW assembly paths with a seeded PRNG, asserting
+// byte-identical AU output for all Complete-vs-Complete pairs.
+#[test]
+fn randomized_differential_matches() {
+    // Seeded PRNG — deterministic across runs.
+    let mut rng = XorShift64::from_seed(0x5DEECE66D_1234u64);
+
+    const TOTAL_ITERATIONS: u64 = 8000; // tuned to fit < 60s host runtime
+    const TS0: u32 = 90_000;
+
+    let mut failures = 0;
+
+    for iter in 0..TOTAL_ITERATIONS {
+        // ---- Build a synthetic "session" of RTP video packets -----------------
+        // Each session has: SPS/PPS STAP-A, then 2-3 frames (IDR FU-A + P-frames + SEI)
+        // with distinct 30fps timestamps so rule-4 stragglers don't silently drop.
+
+        // --- Per-iteration parameters (randomized) ---
+        let frame_count = rng.below(3) + 2; // 2 or 3 frames per session
+        let mut packets = Vec::new();
+
+        // --- SPS/PPS STAP-A at the start ---
+        let sps: Vec<u8> = {
+            // Random-ish SPS bytes (3+ NAL bytes, valid Annex-B)
+            let mut s = Vec::new();
+            s.push(0x67); // forbidden_zero=0, nal_unit_type=7 (SPS)
+            s.push(rng.below(256) as u8);
+            s.push(rng.below(256) as u8);
+            s.push(rng.below(256) as u8);
+            // A few SPS parameters... keep it minimal but valid
+            s.extend_from_slice(&[0x42, 0x00, 0x1E]); // typical SPS constraints
+            s.push(rng.below(256) as u8);
+            s.push(rng.below(256) as u8);
+            s.push(rng.below(256) as u8);
+            s.push(rng.below(256) as u8);
+            s.push(rng.below(256) as u8);
+            s.push(rng.below(256) as u8);
+            s
+        };
+        let pps: Vec<u8> = {
+            let mut p = Vec::new();
+            p.push(0x68); // nal_unit_type=8 (PPS)
+            p.push(rng.below(256) as u8);
+            p.push(rng.below(256) as u8);
+            p.extend_from_slice(&[0xCE, 0x06]); // typical PPS
+            p.push(rng.below(256) as u8);
+            p
+        };
+        // Helper to make a Packet (local to avoid crossing module boundaries)
+        fn make_pkt_local(seq: u16, ts: u32, marker: bool, payload: &[u8]) -> rtc::rtp::Packet {
+            rtc::rtp::Packet {
+                header: rtc::rtp::Header {
+                    sequence_number: seq,
+                    timestamp: ts,
+                    marker,
+                    ..Default::default()
+                },
+                payload: bytes::Bytes::copy_from_slice(payload),
+            }
+        }
+        // Helper to make STAP-A (local)
+        fn make_stap_a_local(sps: &[u8], pps: &[u8]) -> Vec<u8> {
+            let mut payload = vec![0x78]; // nri=3, type=24 (STAP-A)
+            payload.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+            payload.extend_from_slice(sps);
+            payload.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+            payload.extend_from_slice(pps);
+            payload
+        }
+        // Use push instead of extend_from_slice to add single packet
+        packets.push(make_pkt_local(0x0000, TS0, true, &make_stap_a_local(&sps, &pps)));
+
+        // --- Per-frame construction ---
+        let mut frame_ts = TS0;
+        // We use a wide seq space so the session can wrap near 0xFFF0 as allowed.
+        let base_seq: u16 = {
+            let tmp = rng.below(2);
+            if tmp == 0 { 0xFFF0 } else { tmp as u16 }
+        };
+
+        for frame_idx in 0..frame_count {
+            let is_idr = rng.below(2) == 0; // ~50% IDR frames
+            let payload_size = (rng.below(1200) + 1) as usize; // 1..1200 payload bytes
+
+            if is_idr {
+                // IDR frame: start with 0x65 (IDR type), followed by payload bytes
+                let mut nal_body = vec![0x65]; // IDR NAL type
+                // Fill with random-ish bytes
+                for _ in 0..(payload_size.saturating_sub(1)) {
+                    nal_body.push(rng.below(256) as u8);
+                }
+                nal_body.push(0x00); // ensure at least 3 bytes
+
+                // Fragments: vary frag_size; some frames may have single fragment,
+                // others many fragments to exercise the FU-A path.
+                let frag_size = if rng.below(3) == 0 { 1 } else { (rng.below(120) + 1) as usize }; // 1..121
+                // Set marker on the last fragment
+                let frag_ts = frame_ts;
+
+                // Build fragments using inline implementation
+                let mut frag_packets = make_fu_fragments_inline(&nal_body, base_seq.wrapping_add(frame_idx as u16), frag_size, frag_ts, false);
+
+                // Randomly set marker on one of the fragments (not necessarily the last)
+                if rng.below(4) == 0 && frag_packets.len() > 1 {
+                    let marker_idx = frag_packets.len() / 2;
+                    frag_packets[marker_idx].header.marker = true;
+                }
+
+                // occasionally drop the marker entirely (markerless frame)
+                if rng.below(10) == 0 {
+                    // clear marker from all fragments
+                    for pk in &mut frag_packets {
+                        pk.header.marker = false;
+                    }
+                }
+
+                packets.extend_from_slice(&frag_packets);
+            } else {
+                // P-frame: single NAL unit (no FU-A)
+                let mut nal_body = vec![0x21]; // P type = 1, nal_ref_idc=1
+                for _ in 0..(payload_size.saturating_sub(1)) {
+                    nal_body.push(rng.below(256) as u8);
+                }
+                nal_body.push(0x00); // ensure at least 3 bytes
+
+                // P-frame with marker on the last packet of the frame
+                let p_ts = frame_ts;
+                packets.push(make_pkt_local(
+                    base_seq.wrapping_add(frame_idx as u16),
+                    p_ts,
+                    true, // marker
+                    &nal_body,
+                ));
+            }
+
+            // Advance frame timestamp by ~30fps (30000/90000 = 33333 us step)
+            // but randomize slightly so timestamps aren't perfectly contiguous
+            let step = 33333u32 + (rng.below(3000) as u32); // jitter ±3ms
+            frame_ts = frame_ts.wrapping_add(step);
+        }
+
+        // --- Now run both paths ---
+        // Legacy path
+        let legacy_events = crate::api::streaming::rtc::rtp::diff_fixtures::legacy_run(&packets);
+
+        // New path: feed packets with increasing now_us (1ms inter-arrival)
+        // respecting MARKER_FILL_WINDOW_US=12ms and MARKERLESS_BACKSTOP_US=40ms
+        let mut assembler = crate::pipeline::media::assembler::AccessUnitAssembler::new();
+        let mut new_events: Vec<(usize, crate::pipeline::media::assembler::AssemblyOutcome)> = Vec::new();
+        for (i, packet) in packets.iter().enumerate() {
+            let arrival_us = 1_000 + i as u64 * 1_000; // 1 ms inter-arrival
+            if let Some(outcome) = assembler.push(
+                packet.header.sequence_number,
+                packet.header.timestamp,
+                packet.header.marker,
+                &packet.payload,
+                arrival_us,
+            ) {
+                new_events.push((i, outcome));
+            }
+            while let Some(outcome) = assembler.poll_outcome() {
+                new_events.push((i, outcome));
+            }
+        }
+        // Drain any remaining outcomes via flush_due
+        let mut now_us = 1_000 + packets.len() as u64 * 1_000;
+        // The assembler tracks internal state; we pump enough to flush everything.
+        for _ in 0..(packets.len() + 10) {
+            if let Some(outcome) = assembler.flush_due(now_us) {
+                new_events.push((new_events.len(), outcome));
+            }
+            now_us += 1_000;
+            while let Some(outcome) = assembler.poll_outcome() {
+                new_events.push((new_events.len(), outcome));
+            }
+            if now_us > 10_000_000 { break; } // safety cap
+        }
+
+        // --- Collect completes from both paths (inlined, not using private functions) ---
+        // Legacy completes: filter LegacyEvent::Complete
+        let legacy_complete: Vec<(usize, Vec<u8>)> = legacy_events
+            .iter()
+            .filter_map(|event| match event {
+                crate::api::streaming::rtc::rtp::diff_fixtures::LegacyEvent::Complete { at, data, .. } => Some((*at, data.clone())),
+                _ => None,
+            })
+            .collect();
+
+        // New completes: filter AssemblyOutcome::Complete
+        let new_complete: Vec<(usize, Vec<u8>)> = new_events
+            .iter()
+            .filter_map(|(at, outcome)| match outcome {
+                crate::pipeline::media::assembler::AssemblyOutcome::Complete(desc) => Some((*at, desc.data.clone())),
+                _ => None,
+            })
+            .collect();
+
+        // --- Core assertion: where both sides complete, bytes must match ---
+        // Build a map of packet index -> legacy data for frames that completed
+        let mut legacy_by_idx: std::collections::HashMap<usize, Vec<u8>> = std::collections::HashMap::new();
+        for (at, data) in &legacy_complete {
+            legacy_by_idx.insert(*at, data.clone());
+        }
+
+        // Check each new complete against legacy
+        let mut iteration_failed = false;
+        for (at, data) in &new_complete {
+            // Find matching legacy complete by packet index
+            if let Some(ld_data) = legacy_by_idx.get(&at) {
+                // Both sides completed a frame with the same packet index — bytes must match
+                if data != ld_data {
+                    failures += 1;
+                    if failures <= 1 {
+                        // Compute first differing byte offset
+                        let min_len = data.len().min(ld_data.len());
+                        let mut first_diff_idx = 0;
+                        for j in 0..min_len {
+                            if data[j] != ld_data[j] {
+                                first_diff_idx = j;
+                                break;
+                            }
+                        }
+                        let window = 16usize;
+                        let data_start = first_diff_idx.saturating_sub(window);
+                        let data_end = std::cmp::min(data.len(), first_diff_idx + window);
+                        let ld_start = ld_data.len().saturating_sub(window);
+                        let ld_end = std::cmp::min(ld_data.len(), first_diff_idx + window);
+
+                        eprintln!("\n=== RANDOMIZED DIFFERENTIAL MISMATCH ===");
+                        eprintln!("SEED: 0x{:016X}", 0x5DEECE66D_1234u64);
+                        eprintln!("ITERATION: {}", iter);
+                        eprintln!("FIRST DIFFERING BYTE OFFSET: {}", first_diff_idx);
+                        eprintln!("LEGACY bytes [{:02?}..{:02?}]: {:?}", 
+                            if data_start < data.len() { &data[data_start..std::cmp::min(data.len(), data_start + window)] } else { &[] },
+                            if data_start < data.len() { data_start } else { 0 },
+                            &data[data_start..std::cmp::min(data.len(), data_start + window)]
+                        );
+                        eprintln!("NEW    bytes [{:02?}..{:02?}]: {:?}", 
+                            if ld_start < ld_data.len() { &ld_data[ld_start..std::cmp::min(ld_data.len(), ld_start + window)] } else { &[] },
+                            if ld_start < ld_data.len() { ld_start } else { 0 },
+                            &ld_data[ld_start..std::cmp::min(ld_data.len(), ld_start + window)]
+                        );
+
+                        eprintln!("LEGACY full data len: {} bytes, first 32: {:?}", ld_data.len(), &ld_data[..std::cmp::min(32usize, ld_data.len())]);
+                        eprintln!("NEW    full data len: {} bytes, first 32: {:?}", data.len(), &data[..std::cmp::min(32usize, data.len())]);
+                    }
+                    iteration_failed = true;
+                    break; // stop processing this iteration's completes
+                }
+            }
+        }
+
+        if iteration_failed {
+            panic!(
+                "randomized_differential_matches: iteration {} FAILED with byte mismatch (seed=0x{:016X})",
+                iter, 0x5DEECE66D_1234u64
+            );
+        }
+    }
+
+    // If we reach here, all iterations passed (no panics)
+    eprintln!("randomized_differential_matches: {} iterations, 0 failures", TOTAL_ITERATIONS);
+}
+
 pub(crate) struct TwccReport {
     pub media_ssrc: u32,
     pub base_sequence_number: u16,
