@@ -194,8 +194,13 @@ impl VideoReceiver {
         }
     }
 
-    /// Sends Receiver Estimated Max Bitrate to keep the console's estimate fresh.
-    /// Currently not called; kept for quick re-enable.
+    /// Sends Receiver Estimated Max Bitrate — CONSTANT 15 Mbps @500 ms to keep
+    /// the console's estimate fresh. VERIFIED 2026-10-30: this IS called every
+    /// pump (session.rs) — the old "Currently not called" note was false.
+    /// Chrome dumps: Chrome negotiates goog-remb but sends ZERO REMB packets;
+    /// the console paces from TWCC instead. So this is our own experiment
+    /// with weak prior (verdict #8 ruled computed REMB wrong; the const
+    /// sidesteps computation but advertises 15 Mbps ≫ wifi capacity anyway).
     pub(crate) fn send_remb(&mut self, peer: &mut RTCPeerConnection, now: Instant) {
         let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else {
             return;
@@ -218,9 +223,15 @@ impl VideoReceiver {
         }
     }
 
-    /// Manual transport-cc feedback: per-packet arrival deltas for the console's
-    /// annotated RTP. The pcap of a smooth Safari session showed ~17 of these per
-    /// second; the console's sender pacing depends on them.
+    /// Manual transport-cc feedback intent: per-packet arrival deltas for the
+    /// console's annotated RTP (Safari pcap ~17/s; chrome dumps show the
+    /// console's pacing consumes TWCC — 506-1290 feedback/session, zero REMB).
+    /// VERIFIED 2026-10-30: this has NEVER sent a packet — take_twcc_report()
+    /// always returns None (no producer in the tree) AND our offer carried no
+    /// twcc extmap (last-offer.sdp: zero a=extmap lines), so the console
+    /// never annotated. twcc_sent=0 in every device CSV. Revival: 2a offer
+    /// the extmap, 2c rebuild the tracker (rtc twcc Recorder fed from
+    /// receive()) behind a flag, TWCC-alone, watch lag.
     pub(crate) fn send_twcc(&mut self, peer: &mut RTCPeerConnection, now: Instant) {
         let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else {
             return;

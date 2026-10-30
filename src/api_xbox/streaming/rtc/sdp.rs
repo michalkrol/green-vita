@@ -1,5 +1,9 @@
 /// Finds the extmap id the ANSWER negotiated for `uri` (e.g. transport-cc), so
 /// inbound RTP header extensions can be parsed without crate internals.
+/// VERIFIED 2026-10-30: against our own last-offer.sdp this returns None
+/// (we offer no extmaps); callers unwrap_or(0), which read downstream as
+/// "negotiated id 0" and masked "never negotiated" as "negotiated but
+/// ignored". Becomes meaningful once 2a puts a=extmap lines in the offer.
 pub(super) fn extract_extmap_id(sdp: &str, uri: &str) -> Option<u8> {
     for line in sdp.lines() {
         let Some(rest) = line.strip_prefix("a=extmap:") else {

@@ -17,10 +17,28 @@ pub(crate) type FeedbackPeer = RTCPeerConnection<FeedbackChain>;
 
 #[define_opaque(FeedbackChain)]
 pub(crate) fn feedback_registry() -> Result<Registry<FeedbackChain>> {
-    // Fully silent registry: transport-cc feedback is generated MANUALLY in
-    // media.rs/rtp.rs (the crate's TwccReceiverInterceptor never fired — tw:0
-    // despite negotiated extmap). RR/SR, REMB and NACK variants all proved
-    // inert or harmful for drift; only manual TWCC + REMB flow.
+    // Fully silent registry. VERIFIED 2026-10-30 (chrome-dump reanalysis +
+    // device last-offer.sdp ground truth) — corrected history:
+    // - The "manual TWCC" path NEVER sent a packet: take_twcc_report() ->
+    //   None with no TwccReport producer in the tree, twcc_sent=0 in every
+    //   device CSV. The old claim "only manual TWCC + REMB flow" was already
+    //   stale when written (RECOVERY-PLAN:9 documents the None itself).
+    // - "TwccReceiverInterceptor never fired — tw:0 despite negotiated
+    //   extmap" was a WRONG diagnosis: our offer contains zero a=extmap
+    //   lines (verified last-offer.sdp), extract_extmap_id returns None and
+    //   unwrap_or(0) masked it; rtc skips id 0 by design. Nothing was ever
+    //   negotiated.
+    // - "the console never annotates toward us" (RECOVERY-PLAN:9) is
+    //   REFUTED by chrome-dumps: the same console annotated packets densely
+    //   enough for Chrome to emit 506-1290 TWCC feedback/session (Chrome's
+    //   diet: TWCC+RR, zero REMB).
+    // - The "~10x lag" folklore (RECOVERY-PLAN:10, arch 16.2 row5) cites
+    //   THIS comment and only this comment — circular, no measurement
+    //   exists — and it bundled NACK/PLI *responders* with TWCC.
+    // Plan (A2, one variable per build): 2a add transport-cc fb + extmaps
+    // (abs-send-time, transport-wide-cc, video-timing) to the offer — also
+    // un-deadens the vt census; 2b feed abs-send-time to Q; 2c flag-gated
+    // TWCC-alone send with lag watch.
     Ok(Registry::new())
 }
 
@@ -39,11 +57,17 @@ pub(crate) fn create(
     ice_servers: Vec<RTCIceServer>,
     channels: &[RtcDataChannelConfig],
 ) -> Result<(FeedbackPeer, Vec<RTCDataChannelId>)> {
-    // No automatic RTCP (see feedback_registry): pacing guidance comes from the
-    // b=AS/TIAS lines injected into the SDP offer. The full default set
-    // (NACK/TWCC/PLI responses) made lag grow ~10x faster, and even honest
-    // RR/SR reports are now suspected of feeding the console's estimator
-    // misleading jitter figures.
+    // No automatic RTCP (see feedback_registry). Corrections 2026-10-30:
+    // - "pacing guidance comes from b=AS/TIAS" is DISPUTED inside our own
+    //   corpus: arch 16.3.6 states the console ignores b=AS/TIAS (we inject
+    //   b=AS:5000 today; effect undocumented either way).
+    // - "full default set made lag grow ~10x" originates in this comment
+    //   (RECOVERY-PLAN:222 quotes peer.rs; arch 16.2 quotes RECOVERY-PLAN) —
+    //   circular and unsourced; it covered NACK/PLI responders + TWCC, not
+    //   TWCC-send-alone, which has never been tested.
+    // - "RR/SR feed the console misleading jitter": same unsourced lineage.
+    // Verified live behaviour: CONSTANT 15 Mbps REMB @500 ms is the only
+    // feedback we send; Chrome, by contrast, sends zero REMB ever.
     let registry = feedback_registry()?;
 
     let configuration = RTCConfigurationBuilder::new()

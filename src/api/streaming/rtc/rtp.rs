@@ -363,6 +363,10 @@ impl VideoRtp {
         // the in-flight parity drop) and Damaged outcomes mirror the arm's
         // statements in dispatch_new_authority.
         // Video-timing census (extmap id=7): parse six 16-bit stage deltas.
+        // 2026-10-30: DEAD TELEMETRY — our offer contains no a=extmap lines
+        // (last-offer.sdp), so the console never sends video-timing:
+        // vt_exit_count/vt_max are 0 in every gate session. Lights up when
+        // 2a adds the extmap (S0's "vt live" precondition depends on it).
         if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == 7)
             && ext.payload.len() == 13
         {
@@ -710,7 +714,13 @@ impl VideoRtp {
         Some((wall_ms - media_ms, wall_ms, media_ms))
     }
     pub(crate) fn total_bytes(&self) -> u64 { self.total_bytes }
+    /// 2026-10-30: stub 0 feeding the twcc_stride CSV — real value needs the
+    /// 2c tracker (median gap between observed transport-wide sequence numbers).
     pub(crate) fn twcc_median_stride(&self) -> u16 { 0 }
+    /// 2026-10-30: always None — crate-wide grep shows no TwccReport producer
+    /// anywhere, so send_twcc() no-ops every call and twcc_sent stays 0.
+    /// Half of the abandoned manual-TWCC path; rebuild at 2c (feed rtc's
+    /// twcc Recorder from receive() once 2a negotiates the extmap).
     pub(crate) fn take_twcc_report(&mut self, _media_ssrc: u32) -> Option<TwccReport> { None }
 }
 
@@ -1122,6 +1132,9 @@ fn randomized_differential_matches() {
     eprintln!("randomized_differential_matches: {} iterations, 0 failures", TOTAL_ITERATIONS);
 }
 
+/// 2026-10-30: field type of the never-built manual TWCC path — nothing in
+/// the crate constructs this (crate-wide grep); paired with take_twcc_report's
+/// None. Rebuild target for 2c.
 pub(crate) struct TwccReport {
     pub media_ssrc: u32,
     pub base_sequence_number: u16,
@@ -1131,6 +1144,12 @@ pub(crate) struct TwccReport {
     pub recv_deltas: Vec<rtcp::transport_feedbacks::transport_layer_cc::RecvDelta>,
 }
 
+/// 2026-10-30: this stub masked a real gap — worker.rs extracts the answer's
+/// twcc extmap id and this throws it away; upstream `unwrap_or(0)` means
+/// "never negotiated", not "id 0": our offer has no a=extmap lines at all
+/// (verified last-offer.sdp). rtc's TwccReceiver skips id 0, which is why
+/// "interceptor never fired — tw:0 despite negotiated extmap" was a wrong
+/// diagnosis. Wire this when 2a adds the extmap to the offer.
 pub(crate) fn set_negotiated_twcc_ext_id(_id: u8) {}
 
 fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
