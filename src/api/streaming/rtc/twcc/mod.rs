@@ -6,3 +6,5 @@
 
 pub(crate) mod arrival_time_map;
 pub(crate) mod recorder;
+#[cfg(test)]
+pub(crate) mod validation_tests;
