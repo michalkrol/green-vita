@@ -24,7 +24,7 @@ pub(crate) struct RowExtras {
 
 const MAX_ROWS: usize = 20_000;
 /// CSV header for per-session metrics log. Updated in sync with the cols array in write_row.
-const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,q_us,q_us_max,q_slope_mpm,sh_match,sh_bound_mismatch,sh_bytes_mismatch,sh_class_mismatch,sh_new_damaged_old_complete,sh_new_complete_old_abandon,sh_hold_saved,sh_legacy_unmatched,sh_new_unmatched,au_submitted,au_no_startcode,au_idr_submitted,sh_reject_bound_artifact,late_after_resolve,dam_markerless,dam_first_slice,dam_holes";
+const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,q_us,q_us_max,q_slope_mpm,sh_match,sh_bound_mismatch,sh_bytes_mismatch,sh_class_mismatch,sh_new_damaged_old_complete,sh_new_complete_old_abandon,sh_hold_saved,sh_legacy_unmatched,sh_new_unmatched,au_submitted,au_no_startcode,au_idr_submitted,sh_reject_bound_artifact,late_after_resolve,dam_markerless,dam_first_slice,dam_holes,rtp_ext_twcc,rtcp_rtpfb_any";
 
 /// RAM-buffered CSV log for a streaming session.
 /// Rows are accumulated at 1 Hz from status() and flushed once at session end.
@@ -59,7 +59,7 @@ impl MetricsCsvLog {
         let t_s = self.started_at.elapsed().as_secs();
         // Fixed-size array so the column count is compiler-enforced and can never
         // drift out of sync with HEADER. Order MUST match HEADER below.
-        let cols: [i64; 70] = [
+        let cols: [i64; 72] = [
             t_s as i64,
             snapshot.rtp_assembly_sum_us as i64,
             snapshot.rtp_assembly_count as i64,
@@ -130,6 +130,8 @@ impl MetricsCsvLog {
             snapshot.dam_markerless as i64,
             snapshot.dam_first_slice as i64,
             snapshot.dam_holes as i64,
+            snapshot.rtp_ext_twcc as i64,
+            snapshot.rtcp_rtpfb_any as i64,
         ];
         let row = cols
             .iter()
@@ -196,7 +198,7 @@ impl MetricsCsvLog {
 // Private helper: build a CSV row string from a MetricsSnapshot (mirrors write_row logic).
 fn csv_row_from_snapshot(snapshot: &MetricsSnapshot) -> String {
     // Same 53-element layout as the cols array in write_row, using i64 values.
-    let cols: [i64; 70] = [
+    let cols: [i64; 72] = [
         0 as i64,                                                    // t_s
         snapshot.rtp_assembly_sum_us as i64,
         snapshot.rtp_assembly_count as i64,
@@ -267,6 +269,8 @@ fn csv_row_from_snapshot(snapshot: &MetricsSnapshot) -> String {
         snapshot.dam_markerless as i64,
         snapshot.dam_first_slice as i64,
         snapshot.dam_holes as i64,
+        snapshot.rtp_ext_twcc as i64,
+        snapshot.rtcp_rtpfb_any as i64,
     ];
     cols.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(",")
 }
@@ -342,6 +346,8 @@ mod tests {
             dam_markerless: 0,
             dam_first_slice: 0,
             dam_holes: 0,
+            rtp_ext_twcc: 0,
+            rtcp_rtpfb_any: 0,
         };
 
         let row = csv_row_from_snapshot(&snapshot);
@@ -422,6 +428,8 @@ mod tests {
             dam_markerless: 0,
             dam_first_slice: 0,
             dam_holes: 0,
+            rtp_ext_twcc: 0,
+            rtcp_rtpfb_any: 0,
         };
 
         let row = csv_row_from_snapshot(&snapshot);

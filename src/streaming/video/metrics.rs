@@ -71,6 +71,9 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) dam_markerless: u64,
     pub(crate) dam_first_slice: u64,
     pub(crate) dam_holes: u64,
+    // 2c diagnostics:
+    pub(crate) rtp_ext_twcc: u64,   // packets whose negotiated TWCC ext id parsed
+    pub(crate) rtcp_rtpfb_any: u64, // any RTCP PT=205 that left the socket
 }
 
 pub(crate) struct VideoMetrics {
@@ -138,6 +141,8 @@ pub(crate) struct VideoMetrics {
     pub(crate) dam_markerless: AtomicU64,
     pub(crate) dam_first_slice: AtomicU64,
     pub(crate) dam_holes: AtomicU64,
+    pub(crate) rtp_ext_twcc: AtomicU64,
+    pub(crate) rtcp_rtpfb_any: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -205,6 +210,8 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     dam_markerless: AtomicU64::new(0),
     dam_first_slice: AtomicU64::new(0),
     dam_holes: AtomicU64::new(0),
+    rtp_ext_twcc: AtomicU64::new(0),
+    rtcp_rtpfb_any: AtomicU64::new(0),
 };
 
 
@@ -364,6 +371,8 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         dam_markerless: METRICS.dam_markerless.swap(0, Ordering::Relaxed),
         dam_first_slice: METRICS.dam_first_slice.swap(0, Ordering::Relaxed),
         dam_holes: METRICS.dam_holes.swap(0, Ordering::Relaxed),
+        rtp_ext_twcc: METRICS.rtp_ext_twcc.swap(0, Ordering::Relaxed),
+        rtcp_rtpfb_any: METRICS.rtcp_rtpfb_any.swap(0, Ordering::Relaxed),
     }
 }
 
@@ -426,6 +435,8 @@ pub(crate) fn reset_session_metrics() {
     METRICS.dam_markerless.store(0, Ordering::Relaxed);
     METRICS.dam_first_slice.store(0, Ordering::Relaxed);
     METRICS.dam_holes.store(0, Ordering::Relaxed);
+    METRICS.rtp_ext_twcc.store(0, Ordering::Relaxed);
+    METRICS.rtcp_rtpfb_any.store(0, Ordering::Relaxed);
 }
 
     /// Flush the RAM-buffered metrics CSV log to disk once at session end.

@@ -277,6 +277,15 @@ impl VideoRtp {
         if !packet.header.extensions.is_empty() {
             METRICS.rtp_ext_any.fetch_add(1, Ordering::Relaxed);
         }
+        // 2c diagnostic: does the console annotate the TWCC extension itself
+        // (answer-negotiated id)? rtp_ext_any can't discriminate WHICH ext
+        // arrived — this splits "console skips twcc" from "interceptor bug".
+        let twcc_seen_id = NEG_TWCC_EXT_ID.load(Ordering::Relaxed);
+        if twcc_seen_id != 0
+            && packet.header.extensions.iter().any(|ext| ext.id == twcc_seen_id)
+        {
+            METRICS.rtp_ext_twcc.fetch_add(1, Ordering::Relaxed);
+        }
 
         let packet_timestamp = packet.header.timestamp;
 

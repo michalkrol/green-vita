@@ -123,6 +123,13 @@ impl RtcTransport {
             // registry is silent and the manual sender is stubbed; this
             // counter goes live with 2c (flag-gated TWCC-alone send).
             let bytes = &outgoing.message;
+            // 2c diagnostic: ANY RTPFB (PT=205) leaving, any FMT — splits
+            // "interceptor emits nothing" from "emits but mis-tagged".
+            if bytes.len() >= 2 && bytes[1] == 205 {
+                crate::streaming::video::metrics::METRICS
+                    .rtcp_rtpfb_any
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             if bytes.len() >= 2 && bytes[1] == 205 && bytes[0] & 0x1F == 15 {
                 crate::streaming::video::metrics::METRICS
                     .twcc_sent
