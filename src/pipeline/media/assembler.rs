@@ -91,8 +91,8 @@ pub struct AccessUnitAssembler {
     /// yet (allows returning multiple outcomes per pump cycle if several AUs
     /// age out). Documented as acceptable since this is not the packet hot path.
     resolved_queue: VecDeque<AssemblyOutcome>,
-    /// Monotonic timestamp (µs) of the first packet in the current AU, used
-    /// for the ~40 ms markerless backstop in `flush_due` (§11 rule 2).
+    /// Monotonic timestamp (µs) of the first packet in the current AU —
+    /// feeds `AuDescriptor::first_arrival_us` (assembly-time metric).
     au_first_arrival_us: u64,
     /// Accumulated between-AU gap counter (whole AUs the console skipped/lost
     /// between frames, §6.6 bullet 4).
@@ -390,18 +390,21 @@ impl AccessUnitAssembler {
     /// Returns one outcome per call (queues internally if several AUs age out;
     /// documented as acceptable since this is not the packet hot path).
     pub fn flush_due(&mut self, now_us: u64) -> Option<AssemblyOutcome> {
-        // Rule 2 (§11): a timer NEVER produces Complete. Marker + holes gets
-        // ≤12 ms of fill (A19); a markerless AU gets the ~40 ms backstop —
-        // both resolve through resolve_au_now, which requires the marker for
-        // Complete and therefore yields Damaged.
+        // Rule 2 (§11, amended 2026-10-30): a timer NEVER produces Complete.
+        // Marker + holes gets ≤12 ms of fill (A19) and then resolves
+        // (Complete if filled, else Damaged). A markerless AU has NO timer —
+        // it waits for a newer timestamp (push's force-out path), matching
+        // legacy, whose force-out was a stub. The former ~40 ms backstop was
+        // retired: the marker is a frame's LAST byte, so at low bandwidth it
+        // routinely arrives >40 ms after the first packet and the backstop
+        // killed healthy frames mid-transmission while arming rule 4 against
+        // their own catch-up packets (8B-GATE-REPORT §3, matrix E follow-ups).
         let deadline = match self.current_au.as_ref() {
             None => return None,
             Some(au) if au.marker_seen => {
                 now_us.saturating_sub(au.marker_seen_at_us) > MARKER_FILL_WINDOW_US
             }
-            Some(_) => {
-                now_us.saturating_sub(self.au_first_arrival_us) > MARKERLESS_BACKSTOP_US
-            }
+            Some(_) => false,
         };
         if !deadline {
             return None;
@@ -459,10 +462,6 @@ const ANNEXB_START_CODE: [u8; 4] = [0x00, 0x00, 0x00, 0x01];
 /// Rule 2 (§11): fill window after a marker arrives on an AU that still has
 /// holes (A19 reorder window).
 const MARKER_FILL_WINDOW_US: u64 = 12_000;
-
-/// Rule 2 (§11): backstop for a markerless AU — resolves Damaged, never
-/// Complete (legacy requires the marker too, just via force-out).
-const MARKERLESS_BACKSTOP_US: u64 = 40_000;
 
 /// AU size cap — matches legacy `MAX_H264_ACCESS_UNIT_BYTES` in rtp.rs.
 const MAX_AU_BYTES: usize = 2 * 1024 * 1024;

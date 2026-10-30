@@ -1958,35 +1958,41 @@ mod diff_fixtures {
     }
 
     #[test]
-    fn markerless_resolves_damaged_only_at_40ms_backstop() {
-        // §11 rule 2: a timer NEVER yields Complete. Markerless AUs resolve
-        // Damaged at the ~40 ms backstop — the old 12 ms Complete-on-timer is
-        // exactly the defect the 8a gate exposed (280 byte mismatches).
+    fn markerless_resolves_damaged_only_at_newer_ts() {
+        // §11 rule 2 (amended 2026-10-30): a timer NEVER resolves a
+        // markerless AU — flush_due has no markerless deadline at all. The
+        // ~40 ms backstop was retired: the marker is a frame's last byte, so
+        // slow/stalled links routinely deliver it late and the backstop killed
+        // healthy frames mid-transmission, arming rule 4 against their own
+        // catch-up packets (8B-GATE-REPORT §3). Markerless AUs now resolve
+        // Damaged only on a newer-timestamp force-out — exactly legacy, whose
+        // force-out was a stub.
         let payload = single_nal(0x01, 0x10);
         let mut assembler = AccessUnitAssembler::new();
         assert!(assembler.push(90, TS0, false, &payload, 100_000).is_none());
-        assert!(
-            assembler.flush_due(113_000).is_none(),
-            "13 ms: a markerless AU must NOT resolve on a timer"
-        );
-        assert!(
-            assembler.flush_due(139_000).is_none(),
-            "39 ms: still inside the 40 ms backstop"
-        );
-        match assembler.flush_due(141_000) {
-            Some(AssemblyOutcome::Damaged(desc)) => {
-                assert!(
-                    desc.data.is_empty(),
-                    "backstop resolution must be Damaged with no bytes"
-                );
-            }
-            other => panic!("expected Damaged at the 40 ms backstop, got {other:?}"),
+        for t in [113_000, 139_000, 141_000, 500_000, 5_000_000] {
+            assert!(
+                assembler.flush_due(t).is_none(),
+                "markerless must never resolve on a timer ({t} µs)"
+            );
         }
-        // Legacy never completes a markerless frame on its own either.
+        // Legacy parity: a markerless frame never completes by itself.
         assert!(
             legacy_run(&[pkt(90, TS0, false, &payload)]).is_empty(),
             "legacy never completes a markerless frame by itself"
         );
+        // A newer timestamp force-outs the markerless AU -> Damaged, no bytes.
+        let payload2 = single_nal(0x01, 0x20);
+        let direct = assembler.push(91, TS0.wrapping_add(9_000), false, &payload2, 5_100_000);
+        let outcome = direct.or_else(|| assembler.poll_outcome());
+        match outcome {
+            Some(AssemblyOutcome::Damaged(desc)) => {
+                assert_eq!(desc.rtp_ts, TS0, "the older markerless AU resolves");
+                assert!(desc.data.is_empty(), "§4: Damaged carries no bytes");
+                assert!(!desc.marker_seen, "markerless by definition");
+            }
+            other => panic!("newer-ts force-out must be Damaged, got {other:?}"),
+        }
     }
 
     #[test]
