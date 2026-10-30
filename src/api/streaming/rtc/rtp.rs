@@ -257,6 +257,16 @@ impl VideoRtp {
         }
         self.total_bytes += 12 + packet.payload.len() as u64;
 
+        // 2a observability (2026-10-30): count packets carrying at least one
+        // PARSED inbound header extension. The rtp_ext_any column previously
+        // had no writer at all — a write-never placeholder like twcc_sent.
+        // With 690f0c7 negotiating the extmaps this discriminates "console
+        // annotates nothing" from "our parse map is broken" (vt_exit_count
+        // alone can't: it also requires video-timing payload == 13 bytes).
+        if !packet.header.extensions.is_empty() {
+            METRICS.rtp_ext_any.fetch_add(1, Ordering::Relaxed);
+        }
+
         let packet_timestamp = packet.header.timestamp;
 
         crate::streaming::video::rtp_dump_log::record(
