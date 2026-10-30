@@ -50,9 +50,15 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
         let sdp = sdp::cap_video_bitrate(&offer.sdp, self.video_bitrate_kbps);
         let sdp = sdp::request_video_fps(&sdp, 30);
         let answer = self.stream.send_sdp_offer(&sdp).await?;
+        // 2a: inbound extension ids from the ANSWER (0 = still not
+        // negotiated — pre-2a offers carried none and unwrap_or(0) hid that).
         let twcc_id = sdp::extract_extmap_id(&answer, super::peer::TWCC_URI).unwrap_or(0);
-        eprintln!("negotiated twcc ext id: {twcc_id}");
+        let ast_id = sdp::extract_extmap_id(&answer, super::peer::ABS_SEND_TIME_URI).unwrap_or(0);
+        let vt_id = sdp::extract_extmap_id(&answer, super::peer::VIDEO_TIMING_URI).unwrap_or(0);
+        eprintln!("negotiated ext ids: twcc={twcc_id} abs-send-time={ast_id} video-timing={vt_id}");
         crate::api::streaming::rtc::rtp::set_negotiated_twcc_ext_id(twcc_id);
+        crate::api::streaming::rtc::rtp::set_negotiated_ast_ext_id(ast_id);
+        crate::api::streaming::rtc::rtp::set_negotiated_vt_ext_id(vt_id);
         Ok(answer)
     }
 }

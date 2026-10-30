@@ -191,3 +191,37 @@ mod tests {
         assert_eq!(cap_video_bitrate(offer, 8_000), offer);
     }
 }
+
+#[cfg(test)]
+mod extmap_tests {
+    use super::extract_extmap_id;
+
+    /// 2a (2026-10-30): extractor proven against real answer-style lines
+    /// (pre-2a it never ran against a single extmap line — our offers had
+    /// none, so every call returned None and unwrap_or(0) masked it).
+    #[test]
+    fn extracts_negotiated_ids_from_answer_lines() {
+        let sdp = "m=video 9 UDP/TLS/RTP/SAVPF 102\r\n\
+            a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\n\
+            a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\n\
+            a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/video-timing\r\n";
+        assert_eq!(
+            extract_extmap_id(sdp, "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"),
+            Some(3)
+        );
+        assert_eq!(
+            extract_extmap_id(sdp, "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"),
+            Some(2)
+        );
+        assert_eq!(
+            extract_extmap_id(sdp, "http://www.webrtc.org/experiments/rtp-hdrext/video-timing"),
+            Some(7)
+        );
+        assert_eq!(
+            extract_extmap_id(sdp, "http://www.webrtc.org/experiments/rtp-hdrext/color-space"),
+            None
+        );
+        // Pre-2a shape: no extmap lines at all -> None (NOT id 0).
+        assert_eq!(extract_extmap_id("m=video 9 UDP/TLS/RTP/SAVPF 102\r\n", "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"), None);
+    }
+}

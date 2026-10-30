@@ -362,12 +362,15 @@ impl VideoRtp {
         // arm) deleted — the new assembler owns stale-ts rejection (rule 4 +
         // the in-flight parity drop) and Damaged outcomes mirror the arm's
         // statements in dispatch_new_authority.
-        // Video-timing census (extmap id=7): parse six 16-bit stage deltas.
-        // 2026-10-30: DEAD TELEMETRY — our offer contains no a=extmap lines
-        // (last-offer.sdp), so the console never sends video-timing:
-        // vt_exit_count/vt_max are 0 in every gate session. Lights up when
-        // 2a adds the extmap (S0's "vt live" precondition depends on it).
-        if let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == 7)
+        // Video-timing census: parse six 16-bit stage deltas. Since 2a the
+        // id is the ANSWER-negotiated value (rtc assigns from registration
+        // order; chrome's sessions happened to use 7 — the old hardcoded 7
+        // could never match an offer with zero extmaps: vt_exit_count was 0
+        // in every pre-2a gate session, i.e. dead telemetry). id 0 = not
+        // negotiated yet keeps the census safely off until signaling lands.
+        let vt_ext_id = NEG_VT_EXT_ID.load(Ordering::Relaxed);
+        if vt_ext_id != 0
+            && let Some(ext) = packet.header.extensions.iter().find(|ext| ext.id == vt_ext_id)
             && ext.payload.len() == 13
         {
             for (i, slot) in self.vt_max.iter_mut().enumerate() {
@@ -1144,13 +1147,32 @@ pub(crate) struct TwccReport {
     pub recv_deltas: Vec<rtcp::transport_feedbacks::transport_layer_cc::RecvDelta>,
 }
 
-/// 2026-10-30: this stub masked a real gap — worker.rs extracts the answer's
-/// twcc extmap id and this throws it away; upstream `unwrap_or(0)` means
-/// "never negotiated", not "id 0": our offer has no a=extmap lines at all
-/// (verified last-offer.sdp). rtc's TwccReceiver skips id 0, which is why
-/// "interceptor never fired — tw:0 despite negotiated extmap" was a wrong
-/// diagnosis. Wire this when 2a adds the extmap to the offer.
-pub(crate) fn set_negotiated_twcc_ext_id(_id: u8) {}
+/// Negotiated inbound extension ids from the ANSWER (2a). 0 = not negotiated
+/// — our pre-2a offer carried no extmaps at all, and extract_extmap_id's
+/// unwrap_or(0) used to mask exactly that as "id 0". Set once per session in
+/// worker::exchange_sdp after signaling.
+static NEG_TWCC_EXT_ID: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static NEG_AST_EXT_ID: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static NEG_VT_EXT_ID: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// 2a: store the answer-negotiated TWCC extension id (this was an empty stub
+/// that discarded the value — the "tw:0 despite negotiated extmap" mystery
+/// was really "never negotiated, then masked"). Consumed by 2c's tracker;
+/// rtc's TwccReceiver derives its own copy from StreamInfo.
+pub(crate) fn set_negotiated_twcc_ext_id(id: u8) {
+    NEG_TWCC_EXT_ID.store(id, Ordering::Relaxed);
+}
+
+/// 2a: abs-send-time id — consumed by 2b (Q estimator send-time source).
+pub(crate) fn set_negotiated_ast_ext_id(id: u8) {
+    NEG_AST_EXT_ID.store(id, Ordering::Relaxed);
+}
+
+/// 2a: video-timing id — consumed by the vt census in `receive()`.
+pub(crate) fn set_negotiated_vt_ext_id(id: u8) {
+    NEG_VT_EXT_ID.store(id, Ordering::Relaxed);
+}
+
 
 fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
     let distance = candidate.wrapping_sub(reference);

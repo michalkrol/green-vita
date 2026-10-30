@@ -12,13 +12,25 @@ use rtc::peer_connection::configuration::media_engine::{
 };
 use rtc::peer_connection::transport::RTCIceServer;
 use rtc::rtp_transceiver::rtp_sender::{
-    RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RtpCodecKind,
+    RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability,
+    RtpCodecKind,
 };
 
-/// transport-wide-cc URI kept for answer SDP parsing in worker.rs; the extension
-/// is no longer offered since the console never annotates toward us at useful density.
+/// Inbound header-extension URIs offered since 2a (2026-10-30). The old note
+/// here — "the extension is no longer offered since the console never
+/// annotates toward us at useful density" — was refuted by the chrome dumps:
+/// the same console annotates Chrome's negotiated extmaps densely enough for
+/// 506-1290 TWCC feedback/session. Pre-2a we negotiated NO extensions at all,
+/// so annotation was structurally impossible (and extract_extmap_id's
+/// unwrap_or(0) masked "never negotiated" as "id 0"). Answer ids are stored
+/// per-URI in rtp.rs; never hardcoded (rtc assigns ids from registration
+/// order — the old vt census hardcoding id 7 could never match).
 pub(super) const TWCC_URI: &str =
     "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
+pub(super) const ABS_SEND_TIME_URI: &str =
+    "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time";
+pub(super) const VIDEO_TIMING_URI: &str =
+    "http://www.webrtc.org/experiments/rtp-hdrext/video-timing";
 
 pub(super) fn create(video_fps: u32, video_h264_profile: H264Profile) -> Result<(RTCPeerConnection, XboxRtcProtocol)> {
     let mut media_engine = MediaEngine::default();
@@ -54,10 +66,16 @@ pub(super) fn create(video_fps: u32, video_h264_profile: H264Profile) -> Result<
 }
 
 fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32, video_h264_profile: H264Profile) -> Result<()> {
-    // Bare-minimum offer: H264 video + Opus audio, only the feedback types the
-    // console actually echoes (goog-remb, ccm fir, nack pli). No header extensions,
-    // no RTX, no FEC, no extra profiles — these all proved inert for drift and
-    // some (#21 annotation gating, #35 browser-shape SDP) actively regressive.
+    // Offer: H264 video + Opus audio; feedback = goog-remb, ccm fir, nack pli
+    // plus transport-cc (2a, 2026-10-30). Still no RTX, no FEC, no extra
+    // profiles (kept: those proved inert/regressive — #35 browser-shape SDP).
+    // 2a also re-adds header extensions: the previous "No header extensions"
+    // rationale rested on "the console never annotates toward us", which the
+    // chrome dumps refute (same console, dense annotation once negotiated),
+    // and on "#21 annotation gating" experiments made before any extension
+    // was ever negotiated here. The absences had measurable cost: vt census
+    // dead (vt_exit_count=0 every gate session), abs-send-time unparsed
+    // (2b blocked), twcc annotation impossible (2c blocked).
 
     media_engine.register_codec(
         RTCRtpCodecParameters {
@@ -87,12 +105,23 @@ fn register_vita_codecs(media_engine: &mut MediaEngine, video_fps: u32, video_h2
                     RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
                     RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
                     RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
+                    RTCPFeedback { typ: "transport-cc".to_owned(), parameter: "".to_owned() },
                 ],
             },
             payload_type: 102,
         },
         RtpCodecKind::Video,
     )?;
+
+    // 2a: inbound header extensions. Ids come back in the ANSWER and are
+    // stored per-URI in worker.rs exchange_sdp — never hardcoded.
+    for uri in [TWCC_URI, ABS_SEND_TIME_URI, VIDEO_TIMING_URI] {
+        media_engine.register_header_extension(
+            RTCRtpHeaderExtensionCapability { uri: uri.to_owned() },
+            RtpCodecKind::Video,
+            None,
+        )?;
+    }
 
     Ok(())
 }
