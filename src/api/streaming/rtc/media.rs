@@ -15,6 +15,12 @@ use crate::api_xbox::streaming::control::input::{SEND_RENDER_TIMING_METADATA, qu
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
 const REMB_INTERVAL: Duration = Duration::from_millis(500);
 const TWCC_INTERVAL: Duration = Duration::from_millis(100);
+/// RR-first probe (31/10): Chrome sends RR ~1.2/s (pcap 20261030: median
+/// 0.83 s inter-arrival) — match that family.
+const RR_INTERVAL: Duration = Duration::from_millis(800);
+/// One-variable gate (A2 method): RTCP Receiver Reports on/off. The passive
+/// SR sensor inside send_rr is NOT gated — it observes, never transmits.
+const SEND_RR: bool = true;
 /// Matches the SDP bitrate cap so pacing never becomes the limit.
 /// Deliberate UNDER-report of the link capacity, sent to the console every
 /// `REMB_INTERVAL` (policy: latency over quality).
@@ -55,6 +61,7 @@ pub(crate) struct VideoReceiver {
     last_bw_bytes: u64,
     last_remb_at: Option<Instant>,
     last_twcc_at: Option<Instant>,
+    last_rr_at: Option<Instant>,
     stats: VideoStats,
     direct_output: Arc<DirectVideoOutput>,
 }
@@ -84,6 +91,7 @@ impl VideoReceiver {
             last_bw_bytes: 0,
             last_remb_at: None,
             last_twcc_at: None,
+            last_rr_at: None,
             stats: VideoStats::default(),
             direct_output,
         }
@@ -254,6 +262,61 @@ impl VideoReceiver {
         if let Some(mut receiver) = peer.rtp_receiver(receiver_id) {
             if let Err(error) = receiver.write_rtcp(packets) {
                 eprintln!("twcc write_rtcp failed: {error}");
+            }
+        }
+    }
+
+    /// RR-first probe (31/10): send an RTCP Receiver Report every RR_INTERVAL
+    /// (Chrome parity — pcap: ~1.2/s plain RR, no rrtr/extension). Report
+    /// block = RFC A.3 stats from VideoRtp; LSR/DLSR = 0 while no SR has been
+    /// received (valid per RFC). Passive sensor: while rtc's stats show zero
+    /// inbound SRs, ask get_stats whether an SR arrived (RemoteOutbound
+    /// reports_sent is fed ONLY by on_rtcp_sr_received — the crate's SR read
+    /// path) and store the count to CSV column `rtcp_sr_count`. Answers the
+    /// gating question: does the console SR us once we RR?
+    pub(crate) fn send_rr(&mut self, peer: &mut RTCPeerConnection, now: Instant) {
+        if !SEND_RR {
+            return;
+        }
+        let (Some(receiver_id), Some(_ssrc)) = (self.receiver_id, self.ssrc) else {
+            return;
+        };
+        if self
+            .last_rr_at
+            .is_some_and(|sent_at| now.duration_since(sent_at) < RR_INTERVAL)
+        {
+            return;
+        }
+        let Some(report) = self.rtp.take_reception_report() else {
+            return;
+        };
+        self.last_rr_at = Some(now);
+        if let Some(mut receiver) = peer.rtp_receiver(receiver_id) {
+            use rtcp::receiver_report::ReceiverReport;
+            let rr = ReceiverReport {
+                ssrc: LOCAL_RTCP_SENDER_SSRC,
+                reports: vec![report],
+                ..Default::default()
+            };
+            if let Err(error) = receiver.write_rtcp(vec![Box::new(rr)]) {
+                eprintln!("rr write_rtcp failed: {error}");
+            }
+        }
+        // Passive SR sensor (ungated): one get_stats probe per interval until
+        // the first SR; after each window reset, one probe refreshes the count.
+        if METRICS.rtcp_sr_count.load(Ordering::Relaxed) == 0 {
+            use rtc::statistics::report::RTCStatsReportEntry;
+            use rtc::statistics::stats::RTCStatsType;
+            use rtc::statistics::StatsSelector;
+            let stats = peer.get_stats(now, StatsSelector::None);
+            let mut sr_count = 0u64;
+            for entry in stats.iter_by_type(RTCStatsType::RemoteOutboundRTP) {
+                if let RTCStatsReportEntry::RemoteOutboundRtp(s) = entry {
+                    sr_count = sr_count.max(s.reports_sent);
+                }
+            }
+            if sr_count > 0 {
+                METRICS.rtcp_sr_count.store(sr_count, Ordering::Relaxed);
             }
         }
     }

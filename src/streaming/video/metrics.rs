@@ -17,6 +17,7 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) replaced: u64,
     pub(crate) queue_full: u64,
     pub(crate) resyncs: u64,
+    pub(crate) rtcp_sr_count: u64,
     pub(crate) resets: u64,
     pub(crate) hw_buffered: u64,
     pub(crate) pipeline_age_max_us: u64,
@@ -89,6 +90,7 @@ pub(crate) struct VideoMetrics {
     pub(crate) replaced: AtomicU64,
     pub(crate) queue_full: AtomicU64,
     pub(crate) resyncs: AtomicU64,
+    pub(crate) rtcp_sr_count: AtomicU64,
     pub(crate) resets: AtomicU64,
     pub(crate) hw_buffered: AtomicU64,
     pub(crate) pipeline_age_max_us: AtomicU64,
@@ -158,6 +160,7 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     replaced: AtomicU64::new(0),
     queue_full: AtomicU64::new(0),
     resyncs: AtomicU64::new(0),
+    rtcp_sr_count: AtomicU64::new(0),
     resets: AtomicU64::new(0),
     hw_buffered: AtomicU64::new(0),
     pipeline_age_max_us: AtomicU64::new(0),
@@ -313,6 +316,7 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         replaced: METRICS.replaced.swap(0, Ordering::Relaxed),
         queue_full: METRICS.queue_full.swap(0, Ordering::Relaxed),
         resyncs: METRICS.resyncs.swap(0, Ordering::Relaxed),
+        rtcp_sr_count: METRICS.rtcp_sr_count.swap(0, Ordering::Relaxed),
         resets: METRICS.resets.swap(0, Ordering::Relaxed),
         hw_buffered: METRICS.hw_buffered.swap(0, Ordering::Relaxed),
         pipeline_age_max_us: METRICS.pipeline_age_max_us.swap(0, Ordering::Relaxed),
@@ -391,6 +395,7 @@ pub(crate) fn reset_session_metrics() {
     METRICS.replaced.store(0, Ordering::Relaxed);
     METRICS.queue_full.store(0, Ordering::Relaxed);
     METRICS.resyncs.store(0, Ordering::Relaxed);
+    METRICS.rtcp_sr_count.store(0, Ordering::Relaxed);
     METRICS.resets.store(0, Ordering::Relaxed);
     METRICS.hw_buffered.store(0, Ordering::Relaxed);
     METRICS.pipeline_age_max_us.store(0, Ordering::Relaxed);

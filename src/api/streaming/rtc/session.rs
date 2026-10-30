@@ -188,6 +188,7 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         // stay smooth; every prior REMB test was confounded by NACK/loss loops.
         self.video.send_remb(&mut self.peer, now);
         self.video.send_twcc(&mut self.peer, now);
+        self.video.send_rr(&mut self.peer, now);
         self.maybe_flush_backlog(now);
         if let Some(status) = self.video.status(now) {
             let debug_state = self.backend.debug_state();

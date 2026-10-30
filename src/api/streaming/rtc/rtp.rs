@@ -1,5 +1,6 @@
 use crate::streaming::video::{self, STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker, metrics::METRICS};
 use crate::api::streaming::rtc::media::LOCAL_RTCP_SENDER_SSRC;
+use crate::api::streaming::rtc::reception_stats::ReceptionStats;
 use crate::api::streaming::rtc::twcc::recorder::Recorder;
 use crate::pipeline::clock::queue_delay::QueueDelayEstimator;
 use crate::pipeline::clock::send_time::SendTimeUnwrapper;
@@ -109,6 +110,9 @@ pub(crate) struct VideoRtp {
     /// MIT/Apache-2.0) — fed per annotated packet in receive() behind
     /// MANUAL_TWCC, drained by take_twcc_feedback() on send_twcc's gate.
     twcc_recorder: Recorder,
+    /// RR-first probe (31/10): RFC A.3 receiver stats feeding RTCP Receiver
+    /// Reports — fed every video packet; console ssrc bound on first packet.
+    rr: ReceptionStats,
     /// 8a shadow (§3): the new AccessUnitAssembler fed every packet in
     /// parallel with the legacy path. Never authoritative.
     shadow: AccessUnitAssembler,
@@ -251,6 +255,7 @@ impl VideoRtp {
             ast_anchor_us: 0,
             grad_anchor_us: 0,
             twcc_recorder: Recorder::new(LOCAL_RTCP_SENDER_SSRC),
+            rr: ReceptionStats::new(),
             shadow: AccessUnitAssembler::new(),
             shadow_cmp: ShadowComparator::new(),
             arrival: mismatch_log::ArrivalRing::new(),
@@ -319,6 +324,13 @@ impl VideoRtp {
         }
 
         let packet_timestamp = packet.header.timestamp;
+        // RR-first probe: RFC A.3 reception stats for send_rr (every packet).
+        self.rr.on_packet(
+            packet.header.ssrc,
+            packet.header.sequence_number,
+            packet_timestamp,
+            SHADOW_CLOCK.elapsed().as_micros() as i64,
+        );
 
         crate::streaming::video::rtp_dump_log::record(
             SHADOW_CLOCK.elapsed().as_micros() as u64,
@@ -814,6 +826,14 @@ impl VideoRtp {
     /// set inside the vendored build (recorder.rs Feedback::new).
     pub(crate) fn take_twcc_feedback(&mut self) -> Vec<Box<dyn rtcp::Packet>> {
         self.twcc_recorder.build_feedback_packet()
+    }
+
+    /// RR-first probe (31/10): this interval's reception-report block —
+    /// None until the first video packet has been seen.
+    pub(crate) fn take_reception_report(
+        &mut self,
+    ) -> Option<rtcp::reception_report::ReceptionReport> {
+        self.rr.build_report()
     }
 }
 
