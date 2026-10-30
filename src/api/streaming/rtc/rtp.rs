@@ -616,6 +616,17 @@ impl VideoRtp {
                 self.record_damage(worker);
                 *frame_was_damaged = true;
                 stats.dropped = stats.dropped.saturating_add(1);
+                // §11.4 re-gate counters: Damaged clause splits (multi-clause
+                // outcomes count each clause, mirroring the bucket-1 histogram).
+                if !desc.marker_seen {
+                    METRICS.dam_markerless.fetch_add(1, Ordering::Relaxed);
+                }
+                if !desc.had_first_slice {
+                    METRICS.dam_first_slice.fetch_add(1, Ordering::Relaxed);
+                }
+                if desc.holes > 0 {
+                    METRICS.dam_holes.fetch_add(1, Ordering::Relaxed);
+                }
             }
             AssemblyOutcome::Discarded { .. } => {
                 // Legacy Invalid arm statements; frame_was_damaged untouched.
