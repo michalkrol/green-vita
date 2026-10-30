@@ -38,7 +38,11 @@ const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
 /// lever, flag-gated). Gates BOTH the per-packet record in receive() and
 /// the 100 ms send in media::send_twcc; false = 8385cbc behaviour (silent
 /// send, offer untouched — the console keeps annotating either way).
-pub(crate) const MANUAL_TWCC: bool = true;
+/// Shelved 2026-10-31 after the A/B (943227e regressed hard: 17 resyncs /
+/// bw med 1195 vs 8385cbc's 1 / 5094; encoding proven valid 2544980 — the
+/// console's delay control clamps this 2.4 GHz link). Revisit only with
+/// Chrome's cadence numbers (pcap: ~60 ms, not our 100 ms) and a reason.
+pub(crate) const MANUAL_TWCC: bool = false;
 
 #[derive(Default)]
 pub(crate) struct VideoSampleStats {
