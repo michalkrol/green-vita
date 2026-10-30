@@ -1,5 +1,6 @@
 use crate::streaming::video::{self, STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker, metrics::METRICS};
 use crate::pipeline::clock::queue_delay::QueueDelayEstimator;
+use crate::pipeline::clock::send_time::SendTimeUnwrapper;
 use crate::pipeline::media::assembler::{AccessUnitAssembler, AssemblyOutcome};
 use std::sync::LazyLock;
 use bytes::Bytes;
@@ -90,6 +91,12 @@ pub(crate) struct VideoRtp {
     total_bytes: u64,
     /// Queue-delay estimator Q from §4.3 (signed µs, never clamped).
     pub(crate) q_estimator: QueueDelayEstimator,
+    /// 2b: abs-send-time unwrapping + anchor for a jump-free source switch
+    /// (rate from ast, offset from the RTP-ts gradient at first ast sample).
+    ast_unwrapper: SendTimeUnwrapper,
+    ast_active: bool,
+    ast_anchor_us: u64,
+    grad_anchor_us: u64,
     /// 8a shadow (§3): the new AccessUnitAssembler fed every packet in
     /// parallel with the legacy path. Never authoritative.
     shadow: AccessUnitAssembler,
@@ -227,6 +234,10 @@ impl VideoRtp {
             vt_exit_count: 0,
             total_bytes: 0,
             q_estimator: QueueDelayEstimator::new(),
+            ast_unwrapper: SendTimeUnwrapper::new(),
+            ast_active: false,
+            ast_anchor_us: 0,
+            grad_anchor_us: 0,
             shadow: AccessUnitAssembler::new(),
             shadow_cmp: ShadowComparator::new(),
             arrival: mismatch_log::ArrivalRing::new(),
@@ -347,9 +358,35 @@ impl VideoRtp {
             _ => {
                 self.latest_rtp = Some((Instant::now(), packet_timestamp));
                 // Push queue-delay estimator input per video RTP packet.
-                // send_us = RTP timestamp gradient fallback for abs-send-time
-                // (per §16.4 A3; abs-send-time wiring comes later).
-                let send_us = (packet_timestamp as u64).wrapping_mul(100) / 9;
+                // 2b (2026-10-30): send_us prefers abs-send-time (negotiated
+                // since 690f0c7, answer-stored id) — the console's own send
+                // clock, the A3 wiring the old comment deferred. Until the
+                // first ast sample (or if the console never annotates it)
+                // the RTP-ts gradient stays active; at switch-over the ast
+                // stream is ANCHORED to the gradient value so Q's delay
+                // axis never jumps (rate from ast, offset preserved).
+                let grad_us = (packet_timestamp as u64).wrapping_mul(100) / 9;
+                let ast_id = NEG_AST_EXT_ID.load(Ordering::Relaxed);
+                let send_us = if ast_id != 0
+                    && let Some(ext) = packet
+                        .header
+                        .extensions
+                        .iter()
+                        .find(|ext| ext.id == ast_id)
+                    && ext.payload.len() == 3
+                {
+                    let raw24 =
+                        u32::from_be_bytes([0, ext.payload[0], ext.payload[1], ext.payload[2]]);
+                    let unwrapped = self.ast_unwrapper.push(raw24);
+                    if !self.ast_active {
+                        self.ast_active = true;
+                        self.ast_anchor_us = unwrapped;
+                        self.grad_anchor_us = grad_us;
+                    }
+                    self.grad_anchor_us + (unwrapped - self.ast_anchor_us)
+                } else {
+                    grad_us
+                };
                 // arrival_us = same local-µs timeline as slip: wall time since
                 // the session anchor (the slip computation uses
                 // arrival_at.duration_since(anchor_at)).
