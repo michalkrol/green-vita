@@ -6,7 +6,6 @@ use rtc::peer_connection::configuration::media_engine::MediaEngine;
 use rtc::peer_connection::configuration::setting_engine::SettingEngine;
 use rtc::peer_connection::transport::RTCIceServer;
 use rtc::peer_connection::{RTCPeerConnection, RTCPeerConnectionBuilder};
-use rtc_interceptor::TwccReceiverBuilder;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use std::time::Duration;
 
@@ -18,22 +17,17 @@ pub(crate) type FeedbackPeer = RTCPeerConnection<FeedbackChain>;
 
 #[define_opaque(FeedbackChain)]
 pub(crate) fn feedback_registry() -> Result<Registry<FeedbackChain>> {
-    // 2c (2026-10-30): bind the TWCC feedback generator — TWCC ALONE, no
-    // NACK/PLI/RR responders, behind commit-isolation (revert this binding
-    // to disable; the opaque chain type cannot be gated by a const if/else).
-    // A2 experiment: the throttle suspect (2500-6000 kbps clamp, 72-328
-    // floor crashes). Proof-of-send = twcc_sent counted at the socket
-    // (transport flush); experiment's on/off reading is that CSV column.
-    // History: this interceptor previously "never fired tw:0 despite
-    // negotiated extmap" — misdiagnosed: NOTHING was negotiated pre-2a
-    // (zero a=extmap lines). 690f0c7 negotiates twcc (answer id 1) and the
-    // 144041 probe session proved inbound annotation live (rtp_ext_any =
-    // 135,980/249s). The unsourced "~10x lag" folklore covered the bundled
-    // NACK/PLI responder set, not isolated TWCC-send. Lag watch: q_us /
-    // stream_slip + user feel; regression => git revert.
-    Ok(Registry::new()
-        .with(TwccReceiverBuilder::new().with_interval(Duration::from_millis(100)).build()))
-/* legacy note kept below for archaeology:
+    // Registry stays EMPTY. 2c diagnosis (2026-10-30, sessions 151958 +
+    // 154412): binding rtc_interceptor's TwccReceiver compiled and ran but
+    // emitted NOTHING — rtcp_rtpfb_any=0 and twcc_sent=0 over 375 s while
+    // rtp_ext_twcc=202,571 proved the console annotates TWCC on every
+    // video packet (540/s). The break is inside the vita rtc fork
+    // (stream-bind / handle_read traversal / StreamInfo extmap — not
+    // instrumentable from our tree). Binding reverted to avoid a future
+    // double-send; 2c continues as the MANUAL path (vendored encoder,
+    // MIT/Apache-2.0) fed from VideoRtp::receive(), where our own parser
+    // already reads those exact extension bytes.
+    // Prior folklore corrections retained below (75b4d6a verified these):
     // Fully silent registry. VERIFIED 2026-10-30 (chrome-dump reanalysis +
     // device last-offer.sdp ground truth) — corrected history:
     // - The "manual TWCC" path NEVER sent a packet: take_twcc_report() ->
@@ -52,8 +46,9 @@ pub(crate) fn feedback_registry() -> Result<Registry<FeedbackChain>> {
     // - The "~10x lag" folklore (RECOVERY-PLAN:10, arch 16.2 row5) cites
     //   THIS comment and only this comment — circular, no measurement
     //   exists — and it bundled NACK/PLI *responders* with TWCC.
-    // Plan history: 2a/2b landed (690f0c7, 64cd6ee); 2c is the binding above.
-    */
+    // Plan history: 2a/2b landed (690f0c7, 64cd6ee); the 2c interceptor
+    // binding was reverted after the 154412 diagnostic (see above).
+    Ok(Registry::new())
 }
 
 pub(crate) struct RtcDataChannelConfig {
