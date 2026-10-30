@@ -29,7 +29,8 @@ const TWCC_INTERVAL: Duration = Duration::from_millis(100);
 /// from measured delivered throughput.
 const REMB_BITRATE_BPS: f32 = 15_000_000.0;
 /// Arbitrary stable local RTCP sender SSRC (we transmit no RTP of our own).
-const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
+/// 2c: also the sender_ssrc of the vendored TWCC feedback Recorder.
+pub(crate) const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
 
 #[derive(Default)]
 struct VideoStats {
@@ -54,7 +55,6 @@ pub(crate) struct VideoReceiver {
     last_bw_bytes: u64,
     last_remb_at: Option<Instant>,
     last_twcc_at: Option<Instant>,
-    twcc_fb_pkt_count: u8,
     stats: VideoStats,
     direct_output: Arc<DirectVideoOutput>,
 }
@@ -84,7 +84,6 @@ impl VideoReceiver {
             last_bw_bytes: 0,
             last_remb_at: None,
             last_twcc_at: None,
-            twcc_fb_pkt_count: 0,
             stats: VideoStats::default(),
             direct_output,
         }
@@ -223,17 +222,22 @@ impl VideoReceiver {
         }
     }
 
-    /// Manual transport-cc feedback intent: per-packet arrival deltas for the
-    /// console's annotated RTP (Safari pcap ~17/s; chrome dumps show the
-    /// console's pacing consumes TWCC — 506-1290 feedback/session, zero REMB).
-    /// VERIFIED 2026-10-30: this has NEVER sent a packet — take_twcc_report()
-    /// always returns None (no producer in the tree) AND our offer carried no
-    /// twcc extmap (last-offer.sdp: zero a=extmap lines), so the console
-    /// never annotated. twcc_sent=0 in every device CSV. Revival: 2a offer
-    /// the extmap, 2c rebuild the tracker (rtc twcc Recorder fed from
-    /// receive()) behind a flag, TWCC-alone, watch lag.
+    /// 2c (2026-10-30): MANUAL transport-cc feedback — the vendored Recorder
+    /// (twcc/, fed from VideoRtp::receive()) is drained here every
+    /// TWCC_INTERVAL (100 ms, unchanged from the interceptor era; Safari's
+    /// ~17/s ≈ 59 ms noted but not adopted — one variable per build).
+    /// Built packets carry sender_ssrc/media_ssrc/fb_pkt_count internally
+    /// (recorder.rs). Proof-of-send = twcc_sent + rtcp_rtpfb_any at the
+    /// socket flush; the console annotates 100% of packets when negotiated
+    /// (session 154412: rtp_ext_twcc = 202,571). Flag-gated per A2 — flip
+    /// MANUAL_TWCC (rtp.rs) for the on/off A/B. History: the interceptor-era
+    /// send_twcc never sent a packet (take_twcc_report -> None, and pre-2a
+    /// the offer carried no extmaps at all).
     pub(crate) fn send_twcc(&mut self, peer: &mut RTCPeerConnection, now: Instant) {
-        let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else {
+        if !rtp::MANUAL_TWCC {
+            return;
+        }
+        let (Some(receiver_id), Some(_ssrc)) = (self.receiver_id, self.ssrc) else {
             return;
         };
         if self
@@ -242,25 +246,13 @@ impl VideoReceiver {
         {
             return;
         }
-        let Some(report) = self.rtp.take_twcc_report(ssrc) else {
+        let packets = self.rtp.take_twcc_feedback();
+        if packets.is_empty() {
             return;
-        };
+        }
         self.last_twcc_at = Some(now);
         if let Some(mut receiver) = peer.rtp_receiver(receiver_id) {
-            use rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc;
-            let twcc = TransportLayerCc {
-                sender_ssrc: LOCAL_RTCP_SENDER_SSRC,
-                media_ssrc: report.media_ssrc,
-                base_sequence_number: report.base_sequence_number,
-                packet_status_count: report.packet_status_count,
-                reference_time: report.reference_time,
-                fb_pkt_count: self.twcc_fb_pkt_count,
-                packet_chunks: report.chunks,
-                recv_deltas: report.recv_deltas,
-            };
-            self.twcc_fb_pkt_count = self.twcc_fb_pkt_count.wrapping_add(1);
-            let result = receiver.write_rtcp(vec![Box::new(twcc)]);
-            if let Err(error) = result {
+            if let Err(error) = receiver.write_rtcp(packets) {
                 eprintln!("twcc write_rtcp failed: {error}");
             }
         }

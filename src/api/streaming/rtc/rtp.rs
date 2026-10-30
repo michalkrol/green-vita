@@ -1,4 +1,6 @@
 use crate::streaming::video::{self, STREAM_HEIGHT, STREAM_WIDTH, VideoDecodeWorker, metrics::METRICS};
+use crate::api::streaming::rtc::media::LOCAL_RTCP_SENDER_SSRC;
+use crate::api::streaming::rtc::twcc::recorder::Recorder;
 use crate::pipeline::clock::queue_delay::QueueDelayEstimator;
 use crate::pipeline::clock::send_time::SendTimeUnwrapper;
 use crate::pipeline::media::assembler::{AccessUnitAssembler, AssemblyOutcome};
@@ -30,6 +32,12 @@ const VIDEO_RTP_CLOCK_RATE: u32 = 90_000;
 const AUDIO_MAX_LATE_PACKETS: u16 = 32;
 const LOW_FPS_DAMAGE_LIMIT: u8 = 8;
 const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
+
+/// 2c (2026-10-30): manual TWCC feedback master switch (A2 method — one
+/// lever, flag-gated). Gates BOTH the per-packet record in receive() and
+/// the 100 ms send in media::send_twcc; false = 8385cbc behaviour (silent
+/// send, offer untouched — the console keeps annotating either way).
+pub(crate) const MANUAL_TWCC: bool = true;
 
 #[derive(Default)]
 pub(crate) struct VideoSampleStats {
@@ -97,6 +105,10 @@ pub(crate) struct VideoRtp {
     ast_active: bool,
     ast_anchor_us: u64,
     grad_anchor_us: u64,
+    /// 2c: manual TWCC recorder (vendored from rtc-interceptor 0.20.0-rc.2,
+    /// MIT/Apache-2.0) — fed per annotated packet in receive() behind
+    /// MANUAL_TWCC, drained by take_twcc_feedback() on send_twcc's gate.
+    twcc_recorder: Recorder,
     /// 8a shadow (§3): the new AccessUnitAssembler fed every packet in
     /// parallel with the legacy path. Never authoritative.
     shadow: AccessUnitAssembler,
@@ -238,6 +250,7 @@ impl VideoRtp {
             ast_active: false,
             ast_anchor_us: 0,
             grad_anchor_us: 0,
+            twcc_recorder: Recorder::new(LOCAL_RTCP_SENDER_SSRC),
             shadow: AccessUnitAssembler::new(),
             shadow_cmp: ShadowComparator::new(),
             arrival: mismatch_log::ArrivalRing::new(),
@@ -282,9 +295,27 @@ impl VideoRtp {
         // arrived — this splits "console skips twcc" from "interceptor bug".
         let twcc_seen_id = NEG_TWCC_EXT_ID.load(Ordering::Relaxed);
         if twcc_seen_id != 0
-            && packet.header.extensions.iter().any(|ext| ext.id == twcc_seen_id)
+            && let Some(ext) = packet
+                .header
+                .extensions
+                .iter()
+                .find(|ext| ext.id == twcc_seen_id)
         {
             METRICS.rtp_ext_twcc.fetch_add(1, Ordering::Relaxed);
+            // 2c manual path: parse the transport-wide seq (2-byte BE,
+            // verified against rtc-rtp's TransportCcExtension::unmarshal)
+            // and feed the vendored Recorder — flag-gated so record+send
+            // flip together (false = 8385cbc: annotation observed, nothing
+            // sent). Arrival on the SHADOW_CLOCK timeline the CSV uses.
+            if MANUAL_TWCC
+                && let Some(twcc_seq) = parse_transport_wide_seq(&ext.payload[..])
+            {
+                self.twcc_recorder.record(
+                    packet.header.ssrc,
+                    twcc_seq,
+                    SHADOW_CLOCK.elapsed().as_micros() as i64,
+                );
+            }
         }
 
         let packet_timestamp = packet.header.timestamp;
@@ -776,11 +807,14 @@ impl VideoRtp {
     /// 2026-10-30: stub 0 feeding the twcc_stride CSV — real value needs the
     /// 2c tracker (median gap between observed transport-wide sequence numbers).
     pub(crate) fn twcc_median_stride(&self) -> u16 { 0 }
-    /// 2026-10-30: always None — crate-wide grep shows no TwccReport producer
-    /// anywhere, so send_twcc() no-ops every call and twcc_sent stays 0.
-    /// Half of the abandoned manual-TWCC path; rebuild at 2c (feed rtc's
-    /// twcc Recorder from receive() once 2a negotiates the extmap).
-    pub(crate) fn take_twcc_report(&mut self, _media_ssrc: u32) -> Option<TwccReport> { None }
+    /// 2c (2026-10-30): drain the manual TWCC recorder — returns feedback for
+    /// packets recorded since the previous call (the vendored Recorder
+    /// advances its walk cursor, keeps the arrival map; empty vec = nothing
+    /// new, safe at any cadence). sender_ssrc/media_ssrc/fb_pkt_count are
+    /// set inside the vendored build (recorder.rs Feedback::new).
+    pub(crate) fn take_twcc_feedback(&mut self) -> Vec<Box<dyn rtcp::Packet>> {
+        self.twcc_recorder.build_feedback_packet()
+    }
 }
 
 pub(crate) fn color_matrix_label(code: u8) -> String {
@@ -800,6 +834,20 @@ pub(crate) fn color_matrix_label(code: u8) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_twcc_transport_wide_seq_parse() {
+        // 2c: 2-byte big-endian per draft-holmer + rtc-rtp reference parser
+        // (TRANSPORT_CC_EXTENSION_SIZE = 2, seq = (b0 << 8) | b1).
+        assert_eq!(parse_transport_wide_seq(&[0x00, 0x01]), Some(1));
+        assert_eq!(parse_transport_wide_seq(&[0x12, 0x34]), Some(0x1234));
+        assert_eq!(parse_transport_wide_seq(&[0xFF, 0xFE]), Some(65534));
+        // Padded element: only the first two bytes are the seq.
+        assert_eq!(parse_transport_wide_seq(&[0x12, 0x34, 0x00, 0x00]), Some(0x1234));
+        // Sub-two-byte payloads are not a valid twcc element.
+        assert_eq!(parse_transport_wide_seq(&[0x12]), None);
+        assert_eq!(parse_transport_wide_seq(&[]), None);
+    }
 
     #[test]
     fn test_color_matrix_label() {
@@ -1191,17 +1239,10 @@ fn randomized_differential_matches() {
     eprintln!("randomized_differential_matches: {} iterations, 0 failures", TOTAL_ITERATIONS);
 }
 
-/// 2026-10-30: field type of the never-built manual TWCC path — nothing in
-/// the crate constructs this (crate-wide grep); paired with take_twcc_report's
-/// None. Rebuild target for 2c.
-pub(crate) struct TwccReport {
-    pub media_ssrc: u32,
-    pub base_sequence_number: u16,
-    pub packet_status_count: u16,
-    pub reference_time: u32,
-    pub chunks: Vec<rtcp::transport_feedbacks::transport_layer_cc::PacketStatusChunk>,
-    pub recv_deltas: Vec<rtcp::transport_feedbacks::transport_layer_cc::RecvDelta>,
-}
+// 2c: TwccReport (the never-built manual-TWCC carrier struct) and
+// take_twcc_report's always-None stub were deleted when the vendored
+// Recorder path landed — take_twcc_feedback() hands back ready-to-send
+// rtcp::Packet boxes instead of field bundles.
 
 /// Negotiated inbound extension ids from the ANSWER (2a). 0 = not negotiated
 /// — our pre-2a offer carried no extmaps at all, and extract_extmap_id's
@@ -1227,6 +1268,18 @@ pub(crate) fn set_negotiated_ast_ext_id(id: u8) {
 /// 2a: video-timing id — consumed by the vt census in `receive()`.
 pub(crate) fn set_negotiated_vt_ext_id(id: u8) {
     NEG_VT_EXT_ID.store(id, Ordering::Relaxed);
+}
+
+/// 2c: transport-wide sequence number from a one-byte-header extension
+/// payload — 2 bytes big-endian (draft-holmer-rmcat-transport-wide-cc-01).
+/// Verified against rtc-rtp's reference parser: transport_cc_extension/mod.rs
+/// has TRANSPORT_CC_EXTENSION_SIZE = 2 and unmarshals `seq = (b0 << 8) | b1`,
+/// accepting any buffer with remaining >= 2 (trailing zero padding ignored).
+fn parse_transport_wide_seq(payload: &[u8]) -> Option<u16> {
+    let [b0, b1, ..] = payload else {
+        return None;
+    };
+    Some(u16::from_be_bytes([*b0, *b1]))
 }
 
 
