@@ -55,7 +55,13 @@ impl<P: Interceptor> Protocol<TaggedPacket, TaggedPacket, ()> for RtxSsrcRewrite
             let ssrc = pkt.header.ssrc;
             let pt = pkt.header.payload_type;
             if is_negotiated_rtx_pt(pt) {
-                if let Some(&primary_ssrc) = self.rtx_to_primary.get(&ssrc) {
+                // S5b-3: prefer the answer-time FID map (always set before
+                // packets flow; the fork's bind-learned map never fires for
+                // us — deferred codec skips the bind, first-packet path has
+                // no RTX handling). Bind-learned map stays as fallback.
+                let primary_ssrc = crate::api::streaming::rtc::media::rtx_primary_for(ssrc)
+                    .or_else(|| self.rtx_to_primary.get(&ssrc).copied());
+                if let Some(primary_ssrc) = primary_ssrc {
                     if primary_ssrc != ssrc {
                         let count = self.rewrite_count.fetch_add(1, Ordering::Relaxed);
                         if count < 5 {
@@ -70,7 +76,7 @@ impl<P: Interceptor> Protocol<TaggedPacket, TaggedPacket, ()> for RtxSsrcRewrite
                     let warn_count = self.rewrite_count.load(Ordering::Relaxed);
                     if warn_count < 100 || warn_count % 100 == 0 {
                         eprintln!(
-                            "RtxSsrcRewrite: WARNING - RTX packet for unmapped SSRC={ssrc} PT={pt} (no bind_remote_stream mapping learned yet)"
+                            "RtxSsrcRewrite: WARNING - RTX packet for unmapped SSRC={ssrc} PT={pt} (no FID map, no bind map)"
                         );
                     }
                 }

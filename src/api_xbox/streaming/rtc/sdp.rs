@@ -99,6 +99,36 @@ pub fn extract_negotiated_rtx_mapping(sdp: &str) -> std::collections::HashMap<u8
     result
 }
 
+/// S5b-3: parses the ANSWER's `a=ssrc-group:FID <primary> <rtx>` lines
+/// (video section) into RTX SSRC -> primary SSRC. This is the map the
+/// rewrite interceptor needs — the fork's bind-time learning never fires
+/// for us (deferred track codec), while the stats' own FID map does
+/// (hence crate 698 / unwrap 0 before this fix).
+pub fn extract_fid_rtx_ssrcs(sdp: &str) -> std::collections::HashMap<u32, u32> {
+    use std::collections::HashMap;
+    let mut map = HashMap::new();
+    let mut in_video = false;
+    for line in sdp.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.starts_with("m=") {
+            in_video = line.starts_with("m=video ");
+            continue;
+        }
+        if !in_video {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("a=ssrc-group:FID ") {
+            let mut parts = rest.split_whitespace();
+            if let (Some(primary), Some(rtx)) = (parts.next(), parts.next()) {
+                if let (Ok(p), Ok(r)) = (primary.parse::<u32>(), rtx.parse::<u32>()) {
+                    map.insert(r, p);
+                }
+            }
+        }
+    }
+    map
+}
+
 /// Adds the advisory receive-frame-rate attribute to the H.264 video section.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn request_video_fps(sdp: &str, video_fps: u32) -> String {
@@ -306,6 +336,10 @@ mod tests {
         let rtx_map = extract_negotiated_rtx_mapping(real_answer);
         assert_eq!(rtx_map.len(), 1, "got {rtx_map:?}");
         assert_eq!(rtx_map.get(&112), Some(&102), "got {rtx_map:?}");
+        // S5b-3: FID SSRC map from the same gold fixture.
+        let fid = extract_fid_rtx_ssrcs(real_answer);
+        assert_eq!(fid.len(), 1, "got {fid:?}");
+        assert_eq!(fid.get(&4263802149), Some(&868043629), "got {fid:?}");
     }
 
     #[test]

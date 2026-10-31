@@ -66,6 +66,13 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
             eprintln!("negotiated RTX map: {rtx_map:?}");
             crate::api::streaming::rtc::media::set_negotiated_rtx_map(rtx_map);
         }
+        // S5b-3: FID-derived SSRC map (fork-trace fix — bind-time learning
+        // never fires for us; the interceptor rewrites from THIS).
+        let fid_map = sdp::extract_fid_rtx_ssrcs(&answer);
+        if !fid_map.is_empty() {
+            eprintln!("negotiated RTX FID map: {fid_map:?}");
+            crate::api::streaming::rtc::media::set_negotiated_rtx_ssrc_map(fid_map);
+        }
         Ok(answer)
     }
 }

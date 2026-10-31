@@ -47,9 +47,27 @@ pub(crate) const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
 static NEGOTIATED_RTX_MAP: LazyLock<RwLock<HashMap<u8, u8>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
+/// S5b-3 (fork-trace fix): RTX SSRC -> primary SSRC from the answer's
+/// `a=ssrc-group:FID` lines. The fork's bind-time learning is dead for us
+/// (deferred track codec => fuzzy-search None => bind skipped; the
+/// first-packet path has "//TODO: what about RTX/FEC stream?"), so the
+/// interceptor reads THIS map — set before any packet flows.
+static NEGOTIATED_RTX_SSRC_MAP: LazyLock<RwLock<HashMap<u32, u32>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
 /// Sets the negotiated RTX mapping (called once per answer in worker.rs).
 pub(crate) fn set_negotiated_rtx_map(map: HashMap<u8, u8>) {
     *NEGOTIATED_RTX_MAP.write().unwrap() = map;
+}
+
+/// Sets the FID-derived RTX SSRC map from the answer.
+pub(crate) fn set_negotiated_rtx_ssrc_map(map: HashMap<u32, u32>) {
+    *NEGOTIATED_RTX_SSRC_MAP.write().unwrap() = map;
+}
+
+/// Primary SSRC for a given RTX SSRC (answer FID group), if negotiated.
+pub(crate) fn rtx_primary_for(ssrc: u32) -> Option<u32> {
+    NEGOTIATED_RTX_SSRC_MAP.read().unwrap().get(&ssrc).copied()
 }
 
 /// Checks if a payload type is a negotiated RTX type (hot path — direct read).
