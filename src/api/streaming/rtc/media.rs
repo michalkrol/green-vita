@@ -62,6 +62,110 @@ pub(crate) fn rtx_apt_for(payload_type: u8) -> Option<u8> {
     NEGOTIATED_RTX_MAP.read().unwrap().get(&payload_type).copied()
 }
 
+/// S5b: flatten hole ranges (wrapping-safe, capped) and group into
+/// RFC 4585 pid + 16-bit loss-bitmask pairs. Pure — host-tested
+/// (grouping math + marshal round-trip in `mod nack_tests`).
+fn ranges_to_nack_pairs(
+    ranges: &[(u16, u16)],
+    max_seqs: usize,
+) -> Vec<rtcp::transport_feedbacks::transport_layer_nack::NackPair> {
+    use rtcp::transport_feedbacks::transport_layer_nack::NackPair;
+    let mut seqs: Vec<u16> = Vec::new();
+    'collect: for (start, end) in ranges {
+        let count = u32::from(end.wrapping_sub(*start)).wrapping_add(1);
+        for i in 0..count {
+            if seqs.len() >= max_seqs {
+                break 'collect;
+            }
+            seqs.push(start.wrapping_add(i as u16));
+        }
+    }
+    let mut nacks: Vec<NackPair> = Vec::new();
+    let mut i = 0;
+    while i < seqs.len() {
+        let pid = seqs[i];
+        let mut mask: u16 = 0;
+        let mut j = i + 1;
+        while j < seqs.len()
+            && (j - i) <= 16
+            && seqs[j] == pid.wrapping_add((j - i) as u16)
+        {
+            mask |= 1u16 << ((j - i) - 1);
+            j += 1;
+        }
+        nacks.push(NackPair {
+            packet_id: pid,
+            lost_packets: mask,
+        });
+        i = j;
+    }
+    nacks
+}
+
+#[cfg(test)]
+mod nack_tests {
+    use super::ranges_to_nack_pairs;
+    use rtcp::packet::{marshal as rtcp_marshal, unmarshal as rtcp_unmarshal};
+    use rtcp::transport_feedbacks::transport_layer_nack::{
+        NackPair, TransportLayerNack,
+    };
+
+    #[test]
+    fn nack_pair_grouping_math() {
+        let one = ranges_to_nack_pairs(&[(100, 100)], 32);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].packet_id, 100);
+        assert_eq!(one[0].lost_packets, 0);
+
+        // 18 consecutive (100..=117): pid=100 with bits for 101..=116, then pid=117.
+        let run = ranges_to_nack_pairs(&[(100, 117)], 32);
+        assert_eq!(run.len(), 2);
+        assert_eq!(run[0].packet_id, 100);
+        assert_eq!(run[0].lost_packets, 0xFFFF);
+        assert_eq!(run[1].packet_id, 117);
+        assert_eq!(run[1].lost_packets, 0);
+
+        // Wrapping range 65534..=0 -> [65534, 65535, 0], one pair, mask 0b11.
+        let wr = ranges_to_nack_pairs(&[(65534, 0)], 32);
+        assert_eq!(wr.len(), 1);
+        assert_eq!(wr[0].packet_id, 65534);
+        assert_eq!(wr[0].lost_packets, 0b11);
+
+        // Per-send cap: (0,1000) capped at 8 seqs -> [0..=7], mask 0x7F.
+        let capped = ranges_to_nack_pairs(&[(0, 1000)], 8);
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].packet_id, 0);
+        assert_eq!(capped[0].lost_packets, 0x7F);
+    }
+
+    #[test]
+    fn nack_bytes_roundtrip() {
+        // The exact packet send_nack emits: marshal -> unmarshal -> field-equal.
+        let original = TransportLayerNack {
+            sender_ssrc: 1,
+            media_ssrc: 0xDEAD_BEEF,
+            nacks: vec![
+                NackPair { packet_id: 100, lost_packets: 0b101 },
+                NackPair { packet_id: 200, lost_packets: 0 },
+            ],
+        };
+        let marshalled = rtcp_marshal(&[Box::new(original.clone())]).unwrap();
+        let unmarshalled = rtcp_unmarshal(&mut marshalled.as_ref()).unwrap();
+        assert_eq!(unmarshalled.len(), 1);
+        let rt = unmarshalled[0]
+            .as_any()
+            .downcast_ref::<TransportLayerNack>()
+            .expect("TransportLayerNack type");
+        assert_eq!(rt.sender_ssrc, 1);
+        assert_eq!(rt.media_ssrc, 0xDEAD_BEEF);
+        assert_eq!(rt.nacks.len(), 2);
+        assert_eq!(rt.nacks[0].packet_id, 100);
+        assert_eq!(rt.nacks[0].lost_packets, 0b101);
+        assert_eq!(rt.nacks[1].packet_id, 200);
+        assert_eq!(rt.nacks[1].lost_packets, 0);
+    }
+}
+
 #[derive(Default)]
 struct VideoStats {
     dropped: u64,
@@ -346,6 +450,7 @@ impl VideoReceiver {
         // Passive SR sensor (ungated): one get_stats probe per interval until
         // the first SR; after each window reset, one probe refreshes the count.
         if METRICS.rtcp_sr_count.load(Ordering::Relaxed) == 0 {
+            use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
             use rtc::statistics::report::RTCStatsReportEntry;
             use rtc::statistics::stats::RTCStatsType;
             use rtc::statistics::StatsSelector;
@@ -358,6 +463,22 @@ impl VideoReceiver {
             }
             if sr_count > 0 {
                 METRICS.rtcp_sr_count.store(sr_count, Ordering::Relaxed);
+            }
+            // S5b-2 discriminator (same get_stats call): did the CONSOLE
+            // retransmit? The crate counts inbound RTX before endpoint drops
+            // (0.2.5's note). CSV rtx_crate_seen vs rtx_packets_received:
+            //   >0 & unwrap=0 => RTX dies INSIDE the fork (bind/rewrite)
+            //   both 0        => console never answered our NACKs
+            let mut rtx_seen = 0u64;
+            for stream in stats.inbound_rtp_streams() {
+                if stream.received_rtp_stream_stats.rtp_stream_stats.kind
+                    == RtpCodecKind::Video
+                {
+                    rtx_seen = rtx_seen.max(stream.retransmitted_packets_received);
+                }
+            }
+            if rtx_seen > 0 {
+                METRICS.rtx_crate_seen.store(rtx_seen, Ordering::Relaxed);
             }
         }
     }
@@ -381,38 +502,11 @@ impl VideoReceiver {
         if ranges.is_empty() {
             return;
         }
-        use rtcp::transport_feedbacks::transport_layer_nack::{NackPair, TransportLayerNack};
-        // Flatten ranges (wrapping-safe) with the A4 per-send cap.
-        let mut seqs: Vec<u16> = Vec::new();
-        'collect: for (start, end) in ranges {
-            let count = u32::from(end.wrapping_sub(start)).wrapping_add(1);
-            for i in 0..count {
-                if seqs.len() >= 32 {
-                    break 'collect;
-                }
-                seqs.push(start.wrapping_add(i as u16));
-            }
-        }
-        // Group into pid + 16-bit loss bitmask pairs (RFC 4585 §3.1.1).
-        let mut nacks: Vec<NackPair> = Vec::new();
-        let mut i = 0;
-        while i < seqs.len() {
-            let pid = seqs[i];
-            let mut mask: u16 = 0;
-            let mut j = i + 1;
-            while j < seqs.len()
-                && (j - i) <= 16
-                && seqs[j] == pid.wrapping_add((j - i) as u16)
-            {
-                mask |= 1u16 << ((j - i) - 1);
-                j += 1;
-            }
-            nacks.push(NackPair {
-                packet_id: pid,
-                lost_packets: mask,
-            });
-            i = j;
-        }
+        use rtcp::source_description::{
+            SourceDescription, SourceDescriptionChunk, SourceDescriptionItem, SdesType,
+        };
+        use rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
+        let nacks = ranges_to_nack_pairs(&ranges, 32);
         if nacks.is_empty() {
             return;
         }
@@ -421,8 +515,21 @@ impl VideoReceiver {
             media_ssrc,
             nacks,
         };
+        // S5b-2: compound [NACK + SDES CNAME] per RFC 3550 §6.1 — the first
+        // session sent bare NACKs (2235 out, zero replies). rtcp-rsize in the
+        // answer may permit reduced-size, but the RR fix went compound and
+        // parity costs one SDES — removes the doubt at the packet level.
+        let sdes = SourceDescription {
+            chunks: vec![SourceDescriptionChunk {
+                source: LOCAL_RTCP_SENDER_SSRC,
+                items: vec![SourceDescriptionItem {
+                    sdes_type: SdesType::SdesCname,
+                    text: Bytes::from_static(b"green-vita"),
+                }],
+            }],
+        };
         if let Some(mut receiver) = peer.rtp_receiver(receiver_id) {
-            if let Err(error) = receiver.write_rtcp(vec![Box::new(nack)]) {
+            if let Err(error) = receiver.write_rtcp(vec![Box::new(nack), Box::new(sdes)]) {
                 eprintln!("nack write_rtcp failed: {error}");
             }
         }

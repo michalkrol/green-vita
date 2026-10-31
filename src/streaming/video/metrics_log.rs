@@ -24,7 +24,7 @@ pub(crate) struct RowExtras {
 
 const MAX_ROWS: usize = 20_000;
 /// CSV header for per-session metrics log. Updated in sync with the cols array in write_row.
-const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,q_us,q_us_max,q_slope_mpm,sh_match,sh_bound_mismatch,sh_bytes_mismatch,sh_class_mismatch,sh_new_damaged_old_complete,sh_new_complete_old_abandon,sh_hold_saved,sh_legacy_unmatched,sh_new_unmatched,au_submitted,au_no_startcode,au_idr_submitted,sh_reject_bound_artifact,late_after_resolve,dam_markerless,dam_first_slice,dam_holes,rtp_ext_twcc,rtcp_rtpfb_any,rtcp_sr_count,rtcp_sr_raw,rtcp_nack_sent,rtx_packets_received";
+const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,q_us,q_us_max,q_slope_mpm,sh_match,sh_bound_mismatch,sh_bytes_mismatch,sh_class_mismatch,sh_new_damaged_old_complete,sh_new_complete_old_abandon,sh_hold_saved,sh_legacy_unmatched,sh_new_unmatched,au_submitted,au_no_startcode,au_idr_submitted,sh_reject_bound_artifact,late_after_resolve,dam_markerless,dam_first_slice,dam_holes,rtp_ext_twcc,rtcp_rtpfb_any,rtcp_sr_count,rtcp_sr_raw,rtcp_nack_sent,rtx_packets_received,rtx_crate_seen";
 
 /// RAM-buffered CSV log for a streaming session.
 /// Rows are accumulated at 1 Hz from status() and flushed once at session end.
@@ -59,7 +59,7 @@ impl MetricsCsvLog {
         let t_s = self.started_at.elapsed().as_secs();
         // Fixed-size array so the column count is compiler-enforced and can never
         // drift out of sync with HEADER. Order MUST match HEADER below.
-        let cols: [i64; 76] = [
+        let cols: [i64; 77] = [
             t_s as i64,
             snapshot.rtp_assembly_sum_us as i64,
             snapshot.rtp_assembly_count as i64,
@@ -136,6 +136,7 @@ impl MetricsCsvLog {
             snapshot.rtcp_sr_raw as i64,
             snapshot.rtcp_nack_sent as i64,
             snapshot.rtx_packets_received as i64,
+            snapshot.rtx_crate_seen as i64,
         ];
         let row = cols
             .iter()
@@ -202,7 +203,7 @@ impl MetricsCsvLog {
 // Private helper: build a CSV row string from a MetricsSnapshot (mirrors write_row logic).
 fn csv_row_from_snapshot(snapshot: &MetricsSnapshot) -> String {
     // Same 53-element layout as the cols array in write_row, using i64 values.
-    let cols: [i64; 76] = [
+    let cols: [i64; 77] = [
         0 as i64,                                                    // t_s
         snapshot.rtp_assembly_sum_us as i64,
         snapshot.rtp_assembly_count as i64,
@@ -279,6 +280,7 @@ fn csv_row_from_snapshot(snapshot: &MetricsSnapshot) -> String {
         snapshot.rtcp_sr_raw as i64,
         snapshot.rtcp_nack_sent as i64,
         snapshot.rtx_packets_received as i64,
+        snapshot.rtx_crate_seen as i64,
     ];
     cols.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(",")
 }
@@ -360,6 +362,7 @@ mod tests {
             rtcp_sr_raw: 0,
             rtcp_nack_sent: 0,
             rtx_packets_received: 0,
+            rtx_crate_seen: 0,
         };
 
         let row = csv_row_from_snapshot(&snapshot);
@@ -446,6 +449,7 @@ mod tests {
             rtcp_sr_raw: 0,
             rtcp_nack_sent: 0,
             rtx_packets_received: 0,
+            rtx_crate_seen: 0,
         };
 
         let row = csv_row_from_snapshot(&snapshot);

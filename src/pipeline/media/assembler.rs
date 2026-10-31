@@ -242,16 +242,11 @@ impl AccessUnitAssembler {
                     au.is_idr = true;
                 }
                 au.nal_ref_idc = au.nal_ref_idc.max(fu_header.map_or_else(|| nal_header.nal_ref_idc, |fh| fh.nal_ref_idc));
-                // S5b/A4: first mid-AU proven-loss detection (a hole below a
-                // higher present seq) — report immediately, once per AU, so
-                // RTX gets the longest possible hold window.
-                if !au.nack_reported {
-                    let ranges = compute_missing_ranges(&au.payloads);
-                    if !ranges.is_empty() {
-                        au.nack_reported = true;
-                        self.pending_nacks.extend(ranges);
-                    }
-                }
+                // S5b-2: emission is MARKER-ONLY (see the marker branch) —
+                // mid-AU holes are usually still in-flight originals (first
+                // session: 7.9 NACK/s fired vs only 0.11 resolved-hole AUs/s
+                // = 70x waste). A hole still present at the marker had a
+                // full frame time to arrive = true loss.
             }
 
             false // flag that we continued existing AU
