@@ -7,7 +7,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use crate::pipeline::decode::{Admission, DecodeScheduler};
+use crate::pipeline::decode::{Admission, DecodeScheduler, SchedulerMode};
 
 // Keep only one compressed frame queued at the default 30 FPS to minimize glass-to-glass
 // latency. Faster streams may still use a larger burst buffer.
@@ -80,7 +80,8 @@ impl VideoDecodeWorker {
         let result_ready = Arc::new(tokio::sync::Notify::new());
         let worker_result_ready = Arc::clone(&result_ready);
         let worker_direct_output = Arc::clone(&direct_output);
-        let scheduler = Arc::new(DecodeScheduler::default());
+        // S0 arm 1: Paced mode (depth-scaled pace) for the S0 scheduler matrix.
+        let scheduler = Arc::new(DecodeScheduler::new(SchedulerMode::Paced));
         let worker_scheduler = Arc::clone(&scheduler);
 
         std::thread::Builder::new()
