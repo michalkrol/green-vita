@@ -267,9 +267,11 @@ impl VideoReceiver {
     }
 
     /// RR-first probe (31/10): send an RTCP Receiver Report every RR_INTERVAL
-    /// (Chrome parity — pcap: ~1.2/s plain RR, no rrtr/extension). Report
-    /// block = RFC A.3 stats from VideoRtp; LSR/DLSR = 0 while no SR has been
-    /// received (valid per RFC). Passive sensor: while rtc's stats show zero
+    /// (Chrome parity — pcap: ~1.2/s), as an RFC 3550 §6.1 COMPOUND
+    /// [RR + SDES CNAME] — probe iteration 2: the bare-RR v1 was non-
+    /// compliant and may have been discarded (contaminating the first
+    /// SR reading). Report block = RFC A.3 stats from VideoRtp;
+    /// LSR/DLSR = 0 while no SR has been received (valid per RFC). Passive sensor: while rtc's stats show zero
     /// inbound SRs, ask get_stats whether an SR arrived (RemoteOutbound
     /// reports_sent is fed ONLY by on_rtcp_sr_received — the crate's SR read
     /// path) and store the count to CSV column `rtcp_sr_count`. Answers the
@@ -293,12 +295,27 @@ impl VideoReceiver {
         self.last_rr_at = Some(now);
         if let Some(mut receiver) = peer.rtp_receiver(receiver_id) {
             use rtcp::receiver_report::ReceiverReport;
+            use rtcp::source_description::{
+                SourceDescription, SourceDescriptionChunk, SourceDescriptionItem, SdesType,
+            };
             let rr = ReceiverReport {
                 ssrc: LOCAL_RTCP_SENDER_SSRC,
                 reports: vec![report],
                 ..Default::default()
             };
-            if let Err(error) = receiver.write_rtcp(vec![Box::new(rr)]) {
+            // RFC 3550 §6.1: RTCP MUST be compound (SR/RR first, SDES CNAME
+            // required). v1 sent a bare RR — non-compliant, may be discarded;
+            // iteration 2 sends [RR, SDES].
+            let sdes = SourceDescription {
+                chunks: vec![SourceDescriptionChunk {
+                    source: LOCAL_RTCP_SENDER_SSRC,
+                    items: vec![SourceDescriptionItem {
+                        sdes_type: SdesType::SdesCname,
+                        text: Bytes::from_static(b"green-vita"),
+                    }],
+                }],
+            };
+            if let Err(error) = receiver.write_rtcp(vec![Box::new(rr), Box::new(sdes)]) {
                 eprintln!("rr write_rtcp failed: {error}");
             }
         }
