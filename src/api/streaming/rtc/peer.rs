@@ -17,16 +17,16 @@ pub(crate) type FeedbackPeer = RTCPeerConnection<FeedbackChain>;
 
 #[define_opaque(FeedbackChain)]
 pub(crate) fn feedback_registry() -> Result<Registry<FeedbackChain>> {
-    // Registry stays EMPTY. 2c diagnosis (2026-10-30, sessions 151958 +
-    // 154412): binding rtc_interceptor's TwccReceiver compiled and ran but
-    // emitted NOTHING — rtcp_rtpfb_any=0 and twcc_sent=0 over 375 s while
-    // rtp_ext_twcc=202,571 proved the console annotates TWCC on every
-    // video packet (540/s). The break is inside the vita rtc fork
-    // (stream-bind / handle_read traversal / StreamInfo extmap — not
-    // instrumentable from our tree). Binding reverted to avoid a future
-    // double-send; 2c continues as the MANUAL path (vendored encoder,
-    // MIT/Apache-2.0) fed from VideoRtp::receive(), where our own parser
-    // already reads those exact extension bytes.
+    // S5b (2026-10-31): registry = RTX SSRC REWRITE ONLY. Inbound RTX rides
+    // a separate SSRC (answer ssrc-group:FID) which the crate's endpoint
+    // handler drops; RtxSsrcRewrite learns RTX->primary at
+    // bind_remote_stream and rewrites SSRC so retransmissions reach
+    // VideoRtp::receive_rtx. 0.2.5 hardware-proved this interceptor on the
+    // IDENTICAL dep set (rtx_read_rewritten=44, never reverted).
+    // NOT bound, deliberately: NackGenerator (A4: we classify holes
+    // ourselves — unclassified gaps would NACK console AU-skips),
+    // TwccReceiver (2c: silently broken bind; manual path exists, shelved),
+    // RR/SR responders (fork's RTCP-read is blind — SR matrix raw>0/count=0).
     // Prior folklore corrections retained below (75b4d6a verified these):
     // Fully silent registry. VERIFIED 2026-10-30 (chrome-dump reanalysis +
     // device last-offer.sdp ground truth) — corrected history:
@@ -48,7 +48,9 @@ pub(crate) fn feedback_registry() -> Result<Registry<FeedbackChain>> {
     //   exists — and it bundled NACK/PLI *responders* with TWCC.
     // Plan history: 2a/2b landed (690f0c7, 64cd6ee); the 2c interceptor
     // binding was reverted after the 154412 diagnostic (see above).
-    Ok(Registry::new())
+    Ok(Registry::new().with(|inner| {
+        crate::api::streaming::rtc::rtx_interceptor::RtxSsrcRewrite::new(inner)
+    }))
 }
 
 pub(crate) struct RtcDataChannelConfig {

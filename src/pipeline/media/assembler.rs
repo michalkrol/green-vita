@@ -108,6 +108,11 @@ pub struct AccessUnitAssembler {
     last_resolved_ts: Option<u32>,
     /// Count of packets dropped by the rule-4 phantom guard (§11).
     late_after_resolve: u64,
+    /// S5b/A4 side-channel: intra-AU hole ranges observed while an AU is
+    /// open (proven-loss: a hole below a higher present seq cannot be a
+    /// reorder tail). Drained once per push by VideoRtp — pure module, no
+    /// clocks, no I/O here.
+    pending_nacks: Vec<(u16, u16)>,
 }
 
 impl AccessUnitAssembler {
@@ -119,6 +124,7 @@ impl AccessUnitAssembler {
             au_first_arrival_us: 0,
             gap_au: 0,
             gap_hole: 0,
+    pending_nacks: Vec::new(),
             last_closed_seq: 0,
             last_resolved_ts: None,
             late_after_resolve: 0,
@@ -215,6 +221,7 @@ impl AccessUnitAssembler {
                     .map_or_else(|| nal_header.nal_ref_idc, |fh| fh.nal_ref_idc),
                 holes: 0,
                 packet_count: 1,
+                nack_reported: false,
             });
             true // flag that we started a new AU
         } else {
@@ -235,6 +242,16 @@ impl AccessUnitAssembler {
                     au.is_idr = true;
                 }
                 au.nal_ref_idc = au.nal_ref_idc.max(fu_header.map_or_else(|| nal_header.nal_ref_idc, |fh| fh.nal_ref_idc));
+                // S5b/A4: first mid-AU proven-loss detection (a hole below a
+                // higher present seq) — report immediately, once per AU, so
+                // RTX gets the longest possible hold window.
+                if !au.nack_reported {
+                    let ranges = compute_missing_ranges(&au.payloads);
+                    if !ranges.is_empty() {
+                        au.nack_reported = true;
+                        self.pending_nacks.extend(ranges);
+                    }
+                }
             }
 
             false // flag that we continued existing AU
@@ -257,6 +274,19 @@ impl AccessUnitAssembler {
                 let au = self.current_au.as_ref().expect("AU open during push");
                 compute_holes(&au.payloads)
             };
+            // S5b/A4: marker seen but holes remain — the ≤12 ms fill hold is
+            // about to open; report the proven-loss ranges ONCE per AU to the
+            // NACK side-channel (RTX must land inside the hold to save it).
+            if holes_now > 0 {
+                let au = self.current_au.as_mut().expect("AU open during push");
+                if !au.nack_reported {
+                    au.nack_reported = true;
+                    let ranges = compute_missing_ranges(&au.payloads);
+                    if !ranges.is_empty() {
+                        self.pending_nacks.extend(ranges);
+                    }
+                }
+            }
             if holes_now == 0 {
                 let mut resolved_au = self.current_au.take().unwrap();
                 let outcome = self.resolve_au_now(&mut resolved_au, arrival_us);
@@ -300,6 +330,11 @@ impl AccessUnitAssembler {
         }
 
         None
+    }
+
+    /// S5b: drain the NACK side-channel (see the `pending_nacks` field).
+    pub fn take_nack_ranges(&mut self) -> Vec<(u16, u16)> {
+        std::mem::take(&mut self.pending_nacks)
     }
 
     /// Resolve the current AU immediately (called when marker is seen or newer
@@ -521,6 +556,43 @@ fn compute_holes(payloads: &[(u16, Vec<u8>)]) -> u16 {
     u16::try_from(holes).unwrap_or(u16::MAX)
 }
 
+/// S5b/A4: same modular walk as `compute_holes` but returns the actual
+/// missing sequence ranges (inclusive). Only called when a hole exists
+/// (NACK side-channel emission) — never on the clean path.
+fn compute_missing_ranges(payloads: &[(u16, Vec<u8>)]) -> Vec<(u16, u16)> {
+    if payloads.len() <= 1 {
+        return Vec::new();
+    }
+    let mut seqs: Vec<u16> = payloads.iter().map(|(seq, _)| *seq).collect();
+    let anchor = modular_anchor(&seqs);
+    seqs.sort_by_key(|seq| seq.wrapping_sub(anchor));
+    let mut out = Vec::new();
+    for pair in seqs.windows(2) {
+        let gap = u32::from(pair[1].wrapping_sub(pair[0])).saturating_sub(1);
+        if gap > 0 {
+            out.push((pair[0].wrapping_add(1), pair[1].wrapping_sub(1)));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod s5b_nack_tests {
+    use super::compute_missing_ranges;
+
+    #[test]
+    fn missing_ranges_from_holey_payloads() {
+        let holey: Vec<(u16, Vec<u8>)> =
+            vec![(100, vec![1]), (101, vec![1]), (104, vec![1]), (105, vec![1])];
+        assert_eq!(compute_missing_ranges(&holey), vec![(102, 103)]);
+        let clean: Vec<(u16, Vec<u8>)> = vec![(7, vec![1]), (8, vec![1])];
+        assert!(compute_missing_ranges(&clean).is_empty());
+        let wrap: Vec<(u16, Vec<u8>)> =
+            vec![(65534, vec![1]), (65535, vec![1]), (1, vec![1])];
+        assert_eq!(compute_missing_ranges(&wrap), vec![(0, 0)]);
+    }
+}
+
 /// Convert the AU's raw payloads to byte-exact Annex-B, mirroring the legacy
 /// `H264Packet::depacketize` semantics packet-for-packet over modular
 /// sequence order (byte-equivalent to the legacy marker-anchored sort for
@@ -647,6 +719,9 @@ struct AuBuilder {
     /// µs arrival time of the marker packet (anchor of the ≤12 ms fill
     /// window). Only meaningful when `marker_seen`.
     marker_seen_at_us: u64,
+    /// S5b/A4: whether this AU's intra-AU holes were already reported to the
+    /// NACK side-channel (once per AU).
+    nack_reported: bool,
 }
 
 #[cfg(test)]

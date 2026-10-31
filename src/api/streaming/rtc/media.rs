@@ -6,7 +6,8 @@ use rtc::media_stream::MediaStreamTrackId;
 use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
 use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, RwLock};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use crate::streaming::video::metrics::{drain_metrics, METRICS};
@@ -21,6 +22,8 @@ const RR_INTERVAL: Duration = Duration::from_millis(800);
 /// One-variable gate (A2 method): RTCP Receiver Reports on/off. The passive
 /// SR sensor inside send_rr is NOT gated — it observes, never transmits.
 const SEND_RR: bool = true;
+/// S5b master switch (A2 method): hand-rolled NACK send on/off.
+const SEND_NACK: bool = true;
 /// Matches the SDP bitrate cap so pacing never becomes the limit.
 /// Deliberate UNDER-report of the link capacity, sent to the console every
 /// `REMB_INTERVAL` (policy: latency over quality).
@@ -37,6 +40,27 @@ const REMB_BITRATE_BPS: f32 = 15_000_000.0;
 /// Arbitrary stable local RTCP sender SSRC (we transmit no RTP of our own).
 /// 2c: also the sender_ssrc of the vendored TWCC feedback Recorder.
 pub(crate) const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
+
+/// S5b: negotiated RTX PT -> primary PT map from the ANSWER (renegotiation-
+/// safe overwrite — 9367138's fix over the OnceLock original). Read on the
+/// RTP hot path (is_negotiated_rtx_pt) and by the rewrite interceptor.
+static NEGOTIATED_RTX_MAP: LazyLock<RwLock<HashMap<u8, u8>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Sets the negotiated RTX mapping (called once per answer in worker.rs).
+pub(crate) fn set_negotiated_rtx_map(map: HashMap<u8, u8>) {
+    *NEGOTIATED_RTX_MAP.write().unwrap() = map;
+}
+
+/// Checks if a payload type is a negotiated RTX type (hot path — direct read).
+pub(crate) fn is_negotiated_rtx_pt(payload_type: u8) -> bool {
+    NEGOTIATED_RTX_MAP.read().unwrap().contains_key(&payload_type)
+}
+
+/// Primary PT for a negotiated RTX PT (`a=fmtp apt=`).
+pub(crate) fn rtx_apt_for(payload_type: u8) -> Option<u8> {
+    NEGOTIATED_RTX_MAP.read().unwrap().get(&payload_type).copied()
+}
 
 #[derive(Default)]
 struct VideoStats {
@@ -334,6 +358,72 @@ impl VideoReceiver {
             }
             if sr_count > 0 {
                 METRICS.rtcp_sr_count.store(sr_count, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// S5b (A4): hand-rolled NACK — flush the assembler's proven-loss hole
+    /// ranges as TransportLayerNack packets while the queue has data. Caps:
+    /// ≤64 pending seqs (rtp.rs) + ≤32 seqs/packet; single-shot per AU
+    /// (give-up keeps the existing damage/PLI behaviour). NOT the crate's
+    /// NackGenerator: it NACKs unclassified gaps, including console AU-skips
+    /// (media.rs:127 warning / A4 amendment). Socket truth for the CSV =
+    /// transport.rs counts PT=205 FMT=1 on egress (rtcp_nack_sent).
+    pub(crate) fn send_nack(&mut self, peer: &mut RTCPeerConnection, _now: Instant) {
+        if !SEND_NACK {
+            let _ = self.rtp.take_pending_nacks();
+            return;
+        }
+        let (Some(receiver_id), Some(media_ssrc)) = (self.receiver_id, self.ssrc) else {
+            return;
+        };
+        let ranges = self.rtp.take_pending_nacks();
+        if ranges.is_empty() {
+            return;
+        }
+        use rtcp::transport_feedbacks::transport_layer_nack::{NackPair, TransportLayerNack};
+        // Flatten ranges (wrapping-safe) with the A4 per-send cap.
+        let mut seqs: Vec<u16> = Vec::new();
+        'collect: for (start, end) in ranges {
+            let count = u32::from(end.wrapping_sub(start)).wrapping_add(1);
+            for i in 0..count {
+                if seqs.len() >= 32 {
+                    break 'collect;
+                }
+                seqs.push(start.wrapping_add(i as u16));
+            }
+        }
+        // Group into pid + 16-bit loss bitmask pairs (RFC 4585 §3.1.1).
+        let mut nacks: Vec<NackPair> = Vec::new();
+        let mut i = 0;
+        while i < seqs.len() {
+            let pid = seqs[i];
+            let mut mask: u16 = 0;
+            let mut j = i + 1;
+            while j < seqs.len()
+                && (j - i) <= 16
+                && seqs[j] == pid.wrapping_add((j - i) as u16)
+            {
+                mask |= 1u16 << ((j - i) - 1);
+                j += 1;
+            }
+            nacks.push(NackPair {
+                packet_id: pid,
+                lost_packets: mask,
+            });
+            i = j;
+        }
+        if nacks.is_empty() {
+            return;
+        }
+        let nack = TransportLayerNack {
+            sender_ssrc: LOCAL_RTCP_SENDER_SSRC,
+            media_ssrc,
+            nacks,
+        };
+        if let Some(mut receiver) = peer.rtp_receiver(receiver_id) {
+            if let Err(error) = receiver.write_rtcp(vec![Box::new(nack)]) {
+                eprintln!("nack write_rtcp failed: {error}");
             }
         }
     }

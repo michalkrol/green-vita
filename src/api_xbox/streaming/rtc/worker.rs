@@ -59,6 +59,13 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
         crate::api::streaming::rtc::rtp::set_negotiated_twcc_ext_id(twcc_id);
         crate::api::streaming::rtc::rtp::set_negotiated_ast_ext_id(ast_id);
         crate::api::streaming::rtc::rtp::set_negotiated_vt_ext_id(vt_id);
+        // S5b: negotiated RTX PT map from the ANSWER (source of truth — the
+        // console may renumber; ours echoes 112/apt=102 but parse, don't assume).
+        let rtx_map = sdp::extract_negotiated_rtx_mapping(&answer);
+        if !rtx_map.is_empty() {
+            eprintln!("negotiated RTX map: {rtx_map:?}");
+            crate::api::streaming::rtc::media::set_negotiated_rtx_map(rtx_map);
+        }
         Ok(answer)
     }
 }

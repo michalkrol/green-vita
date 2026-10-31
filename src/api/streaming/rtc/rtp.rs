@@ -117,6 +117,10 @@ pub(crate) struct VideoRtp {
     /// RR-first probe (31/10): RFC A.3 receiver stats feeding RTCP Receiver
     /// Reports — fed every video packet; console ssrc bound on first packet.
     rr: ReceptionStats,
+    /// S5b/A4: NACK side-channel ranges drained from the assembler each
+    /// push and flushed by media::send_nack (capped; give-up falls back to
+    /// the existing damage/PLI path).
+    pending_nacks: Vec<(u16, u16)>,
     /// 8a shadow (§3): the new AccessUnitAssembler fed every packet in
     /// parallel with the legacy path. Never authoritative.
     shadow: AccessUnitAssembler,
@@ -260,6 +264,7 @@ impl VideoRtp {
             grad_anchor_us: 0,
             twcc_recorder: Recorder::new(LOCAL_RTCP_SENDER_SSRC),
             rr: ReceptionStats::new(),
+            pending_nacks: Vec::new(),
             shadow: AccessUnitAssembler::new(),
             shadow_cmp: ShadowComparator::new(),
             arrival: mismatch_log::ArrivalRing::new(),
@@ -287,6 +292,14 @@ impl VideoRtp {
                 self.next_sequence = Some(packet.header.sequence_number.wrapping_add(1));
             }
             return stats;
+        }
+        // S5b: RTX (RFC 4588) — negotiated PT, separate SSRC already rewritten
+        // to primary by RtxSsrcRewrite. Unwrap the 2-byte original seq and feed
+        // ONLY the authority assembler: no census/RR/dump/ring/Q bookkeeping
+        // (duplicates must not disturb stream stats — 0.2.5 proven semantics).
+        if crate::api::streaming::rtc::media::is_negotiated_rtx_pt(packet.header.payload_type)
+        {
+            return self.receive_rtx(worker, packet, keyframe_requested);
         }
         self.total_bytes += 12 + packet.payload.len() as u64;
 
@@ -392,6 +405,11 @@ impl VideoRtp {
                 outcome, false, worker, keyframe_requested, &mut stats,
                 &mut frame_was_damaged,
             );
+        }
+        // S5b: drain any hole report emitted by this push (A4 side-channel).
+        let nack_ranges = self.shadow.take_nack_ranges();
+        if !nack_ranges.is_empty() {
+            self.queue_nacks(nack_ranges);
         }
         // Rule-4 phantom-guard drops (§11) mirrored into METRICS for the
         // 8a-v2 gate report.
@@ -838,6 +856,98 @@ impl VideoRtp {
         &mut self,
     ) -> Option<rtcp::reception_report::ReceptionReport> {
         self.rr.build_report()
+    }
+
+    /// S5b: unwrap an RTX retransmission (RFC 4588) and feed the authority
+    /// assembler ONLY. KEEP THE BLOCK IN SYNC with `receive()`'s authority
+    /// section: RTX must not touch census/RR/dump/ring/Q/slip (a duplicate
+    /// must not disturb stream stats). Outcome handling is identical so a
+    /// hole-filling RTX completes the AU through the normal rule-2/flush
+    /// paths (the marker hold window is up to 12 ms — LAN RTT fits).
+    fn receive_rtx(
+        &mut self,
+        worker: &VideoDecodeWorker,
+        packet: Packet,
+        keyframe_requested: &mut bool,
+    ) -> VideoSampleStats {
+        let mut stats = VideoSampleStats::default();
+        let mut frame_was_damaged = false;
+        METRICS.rtx_packets_received.fetch_add(1, Ordering::Relaxed);
+        if packet.payload.len() < 3 {
+            // RTX must carry the 2-byte OSN + at least 1 payload byte.
+            METRICS.rtp_invalid.fetch_add(1, Ordering::Relaxed);
+            return stats;
+        }
+        let original_seq = u16::from_be_bytes([packet.payload[0], packet.payload[1]]);
+        let mut unwrapped = packet;
+        unwrapped.header.sequence_number = original_seq;
+        unwrapped.payload = Bytes::copy_from_slice(&unwrapped.payload[2..]);
+        let packet_timestamp = unwrapped.header.timestamp;
+        let shadow_now = SHADOW_CLOCK.elapsed().as_micros() as u64;
+        // --- authority block: keep in sync with receive() ---
+        let direct = self.shadow.push(
+            unwrapped.header.sequence_number,
+            packet_timestamp,
+            unwrapped.header.marker,
+            &unwrapped.payload,
+            shadow_now,
+        );
+        while let Some(outcome) = self.shadow.poll_outcome() {
+            self.handle_shadow_outcome(
+                outcome, false, worker, keyframe_requested, &mut stats,
+                &mut frame_was_damaged,
+            );
+        }
+        if let Some(outcome) = direct {
+            self.handle_shadow_outcome(
+                outcome, false, worker, keyframe_requested, &mut stats,
+                &mut frame_was_damaged,
+            );
+        }
+        if let Some(outcome) = self.shadow.flush_due(shadow_now) {
+            self.handle_shadow_outcome(
+                outcome, true, worker, keyframe_requested, &mut stats,
+                &mut frame_was_damaged,
+            );
+        }
+        while let Some(outcome) = self.shadow.poll_outcome() {
+            self.handle_shadow_outcome(
+                outcome, false, worker, keyframe_requested, &mut stats,
+                &mut frame_was_damaged,
+            );
+        }
+        // --- end authority block ---
+        // Pull any hole report surfaced during this RTX push (late_after_resolve
+        // deltas stay primary-attributed — see receive()'s snapshot windows).
+        let ranges = self.shadow.take_nack_ranges();
+        if !ranges.is_empty() {
+            self.queue_nacks(ranges);
+        }
+        stats
+    }
+
+    /// S5b/A4 budget: cap pending NACK seqs (drop oldest ranges on overflow —
+    /// give-up falls back to the existing damage/PLI path).
+    fn queue_nacks(&mut self, ranges: Vec<(u16, u16)>) {
+        for range in ranges {
+            self.pending_nacks.push(range);
+        }
+        loop {
+            let total: u64 = self
+                .pending_nacks
+                .iter()
+                .map(|(s, e)| u32::from(e.wrapping_sub(*s)).wrapping_add(1) as u64)
+                .sum();
+            if total <= 64 || self.pending_nacks.is_empty() {
+                break;
+            }
+            self.pending_nacks.remove(0);
+        }
+    }
+
+    /// S5b: drain for media::send_nack.
+    pub(crate) fn take_pending_nacks(&mut self) -> Vec<(u16, u16)> {
+        std::mem::take(&mut self.pending_nacks)
     }
 }
 

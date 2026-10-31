@@ -146,6 +146,13 @@ impl RtcTransport {
                     .twcc_sent
                     .fetch_add(1, Ordering::Relaxed);
             }
+            // S5b: NACK (RTPFB FMT=1) leaving the socket — socket-truth
+            // count (packets, not seqs) for CSV rtcp_nack_sent.
+            if bytes.len() >= 2 && bytes[1] == 205 && bytes[0] & 0x1F == 1 {
+                crate::streaming::video::metrics::METRICS
+                    .rtcp_nack_sent
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             if let Err(error) = self
                 .socket
                 .send_to(&outgoing.message, outgoing.transport.peer_addr)
