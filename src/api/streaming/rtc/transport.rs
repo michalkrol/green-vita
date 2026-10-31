@@ -1,5 +1,6 @@
 use super::ice;
 use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
+use crate::streaming::video::metrics::METRICS;
 use anyhow::{Context, Result};
 use bytes::BytesMut;
 use rtc::sansio::Protocol;
@@ -88,6 +89,16 @@ impl RtcTransport {
                 loop {
                     match rx_socket.recv_from(&mut buf) {
                         Ok((n, peer_addr)) => {
+                            // Raw SR census at the true wire layer (RFC 7983:
+                            // V=2 + PT=200; SRTCP keeps the 8-byte header in
+                            // clear; STUN/DTLS have V!=2 and RTP payload types
+                            // never equal 200 under mux rules). Splits "console
+                            // never SRs us" from "fork drops inbound RTCP after
+                            // this point" — compare vs CSV rtcp_sr_count (the
+                            // crate's post-read stats).
+                            if n >= 2 && buf[0] >> 6 == 2 && buf[1] == 200 {
+                                METRICS.rtcp_sr_raw.fetch_add(1, Ordering::Relaxed);
+                            }
                             let datagram = CapturedDatagram {
                                 data: buf[..n].to_vec(),
                                 peer_addr,
