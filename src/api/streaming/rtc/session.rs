@@ -47,6 +47,7 @@ pub(crate) struct RtcSessionConfig {
     pub audio_sample_rate: u32,
     pub audio_payload_type: u8,
     pub video_fps: u32,
+    pub video_bitrate_kbps: u32,
     pub decoder: DecoderConfig,
     pub periodic_keyframe_enabled: bool,
 }
@@ -104,7 +105,12 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     ) -> Result<Self> {
         let transport =
             RtcTransport::bind(&mut peer, config.stun_server, config.route_probe).await?;
-        let mut video = VideoReceiver::new(config.decoder, direct_output, config.video_fps)?;
+        let mut video = VideoReceiver::new(
+            config.decoder,
+            direct_output,
+            config.video_fps,
+            config.video_bitrate_kbps,
+        )?;
         // Fresh session: clear the per-session metrics and the slip anchor so the first
         // CSV rows cannot report the previous session's values.
         crate::streaming::video::metrics::reset_session_metrics();

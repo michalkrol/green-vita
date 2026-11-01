@@ -36,6 +36,7 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
             audio_sample_rate: AUDIO_SAMPLE_RATE as u32,
             audio_payload_type: AUDIO_PAYLOAD_TYPE,
             video_fps: self.video_fps,
+            video_bitrate_kbps: self.video_bitrate_kbps,
             decoder: DecoderConfig {
                 decode_width: STREAM_WIDTH,
                 decode_height: STREAM_HEIGHT,

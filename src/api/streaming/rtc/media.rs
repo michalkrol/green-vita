@@ -8,7 +8,7 @@ use rtc::rtp::Packet;
 use rtc::rtp_transceiver::RTCRtpReceiverId;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use crate::streaming::video::metrics::{drain_metrics, METRICS};
 use crate::api_xbox::streaming::control::input::{SEND_RENDER_TIMING_METADATA, queue_video_metadata};
@@ -32,19 +32,42 @@ const SEND_NACK: bool = true;
 /// 2026-11-01 for the late-ramp A/B (bw drifted 3.5→5.1 Mbps through
 /// the wall despite TWCC+RR feedback).
 const SEND_REMB: bool = false;
-/// Matches the SDP bitrate cap so pacing never becomes the limit.
-/// Deliberate UNDER-report of the link capacity, sent to the console every
-/// `REMB_INTERVAL` (policy: latency over quality).
-///
-/// The Vita's 2.4 GHz hop measures ~3.5-5 Mbps sustained (spikes to 7.5), and the
-/// previous fixed 15 Mbps announcement told the sender there was headroom it does not
-/// have: it overfilled the AP queue, and with no surplus capacity the queue never
-/// drained - the accumulating-latency bug.  REMB is also the ONLY rate signal the
-/// console gets from us (transport-cc is stubbed in this base).
-///
-/// Next step: derive this from the bitrate-cap setting (clamped, no-cap ceiling) and
-/// from measured delivered throughput.
-const REMB_BITRATE_BPS: f32 = 15_000_000.0;
+/// Safe-Ceiling REMB (2026-11-01, user+eng plan): the ceiling = the user's
+/// bitrate-cap setting (the SAME field that drives the SDP b=AS line, read
+/// fresh at session start); 0 (= "no cap" in the UI) falls back to this
+/// default. Replaces the constant 15 Mbps announcement that advertised
+/// headroom the 2.4 GHz hop does not have — the documented-intent fix that
+/// never landed. Descent-only: the ladder below steps down from LIVE
+/// pre-repair damage (our own NACK egress) and never grows back (passive).
+const REMB_DEFAULT_CAP_BPS: f32 = 15_000_000.0;
+/// Ladder floor — never descend below this, so the signal stays sane.
+const REMB_FLOOR_BPS: f32 = 1_000_000.0;
+/// NACK-egress/s ladder thresholds, calibrated from 2026-11-01 archives
+/// (clean ≈0.18/s, congested 2–5.6/s): ≥GENTLE −10 %/tick, ≥DEEP −25 %/tick,
+/// below GENTLE = hold at current value.
+const REMB_NACK_GENTLE: f32 = 1.0;
+const REMB_NACK_DEEP: f32 = 4.0;
+const REMB_STEP_GENTLE: f32 = 0.90;
+const REMB_STEP_DEEP: f32 = 0.75;
+/// Egress-NACK feeder for the ladder. transport.rs increments per NACK
+/// packet leaving the socket; the 1 Hz stats tick swaps it out — deliberately
+/// separate from METRICS.rtcp_nack_sent so the controller and the CSV drain
+/// never steal each other's counts.
+pub(crate) static REMB_NACK_EGRESS: AtomicU64 = AtomicU64::new(0);
+
+/// Pure Safe-Ceiling descent (unit-tested): passive — never rises, floored
+/// at REMB_FLOOR_BPS. Evaluated on the 1 Hz stats tick; send_remb (500 ms
+/// cadence) only reads the current effective value.
+fn remb_descent(effective_bps: f32, nack_rate_per_s: f32) -> f32 {
+    let stepped = if nack_rate_per_s >= REMB_NACK_DEEP {
+        effective_bps * REMB_STEP_DEEP
+    } else if nack_rate_per_s >= REMB_NACK_GENTLE {
+        effective_bps * REMB_STEP_GENTLE
+    } else {
+        effective_bps
+    };
+    stepped.clamp(REMB_FLOOR_BPS, effective_bps.max(REMB_FLOOR_BPS))
+}
 /// Arbitrary stable local RTCP sender SSRC (we transmit no RTP of our own).
 /// 2c: also the sender_ssrc of the vendored TWCC feedback Recorder.
 pub(crate) const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
@@ -220,6 +243,11 @@ pub(crate) struct VideoReceiver {
     last_remb_at: Option<Instant>,
     last_twcc_at: Option<Instant>,
     last_rr_at: Option<Instant>,
+    /// Safe-Ceiling REMB controller state (inert while SEND_REMB is false).
+    remb_cap_bps: f32,
+    remb_effective_bps: f32,
+    remb_nack_window: [u32; 5],
+    remb_window_idx: usize,
     stats: VideoStats,
     direct_output: Arc<DirectVideoOutput>,
 }
@@ -229,12 +257,33 @@ impl VideoReceiver {
         config: DecoderConfig,
         direct_output: Arc<DirectVideoOutput>,
         video_fps: u32,
+        video_bitrate_kbps: u32,
     ) -> Result<Self> {
         let decoder = VideoDecodeWorker::spawn(config, Arc::clone(&direct_output))?;
-        Ok(Self::init(decoder, config, direct_output, video_fps))
+        Ok(Self::init(
+            decoder,
+            config,
+            direct_output,
+            video_fps,
+            video_bitrate_kbps,
+        ))
     }
 
-    fn init(decoder: VideoDecodeWorker, _config: DecoderConfig, direct_output: Arc<DirectVideoOutput>, _video_fps: u32) -> Self {
+    fn init(
+        decoder: VideoDecodeWorker,
+        _config: DecoderConfig,
+        direct_output: Arc<DirectVideoOutput>,
+        _video_fps: u32,
+        video_bitrate_kbps: u32,
+    ) -> Self {
+        // Safe-Ceiling REMB: ceiling = the user's bitrate cap (0 = no cap →
+        // default). Effective starts AT the cap; only the descent ladder
+        // moves it, and only down.
+        let remb_cap_bps = if video_bitrate_kbps == 0 {
+            REMB_DEFAULT_CAP_BPS
+        } else {
+            video_bitrate_kbps as f32 * 1000.0
+        };
         Self {
             track_id: None,
             receiver_id: None,
@@ -250,6 +299,10 @@ impl VideoReceiver {
             last_remb_at: None,
             last_twcc_at: None,
             last_rr_at: None,
+            remb_cap_bps,
+            remb_effective_bps: remb_cap_bps,
+            remb_nack_window: [0; 5],
+            remb_window_idx: 0,
             stats: VideoStats::default(),
             direct_output,
         }
@@ -359,13 +412,13 @@ impl VideoReceiver {
         }
     }
 
-    /// Sends Receiver Estimated Max Bitrate — CONSTANT 15 Mbps @500 ms to keep
-    /// the console's estimate fresh. VERIFIED 2026-10-30: this IS called every
-    /// pump (session.rs) — the old "Currently not called" note was false.
-    /// Chrome dumps: Chrome negotiates goog-remb but sends ZERO REMB packets;
-    /// the console paces from TWCC instead. So this is our own experiment
-    /// with weak prior (verdict #8 ruled computed REMB wrong; the const
-    /// sidesteps computation but advertises 15 Mbps ≫ wifi capacity anyway).
+    /// Sends Receiver Estimated Max Bitrate — Safe-Ceiling (2026-11-01): the
+    /// payload carries the ladder-fed effective value (starts at the user's
+    /// bitrate cap, descends on NACK egress, never rises — see remb_descent).
+    /// Still gated OFF (SEND_REMB) until the device A/B; historic note: the old
+    /// constant-15M announcement caused the accumulating-latency bug and Chrome
+    /// sends ZERO REMB (pcap-verified 2026-10-30). Called every pump (session.rs),
+    /// paced internally to REMB_INTERVAL.
     pub(crate) fn send_remb(&mut self, peer: &mut RTCPeerConnection, now: Instant) {
         if !SEND_REMB {
             return;
@@ -384,7 +437,9 @@ impl VideoReceiver {
             let remb =
                 rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate {
                     sender_ssrc: LOCAL_RTCP_SENDER_SSRC,
-                    bitrate: REMB_BITRATE_BPS,
+                    // Safe-Ceiling: the ladder-fed effective value (starts at
+                    // the user cap, descends on NACK egress, never rises).
+                    bitrate: self.remb_effective_bps,
                     ssrcs: vec![ssrc],
                 };
             let _ = receiver.write_rtcp(vec![Box::new(remb)]);
@@ -673,6 +728,19 @@ impl VideoReceiver {
         METRICS.twcc_delay_med_us.store(twcc_delay_med_us, Ordering::Relaxed);
         METRICS.twcc_delay_max_us.store(twcc_delay_max_us, Ordering::Relaxed);
 
+        // Safe-Ceiling REMB ladder tick (1 Hz): swap our own egress-NACK
+        // accumulator, slide the 5-tick window, descend. Runs even while
+        // SEND_REMB is false so flipping the gate measures the real policy
+        // (effective starts at cap; controller has no re-growth path).
+        {
+            let nacks = REMB_NACK_EGRESS.swap(0, Ordering::Relaxed) as u32;
+            self.remb_nack_window[self.remb_window_idx] = nacks;
+            self.remb_window_idx = (self.remb_window_idx + 1) % self.remb_nack_window.len();
+            let rate = self.remb_nack_window.iter().sum::<u32>() as f32
+                / self.remb_nack_window.len() as f32;
+            self.remb_effective_bps = remb_descent(self.remb_effective_bps, rate);
+        }
+
         // Compute SR-anchored absolute latency metrics once per second.
         // Requires: SR anchor exists, NTP > 0, and newest received RTP timestamp available.
         {
@@ -762,5 +830,42 @@ impl AudioReceiver {
 
     pub(crate) fn receive(&mut self, packet: Packet) {
         self.rtp.receive(packet, &mut self.packets);
+    }
+}
+
+#[cfg(test)]
+mod remb_ladder_tests {
+    use super::{REMB_FLOOR_BPS, remb_descent};
+
+    #[test]
+    fn clean_link_holds_at_current_value() {
+        // Measured clean-link NACK egress ≈ 0.18/s — well under GENTLE.
+        assert_eq!(remb_descent(5_000_000.0, 0.18), 5_000_000.0);
+        assert_eq!(remb_descent(5_000_000.0, 0.0), 5_000_000.0);
+    }
+
+    #[test]
+    fn gentle_band_steps_down_ten_percent() {
+        let out = remb_descent(5_000_000.0, 1.5);
+        assert!((out - 4_500_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn deep_band_steps_down_twenty_five_percent() {
+        // Measured congested runs: 2–5.6/s — 5.0/s is deep territory.
+        let out = remb_descent(5_000_000.0, 5.0);
+        assert!((out - 3_750_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn descent_never_rises_and_never_passes_the_floor() {
+        // Already-floored value stays floored regardless of rate.
+        assert_eq!(remb_descent(REMB_FLOOR_BPS, 9.0), REMB_FLOOR_BPS);
+        // A deep rate from just above the floor clamps AT the floor.
+        assert_eq!(remb_descent(1_200_000.0, 9.0), REMB_FLOOR_BPS);
+        // Monotonic: output never exceeds the input at any rate.
+        for rate in [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 100.0] {
+            assert!(remb_descent(5_000_000.0, rate) <= 5_000_000.0);
+        }
     }
 }

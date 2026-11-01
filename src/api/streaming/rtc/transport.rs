@@ -180,10 +180,14 @@ impl RtcTransport {
                     .fetch_add(1, Ordering::Relaxed);
             }
             // S5b: NACK (RTPFB FMT=1) leaving the socket — socket-truth
-            // count (packets, not seqs) for CSV rtcp_nack_sent.
+            // count (packets, not seqs) for CSV rtcp_nack_sent. Also feeds
+            // the Safe-Ceiling REMB ladder via its own accumulator (kept
+            // separate from the metrics drain so neither steals counts).
             if bytes.len() >= 2 && bytes[1] == 205 && bytes[0] & 0x1F == 1 {
                 crate::streaming::video::metrics::METRICS
                     .rtcp_nack_sent
+                    .fetch_add(1, Ordering::Relaxed);
+                crate::api::streaming::rtc::media::REMB_NACK_EGRESS
                     .fetch_add(1, Ordering::Relaxed);
             }
             if let Err(error) = self
