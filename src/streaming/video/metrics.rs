@@ -57,6 +57,8 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) video_bandwidth_kbps: u64,
     pub(crate) display_pickup_us: u64,
     pub(crate) display_pickup_max_us: u64,
+    pub(crate) twcc_delay_med_us: u64,
+    pub(crate) twcc_delay_max_us: u64,
     pub(crate) sr_age_ms: i64,
     pub(crate) sr_clock_offset_ms: i64,
     pub(crate) capture_to_arrival_us: i64,
@@ -157,6 +159,8 @@ pub(crate) struct VideoMetrics {
     pub(crate) video_bandwidth_kbps: AtomicU64,
     pub(crate) display_pickup_us: AtomicU64,
     pub(crate) display_pickup_max_us: AtomicU64,
+    pub(crate) twcc_delay_med_us: AtomicU64,
+    pub(crate) twcc_delay_max_us: AtomicU64,
     pub(crate) sh_match: AtomicU64,
     pub(crate) sh_bound_mismatch: AtomicU64,
     pub(crate) sh_bytes_mismatch: AtomicU64,
@@ -240,6 +244,8 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     capture_to_arrival_max_us: AtomicI64::new(0),
     display_pickup_us: AtomicU64::new(0),
     display_pickup_max_us: AtomicU64::new(0),
+    twcc_delay_med_us: AtomicU64::new(0),
+    twcc_delay_max_us: AtomicU64::new(0),
     sh_match: AtomicU64::new(0),
     sh_bound_mismatch: AtomicU64::new(0),
     sh_bytes_mismatch: AtomicU64::new(0),
@@ -404,6 +410,8 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         video_bandwidth_kbps: METRICS.video_bandwidth_kbps.swap(0, Ordering::Relaxed),
         display_pickup_us: METRICS.display_pickup_us.swap(0, Ordering::Relaxed),
         display_pickup_max_us: METRICS.display_pickup_max_us.swap(0, Ordering::Relaxed),
+        twcc_delay_med_us: METRICS.twcc_delay_med_us.swap(0, Ordering::Relaxed),
+        twcc_delay_max_us: METRICS.twcc_delay_max_us.swap(0, Ordering::Relaxed),
         sr_age_ms: METRICS.sr_age_ms.swap(0, Ordering::Relaxed) as i64,
         sr_clock_offset_ms: METRICS.sr_clock_offset_ms.swap(0, Ordering::Relaxed) as i64,
         capture_to_arrival_us: METRICS.capture_to_arrival_us.swap(0, Ordering::Relaxed) as i64,
@@ -481,6 +489,8 @@ pub(crate) fn reset_session_metrics() {
     METRICS.flushes.store(0, Ordering::Relaxed);
     METRICS.twcc_sent.store(0, Ordering::Relaxed);
     METRICS.twcc_samples.store(0, Ordering::Relaxed);
+    METRICS.twcc_delay_med_us.store(0, Ordering::Relaxed);
+    METRICS.twcc_delay_max_us.store(0, Ordering::Relaxed);
     METRICS.rtp_ext_any.store(0, Ordering::Relaxed);
     METRICS.twcc_stride.store(0, Ordering::Relaxed);
     METRICS.video_metadata_sent.store(0, Ordering::Relaxed);

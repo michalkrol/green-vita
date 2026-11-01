@@ -69,6 +69,11 @@ pub(crate) struct Recorder {
     media_ssrc: u32,
     fb_pkt_cnt: u8,
     packets_held: usize,
+    /// Collected per-packet delays (arrival delta in us) for TWCC summary.
+    /// Drained-and-reset by take_delay_summary_us().
+    packet_delays_us: Vec<i64>,
+    /// Previous arrival time, used to compute per-packet delay.
+    previous_arrival_time: Option<i64>,
 }
 
 impl Recorder {
@@ -82,6 +87,8 @@ impl Recorder {
             media_ssrc: 0,
             fb_pkt_cnt: 0,
             packets_held: 0,
+            packet_delays_us: Vec::new(),
+            previous_arrival_time: None,
         }
     }
 
@@ -103,6 +110,13 @@ impl Recorder {
         if self.arrival_time_map.has_received(unwrapped_sn) {
             return;
         }
+
+        // Compute per-packet delay (arrival delta minus previous send delta).
+        if let Some(prev) = self.previous_arrival_time {
+            let delay_us = arrival_time - prev;
+            self.packet_delays_us.push(delay_us);
+        }
+        self.previous_arrival_time = Some(arrival_time);
 
         self.arrival_time_map.add_packet(unwrapped_sn, arrival_time);
         self.packets_held += 1;
@@ -129,6 +143,23 @@ impl Recorder {
     #[allow(dead_code)]
     pub(crate) fn packets_held(&self) -> usize {
         self.packets_held
+    }
+
+    /// Take a per-interval summary of packet delays (median and max in microseconds)
+    /// since the previous call.  Drains the internal buffer so the next call starts fresh.
+    /// Returns (median_us, max_us), or (0, 0) if no delays have been recorded.
+    pub(crate) fn take_delay_summary_us(&mut self) -> (u64, u64) {
+        if self.packet_delays_us.is_empty() {
+            return (0, 0);
+        }
+        let mut sorted = self.packet_delays_us.clone();
+        sorted.sort();
+        let n = sorted.len();
+        let max_us = sorted[n - 1].max(0) as u64;
+        let median_us = sorted[n / 2].max(0) as u64;
+        // Drain the buffer for the next call.
+        self.packet_delays_us.clear();
+        (median_us, max_us)
     }
 
     /// Build TWCC feedback packets for all recorded arrivals.
@@ -267,6 +298,7 @@ impl Feedback {
 
     fn add_received(&mut self, sequence_number: u16, timestamp_us: i64) -> bool {
         let delta_us = timestamp_us - self.last_timestamp_us;
+
         let delta_250us = if delta_us >= 0 {
             (delta_us + TYPE_TCC_DELTA_SCALE_FACTOR / 2) / TYPE_TCC_DELTA_SCALE_FACTOR
         } else {

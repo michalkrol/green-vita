@@ -119,7 +119,7 @@ pub(crate) struct VideoRtp {
     /// 2c: manual TWCC recorder (vendored from rtc-interceptor 0.20.0-rc.2,
     /// MIT/Apache-2.0) — fed per annotated packet in receive() behind
     /// MANUAL_TWCC, drained by take_twcc_feedback() on send_twcc's gate.
-    twcc_recorder: Recorder,
+    pub(crate) twcc_recorder: Recorder,
     /// RR-first probe (31/10): RFC A.3 receiver stats feeding RTCP Receiver
     /// Reports — fed every video packet; console ssrc bound on first packet.
     rr: ReceptionStats,

@@ -667,6 +667,12 @@ impl VideoReceiver {
             self.last_bw_bytes = total;
         }
 
+        // Publish TWCC per-interval delay summary (median and max us) once per second.
+        let (twcc_delay_med_us, twcc_delay_max_us) =
+            self.rtp.twcc_recorder.take_delay_summary_us();
+        METRICS.twcc_delay_med_us.store(twcc_delay_med_us, Ordering::Relaxed);
+        METRICS.twcc_delay_max_us.store(twcc_delay_max_us, Ordering::Relaxed);
+
         // Compute SR-anchored absolute latency metrics once per second.
         // Requires: SR anchor exists, NTP > 0, and newest received RTP timestamp available.
         {
