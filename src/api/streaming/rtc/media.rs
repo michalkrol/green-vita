@@ -15,7 +15,7 @@ use crate::api_xbox::streaming::control::input::{SEND_RENDER_TIMING_METADATA, qu
 
 const STREAM_STATS_INTERVAL: Duration = Duration::from_secs(1);
 const REMB_INTERVAL: Duration = Duration::from_millis(500);
-const TWCC_INTERVAL: Duration = Duration::from_millis(100);
+const TWCC_INTERVAL: Duration = Duration::from_millis(60);
 /// RR-first probe (31/10): Chrome sends RR ~1.2/s (pcap 20261030: median
 /// 0.83 s inter-arrival) — match that family.
 const RR_INTERVAL: Duration = Duration::from_millis(800);
@@ -378,8 +378,9 @@ impl VideoReceiver {
 
     /// 2c (2026-10-30): MANUAL transport-cc feedback — the vendored Recorder
     /// (twcc/, fed from VideoRtp::receive()) is drained here every
-    /// TWCC_INTERVAL (100 ms, unchanged from the interceptor era; Safari's
-    /// ~17/s ≈ 59 ms noted but not adopted — one variable per build).
+    /// TWCC_INTERVAL (60 ms since 2026-11-01; was 100 ms unchanged from the
+    /// interceptor era, when Safari's ~17/s ≈ 59 ms was noted but not adopted —
+    /// the Chrome pcap cadence adopted for the bad-link A/B).
     /// Built packets carry sender_ssrc/media_ssrc/fb_pkt_count internally
     /// (recorder.rs). Proof-of-send = twcc_sent + rtcp_rtpfb_any at the
     /// socket flush; the console annotates 100% of packets when negotiated
@@ -387,6 +388,7 @@ impl VideoReceiver {
     /// MANUAL_TWCC (rtp.rs) for the on/off A/B. History: the interceptor-era
     /// send_twcc never sent a packet (take_twcc_report -> None, and pre-2a
     /// the offer carried no extmaps at all).
+    /// 2026-11-01: 60 ms = Chrome pcap cadence (chrome-dumps/README), was 100 ms.
     pub(crate) fn send_twcc(&mut self, peer: &mut RTCPeerConnection, now: Instant) {
         if !rtp::MANUAL_TWCC {
             return;
