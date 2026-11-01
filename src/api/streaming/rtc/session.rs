@@ -31,6 +31,10 @@ const LAG_FLUSH_MIN_INTERVAL: Duration = Duration::from_secs(10);
 /// shed/skip event whose pacer slip never recovers; flush after this many new
 /// drops even if the (re-anchoring) lag reading hasn't caught up.
 const DROP_FLUSH_THRESHOLD: u64 = 25;
+/// Gates the lag half of the backlog flush trigger.  The metric is being
+/// validated observe-only first: with this false the HUD shows live lag/lagMax
+/// while flush behaviour is unchanged (the drop-count trigger still applies).
+const LAG_FLUSH_ENABLED: bool = false;
 const INITIAL_VIDEO_GRACE: Duration = Duration::from_millis(500);
 const INITIAL_VIDEO_KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
 /// When true, no keyframe requests are sent (initial watchdog, recovery PLI).
@@ -348,8 +352,13 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         let total_drops = self.video.total_drops();
         let drops_since_flush = total_drops.saturating_sub(self.drops_at_last_flush);
         let lag_us = METRICS.stream_lag_us.load(Ordering::Relaxed);
-        let eligible = lag_us >= LAG_FLUSH_THRESHOLD_US || drops_since_flush >= DROP_FLUSH_THRESHOLD;
+        let lag_eligible = LAG_FLUSH_ENABLED && lag_us >= LAG_FLUSH_THRESHOLD_US;
+        let eligible = lag_eligible || drops_since_flush >= DROP_FLUSH_THRESHOLD;
         if !eligible {
+            // Only an eligible stretch counts toward the sustain window; without
+            // this reset a single eligible instant would permanently satisfy
+            // LAG_FLUSH_SUSTAIN and flush on the next eligible tick.
+            self.lag_high_since = None;
             return;
         }
         let since = *self.lag_high_since.get_or_insert(now);

@@ -23,6 +23,8 @@ use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
+#[cfg(test)]
+use std::time::Duration;
 
 const MAX_PENDING_AUDIO_PACKETS: usize = 32;
 // 8b (§6.3): only the cfg(test) legacy oracle's assemble() reads this now —
@@ -527,6 +529,7 @@ impl VideoRtp {
             marker_sequence,
             ..
         } = au;
+        self.update_stream_lag(au.timestamp, au.first_packet_at);
         // Record both average and worst-case RTP assembly time for the stream HUD.
         let assembly_us = au.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS
@@ -826,6 +829,25 @@ impl VideoRtp {
         }
     }
     pub(crate) fn reset_lag_anchor(&mut self) { self.stream_clock_anchor = None; }
+    /// Update the stream lag metric by computing the slip between the RTP timestamp
+    /// schedule and actual arrival time, relative to the stream clock anchor.
+    fn update_stream_lag(&mut self, au_timestamp: u32, au_first_packet_at: Instant) {
+        let (anchor_at, anchor_timestamp) = *self
+            .stream_clock_anchor
+            .get_or_insert((au_first_packet_at, au_timestamp));
+        let lag_us = schedule_slip_us(
+            anchor_at,
+            anchor_timestamp,
+            au_first_packet_at,
+            au_timestamp,
+        );
+        crate::streaming::video::metrics::METRICS
+            .stream_lag_us
+            .store(lag_us, Ordering::Relaxed);
+        crate::streaming::video::metrics::METRICS
+            .stream_lag_max_us
+            .fetch_max(lag_us, Ordering::Relaxed);
+    }
     /// Drift instrumentation: (slip_ms, wall_ms, media_ms).  slip = wall time
     /// since the session anchor minus media time (RTP clock at 90 kHz) advanced
     /// since the anchor.  A flat slope means arrivals keep pace with the media
@@ -997,6 +1019,44 @@ mod tests {
         assert_eq!(color_matrix_label(3), "m3");
         assert_eq!(color_matrix_label(255), "m255");
     }
+}
+
+// ---------- schedule_slip_us unit tests (from 0.2.5) ----------
+#[test]
+fn zero_slip_when_arrival_matches_schedule() {
+    let anchor = Instant::now();
+    // 30 frames at 90 kHz == 1 second of RTP time, arriving 1s later.
+    assert_eq!(
+        schedule_slip_us(anchor, 0, anchor + Duration::from_secs(1), 90_000),
+        0
+    );
+}
+
+#[test]
+fn reports_positive_slip_when_late() {
+    let anchor = Instant::now();
+    // RTP says 0.5s elapsed, but 0.75s really elapsed -> 250ms slip.
+    assert_eq!(
+        schedule_slip_us(anchor, 0, anchor + Duration::from_millis(750), 45_000),
+        250_000
+    );
+}
+
+#[test]
+fn clamps_early_or_reordered_arrival_to_zero() {
+    let anchor = Instant::now();
+    assert_eq!(schedule_slip_us(anchor, 0, anchor, 45_000), 0);
+}
+
+#[test]
+fn wraps_across_the_rtp_timestamp_space() {
+    let anchor = Instant::now();
+    let anchor_ts = u32::MAX - 45_000 + 1;
+    // next RTP timestamp wraps past u32::MAX by 45_000 (0.5s)
+    assert_eq!(
+        schedule_slip_us(anchor, anchor_ts, anchor + Duration::from_millis(500), anchor_ts.wrapping_add(45_000)),
+        0
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1420,6 +1480,22 @@ fn parse_transport_wide_seq(payload: &[u8]) -> Option<u16> {
 fn timestamp_is_newer(candidate: u32, reference: u32) -> bool {
     let distance = candidate.wrapping_sub(reference);
     distance != 0 && distance < (1 << 31)
+}
+
+/// Expected-vs-actual arrival slip for one access unit, in microseconds.
+/// `expected` is how long the RTP timestamps say should have elapsed since the
+/// anchor; `actual` is how long really elapsed.  Never negative.
+fn schedule_slip_us(
+    anchor_at: Instant,
+    anchor_timestamp: u32,
+    au_at: Instant,
+    au_timestamp: u32,
+) -> u64 {
+    let expected_us = u64::from(au_timestamp.wrapping_sub(anchor_timestamp))
+        .saturating_mul(1_000_000)
+        / u64::from(VIDEO_RTP_CLOCK_RATE);
+    let actual_us = au_at.saturating_duration_since(anchor_at).as_micros() as u64;
+    actual_us.saturating_sub(expected_us)
 }
 
 struct AccessUnitInfo {
