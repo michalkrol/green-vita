@@ -48,7 +48,11 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
 
     async fn exchange_sdp(&self, offer: &RTCSessionDescription) -> Result<String> {
         let sdp = sdp::cap_video_bitrate(&offer.sdp, self.video_bitrate_kbps);
-        let sdp = sdp::request_video_fps(&sdp, 30);
+        // Thread the user's fps switch into the offer (2026-11-01 fix: this
+        // call hardcoded 30 while `video_fps` sat unused on the provider).
+        // The console reportedly ignores a=framerate (content-driven rate),
+        // so this is signaling honesty, not a performance change.
+        let sdp = sdp::request_video_fps(&sdp, self.video_fps);
         let answer = self.stream.send_sdp_offer(&sdp).await?;
         // 2a: inbound extension ids from the ANSWER (0 = still not
         // negotiated — pre-2a offers carried none and unwrap_or(0) hid that).
