@@ -25,17 +25,22 @@ const SEND_RR: bool = true;
 /// S5b master switch (A2 method): hand-rolled NACK send on/off.
 const SEND_NACK: bool = true;
 
-/// REMB feedback master switch — **TRUE as of 2026-11-01 (the A/B arm).**
-/// Baseline for comparison: `metrics-ce515c5-cap5m-546s-20261101.csv`
-/// (cap 5M, SEND_REMB=false, bw thirds 4.21→4.96→4.91). This arm adds the
-/// Safe-Ceiling controller's DYNAMIC descent: ceiling = the user's bitrate
-/// cap, stepping down on NACK-egress bursts (−10 %/tick ≥1/s, −25 %/tick
-/// ≥4/s, floor 1 Mbps, no re-growth). One variable vs baseline = the flip.
-/// OFF was Chrome-parity — the 2026-10-30 pcap shows Chrome negotiates
-/// goog-remb but sends ZERO REMB packets (the console paces from TWCC).
-/// The constant 15 Mbps era advertised headroom the 2.4 GHz link does not
-/// have; the Safe-Ceiling controller replaced it (ce515c5).
-const SEND_REMB: bool = true;
+/// REMB feedback master switch — **FALSE (reverted 2026-11-01).** The A/B
+/// arm (`2275aa8`, 288 s, cap 5M) answered: descent-only REMB is HARMFUL
+/// on this link. Ladder fired on ordinary radio bursts (NACK ≈0.9/s) and
+/// ratcheted the announced ceiling down with no re-growth → console
+/// obeyed, bw fell thirds 2.45→2.13→2.0 Mbps (baseline 4.21→4.96→4.91)
+/// while its pacer QUEUED the surplus: stream_lag thirds 11→131→90 ms
+/// (max 1.0 s), queue_full 3.15 vs 0.42, presented 47 vs 52.5 — the
+/// accumulating-latency class, from the LOW direction this time (15M-const
+/// was the HIGH direction). User observation matches: pause/menu drains
+/// latency to floor (console queue empties), freezes release in bursts
+/// that catch up only to the accumulated point. LESSONS for any revival:
+/// thresholds ≥1 NACK/s ratchet down on a link whose healthy baseline is
+/// 0.5–1.5/s; passive/no-re-growth turns bursts into permanent collapse;
+/// remb_effective_bps must be a CSV column BEFORE the next attempt.
+/// Chrome-parity (TWCC-60 + RR + static b=AS cap) remains the best config.
+const SEND_REMB: bool = false;
 /// Safe-Ceiling REMB (2026-11-01, user+eng plan): the ceiling = the user's
 /// bitrate-cap setting (the SAME field that drives the SDP b=AS line, read
 /// fresh at session start); 0 (= "no cap" in the UI) falls back to this
