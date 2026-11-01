@@ -200,7 +200,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
 
                 // Two-column layout when many rows (>10), otherwise single column
                 let two_columns = n > 10;
-                let n_left = if two_columns { n / 2 } else { n };
+                let n_left = if two_columns { (n + 1) / 2 } else { n };
                 let n_right = if two_columns { n - n_left } else { 0 };
 
                 let panel_h = ROW_HEIGHT * n as f32 + 16.0;

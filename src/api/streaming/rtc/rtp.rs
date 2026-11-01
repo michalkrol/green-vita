@@ -355,6 +355,16 @@ impl VideoRtp {
             packet_timestamp,
             SHADOW_CLOCK.elapsed().as_micros() as i64,
         );
+        // Track the newest received RTP timestamp for SR-anchored
+        // capture-to-arrival latency metrics in media.rs.
+        // Advance only to newer timestamps (mirrors the logic in the
+        // later match block on self.latest_rtp, but unconditional).
+        let prev_newest = self.newest_received_ts;
+        self.newest_received_ts = Some(match prev_newest {
+            Some(cur) if timestamp_is_newer(packet_timestamp, cur) => packet_timestamp,
+            Some(cur) => cur,
+            None => packet_timestamp,
+        });
 
         crate::streaming::video::rtp_dump_log::record(
             SHADOW_CLOCK.elapsed().as_micros() as u64,
@@ -438,9 +448,6 @@ impl VideoRtp {
             Some((_, last_ts)) if !timestamp_is_newer(packet_timestamp, last_ts) => {}
             _ => {
                 self.latest_rtp = Some((Instant::now(), packet_timestamp));
-                // Track the newest received RTP timestamp for SR-anchored
-                // capture-to-arrival latency metrics in media.rs.
-                self.newest_received_ts = Some(packet_timestamp);
                 // Push queue-delay estimator input per video RTP packet.
                 // 2b (2026-10-30): send_us prefers abs-send-time (negotiated
                 // since 690f0c7, answer-stored id) — the console's own send
