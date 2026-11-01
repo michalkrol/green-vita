@@ -25,13 +25,17 @@ const SEND_RR: bool = true;
 /// S5b master switch (A2 method): hand-rolled NACK send on/off.
 const SEND_NACK: bool = true;
 
-/// REMB feedback master switch (A2 pattern): OFF = Chrome-parity — the
-/// 2026-10-30 pcap shows Chrome negotiates goog-remb but sends ZERO REMB
-/// packets (the console paces from TWCC). Our constant 15 Mbps REMB
-/// advertised headroom the 2.4 GHz link does not have; disabled
-/// 2026-11-01 for the late-ramp A/B (bw drifted 3.5→5.1 Mbps through
-/// the wall despite TWCC+RR feedback).
-const SEND_REMB: bool = false;
+/// REMB feedback master switch — **TRUE as of 2026-11-01 (the A/B arm).**
+/// Baseline for comparison: `metrics-ce515c5-cap5m-546s-20261101.csv`
+/// (cap 5M, SEND_REMB=false, bw thirds 4.21→4.96→4.91). This arm adds the
+/// Safe-Ceiling controller's DYNAMIC descent: ceiling = the user's bitrate
+/// cap, stepping down on NACK-egress bursts (−10 %/tick ≥1/s, −25 %/tick
+/// ≥4/s, floor 1 Mbps, no re-growth). One variable vs baseline = the flip.
+/// OFF was Chrome-parity — the 2026-10-30 pcap shows Chrome negotiates
+/// goog-remb but sends ZERO REMB packets (the console paces from TWCC).
+/// The constant 15 Mbps era advertised headroom the 2.4 GHz link does not
+/// have; the Safe-Ceiling controller replaced it (ce515c5).
+const SEND_REMB: bool = true;
 /// Safe-Ceiling REMB (2026-11-01, user+eng plan): the ceiling = the user's
 /// bitrate-cap setting (the SAME field that drives the SDP b=AS line, read
 /// fresh at session start); 0 (= "no cap" in the UI) falls back to this
