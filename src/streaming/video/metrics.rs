@@ -57,6 +57,14 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) video_bandwidth_kbps: u64,
     pub(crate) display_pickup_us: u64,
     pub(crate) display_pickup_max_us: u64,
+    pub(crate) sr_age_ms: i64,
+    pub(crate) sr_clock_offset_ms: i64,
+    pub(crate) capture_to_arrival_us: i64,
+    pub(crate) capture_to_arrival_max_us: i64,
+    pub(crate) sr_anchor_ntp: u64,
+    pub(crate) sr_anchor_rtp_ts: u64,
+    pub(crate) sr_anchor_local_us: u64,
+    pub(crate) sr_anchor_local_wall_us: u64,
     pub(crate) sh_match: u64,
     pub(crate) sh_bound_mismatch: u64,
     pub(crate) sh_bytes_mismatch: u64,
@@ -99,6 +107,21 @@ pub(crate) struct VideoMetrics {
     pub(crate) rtcp_nack_sent: AtomicU64,
     pub(crate) rtx_packets_received: AtomicU64,
     pub(crate) rtx_crate_seen: AtomicU64,
+    // Absolute latency metrics (Task D)
+    // SR anchor timestamps and per-second derived metrics
+    pub(crate) sr_anchor_ntp: AtomicU64,          // NTP timestamp from SR (ms since 1900)
+    pub(crate) sr_anchor_rtp_ts: AtomicU64,       // RTP timestamp from SR
+    pub(crate) sr_anchor_local_us: AtomicU64,     // Local monotonic time when SR arrived (us since boot)
+    pub(crate) sr_anchor_local_wall_us: AtomicU64, // Client wall clock at SR arrival (us since UNIX epoch)
+
+    // Per-second absolute latency metrics (microseconds, signed i64)
+    pub(crate) sr_age_ms: AtomicI64,              // Age of SR anchor in ms
+    pub(crate) sr_clock_offset_ms: AtomicI64,     // Console unix-ms minus client wall-ms
+
+    // True end-to-end capture-to-arrival latency (microseconds, signed i64)
+    // Measures console capture queue + transport + assembly; NOT blind to pre-RTP-stamp queue
+    pub(crate) capture_to_arrival_us: AtomicI64,
+    pub(crate) capture_to_arrival_max_us: AtomicI64,
     pub(crate) resets: AtomicU64,
     pub(crate) hw_buffered: AtomicU64,
     pub(crate) pipeline_age_max_us: AtomicU64,
@@ -206,6 +229,15 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     twcc_stride: AtomicU64::new(0),
     video_metadata_sent: AtomicU64::new(0),
     video_bandwidth_kbps: AtomicU64::new(0),
+    // Absolute latency metrics (Task D) - SR anchor and per-second derived metrics
+    sr_anchor_ntp: AtomicU64::new(0),
+    sr_anchor_rtp_ts: AtomicU64::new(0),
+    sr_anchor_local_us: AtomicU64::new(0),
+    sr_anchor_local_wall_us: AtomicU64::new(0),
+    sr_age_ms: AtomicI64::new(0),
+    sr_clock_offset_ms: AtomicI64::new(0),
+    capture_to_arrival_us: AtomicI64::new(0),
+    capture_to_arrival_max_us: AtomicI64::new(0),
     display_pickup_us: AtomicU64::new(0),
     display_pickup_max_us: AtomicU64::new(0),
     sh_match: AtomicU64::new(0),
@@ -258,7 +290,7 @@ pub fn video_performance_summary() -> String {
     let rtp_max = METRICS.rtp_assembly_max_us.load(Ordering::Relaxed);
     // Two lines: the HUD label clips long single-line output on the Vita panel.
     let line1 = format!(
-        "d/p:{}/{} d/a:{}/{} skip:{} cap:{} repl:{} q:{} hwb:{} ageMax:{} lag:{} lagMax:{} bw:{} aq:{} slip:{} slipS:{} qS:{}",
+        "d/p:{}/{} d/a:{}/{} skip:{} cap:{} repl:{} q:{} hwb:{} ageMax:{} lag:{} lagMax:{} bw:{} aq:{} slip:{} slipS:{} qS:{} cta:{} ctaMax:{} srAge:{} srCoff:{}",
         METRICS.decoded.load(Ordering::Relaxed),
         METRICS.presented.load(Ordering::Relaxed),
         METRICS.decode_us.load(Ordering::Relaxed) / 1000,
@@ -276,6 +308,10 @@ pub fn video_performance_summary() -> String {
         METRICS.stream_slip_us.load(Ordering::Relaxed),
         METRICS.stream_slip_slope_mpm.load(Ordering::Relaxed),
         METRICS.q_slope_mpm.load(Ordering::Relaxed),
+        METRICS.capture_to_arrival_us.load(Ordering::Relaxed) / 1000,
+        METRICS.capture_to_arrival_max_us.load(Ordering::Relaxed) / 1000,
+        METRICS.sr_age_ms.load(Ordering::Relaxed),
+        METRICS.sr_clock_offset_ms.load(Ordering::Relaxed),
     );
     let line2 = format!(
         "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{}",
@@ -368,6 +404,14 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         video_bandwidth_kbps: METRICS.video_bandwidth_kbps.swap(0, Ordering::Relaxed),
         display_pickup_us: METRICS.display_pickup_us.swap(0, Ordering::Relaxed),
         display_pickup_max_us: METRICS.display_pickup_max_us.swap(0, Ordering::Relaxed),
+        sr_age_ms: METRICS.sr_age_ms.swap(0, Ordering::Relaxed) as i64,
+        sr_clock_offset_ms: METRICS.sr_clock_offset_ms.swap(0, Ordering::Relaxed) as i64,
+        capture_to_arrival_us: METRICS.capture_to_arrival_us.swap(0, Ordering::Relaxed) as i64,
+        capture_to_arrival_max_us: METRICS.capture_to_arrival_max_us.swap(0, Ordering::Relaxed) as i64,
+        sr_anchor_ntp: METRICS.sr_anchor_ntp.swap(0, Ordering::Relaxed) as u64,
+        sr_anchor_rtp_ts: METRICS.sr_anchor_rtp_ts.swap(0, Ordering::Relaxed) as u64,
+        sr_anchor_local_us: METRICS.sr_anchor_local_us.swap(0, Ordering::Relaxed) as u64,
+        sr_anchor_local_wall_us: METRICS.sr_anchor_local_wall_us.swap(0, Ordering::Relaxed) as u64,
         sh_match: METRICS.sh_match.swap(0, Ordering::Relaxed),
         sh_bound_mismatch: METRICS.sh_bound_mismatch.swap(0, Ordering::Relaxed),
         sh_bytes_mismatch: METRICS.sh_bytes_mismatch.swap(0, Ordering::Relaxed),
@@ -443,6 +487,14 @@ pub(crate) fn reset_session_metrics() {
     METRICS.video_bandwidth_kbps.store(0, Ordering::Relaxed);
     METRICS.display_pickup_us.store(0, Ordering::Relaxed);
     METRICS.display_pickup_max_us.store(0, Ordering::Relaxed);
+    METRICS.sr_anchor_ntp.store(0, Ordering::Relaxed);
+    METRICS.sr_anchor_rtp_ts.store(0, Ordering::Relaxed);
+    METRICS.sr_anchor_local_us.store(0, Ordering::Relaxed);
+    METRICS.sr_anchor_local_wall_us.store(0, Ordering::Relaxed);
+    METRICS.sr_age_ms.store(0, Ordering::Relaxed);
+    METRICS.sr_clock_offset_ms.store(0, Ordering::Relaxed);
+    METRICS.capture_to_arrival_us.store(0, Ordering::Relaxed);
+    METRICS.capture_to_arrival_max_us.store(0, Ordering::Relaxed);
     METRICS.sh_match.store(0, Ordering::Relaxed);
     METRICS.sh_bound_mismatch.store(0, Ordering::Relaxed);
     METRICS.sh_bytes_mismatch.store(0, Ordering::Relaxed);

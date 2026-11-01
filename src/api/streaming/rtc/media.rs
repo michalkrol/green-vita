@@ -47,6 +47,10 @@ pub(crate) const LOCAL_RTCP_SENDER_SSRC: u32 = 1;
 static NEGOTIATED_RTX_MAP: LazyLock<RwLock<HashMap<u8, u8>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
+/// Process start reference for monotonic timestamps used by RTCP SR anchoring
+/// and capture-to-arrival latency. Initialized once at first use.
+pub(crate) static PROCESS_START: LazyLock<Instant> = LazyLock::new(Instant::now);
+
 /// S5b-3 (fork-trace fix): RTX SSRC -> primary SSRC from the answer's
 /// `a=ssrc-group:FID` lines. The fork's bind-time learning is dead for us
 /// (deferred track codec => fuzzy-search None => bind skipped; the
@@ -650,6 +654,49 @@ impl VideoReceiver {
                 .video_bandwidth_kbps
                 .store(kbps, Ordering::Relaxed);
             self.last_bw_bytes = total;
+        }
+
+        // Compute SR-anchored absolute latency metrics once per second.
+        // Requires: SR anchor exists, NTP > 0, and newest received RTP timestamp available.
+        {
+            use crate::streaming::video::metrics::METRICS;
+            use std::sync::atomic::Ordering;
+            let sr_anchor_ntp = METRICS.sr_anchor_ntp.load(Ordering::Relaxed);
+            let sr_anchor_rtp_ts = METRICS.sr_anchor_rtp_ts.load(Ordering::Relaxed);
+            let sr_anchor_local_us = METRICS.sr_anchor_local_us.load(Ordering::Relaxed);
+            let sr_anchor_local_wall_us = METRICS.sr_anchor_local_wall_us.load(Ordering::Relaxed);
+            let newest_received_ts = self.rtp.newest_received_ts;
+
+            if sr_anchor_ntp > 0 && sr_anchor_local_us > 0 && sr_anchor_local_wall_us > 0
+                && newest_received_ts.is_some()
+            {
+                let sr_anchor_ntp_ms = sr_anchor_ntp as u64;
+                // Age of the SR anchor in milliseconds
+                let sr_age_ms = ((PROCESS_START.elapsed().as_micros() as u64 - sr_anchor_local_us) / 1000) as i64;
+                // Console unix ms minus client wall ms: alignment offset
+                let sr_clock_offset_ms = (sr_anchor_ntp_ms - 2_208_988_800_000) as i64
+                    - (sr_anchor_local_wall_us / 1000) as i64;
+                // RTP timestamp delta from SR anchor (90 kHz clock)
+                let newest_rtp_ts = newest_received_ts.unwrap() as u32;
+                let delta_ts = newest_rtp_ts.wrapping_sub(sr_anchor_rtp_ts as u32);
+                // Guard against stale anchor or wrap: >10s delta is invalid
+                if delta_ts <= 900_000 {
+                    // Console media time in microseconds:
+                    //   (NTP unix ms) * 1000 + (RTP delta * 1_000_000 / 90_000)
+                    let console_media_unix_us = (sr_anchor_ntp_ms as i64 - 2_208_988_800_000) * 1000
+                        + delta_ts as i64 * 1_000_000 / 90_000;
+                    // Now wall at "now", extrapolated from SR arrival
+                    let now_wall_us = sr_anchor_local_wall_us
+                        + (PROCESS_START.elapsed().as_micros() as u64 - sr_anchor_local_us);
+                    let capture_to_arrival_us = now_wall_us as i64 - console_media_unix_us;
+
+                    // Store per-second metrics
+                    METRICS.capture_to_arrival_us.store(capture_to_arrival_us, Ordering::Relaxed);
+                    METRICS.capture_to_arrival_max_us.store(capture_to_arrival_us, Ordering::Relaxed);
+                    METRICS.sr_age_ms.store(sr_age_ms, Ordering::Relaxed);
+                    METRICS.sr_clock_offset_ms.store(sr_clock_offset_ms, Ordering::Relaxed);
+                }
+            }
         }
 
         let encoded_resolution = self

@@ -98,6 +98,9 @@ pub(crate) struct VideoRtp {
     /// Drift instrumentation: (arrival, RTP timestamp) of the newest video
     /// packet seen; used by stream_slip() for the accumulation trend.
     latest_rtp: Option<(Instant, u32)>,
+    /// newest_received_ts: RTP timestamp of the newest video packet received;
+    /// used by the per-second SR-anchored latency metric computation in media.rs.
+    pub(crate) newest_received_ts: Option<u32>,
     /// Drift instrumentation: per-window max of each video-timing (extmap id 7)
     /// stage delta (ms: encode-start, encode-finish, packetization, pacer-exit,
     /// network, network2) plus the sample count.
@@ -255,6 +258,7 @@ impl VideoRtp {
             stream_too_large: false,
             waiting_for_keyframe: false,
             stream_clock_anchor: None,
+            newest_received_ts: None,
             latest_rtp: None,
             slip_slope_base: None,
             vt_max: [0; 6],
@@ -434,6 +438,9 @@ impl VideoRtp {
             Some((_, last_ts)) if !timestamp_is_newer(packet_timestamp, last_ts) => {}
             _ => {
                 self.latest_rtp = Some((Instant::now(), packet_timestamp));
+                // Track the newest received RTP timestamp for SR-anchored
+                // capture-to-arrival latency metrics in media.rs.
+                self.newest_received_ts = Some(packet_timestamp);
                 // Push queue-delay estimator input per video RTP packet.
                 // 2b (2026-10-30): send_us prefers abs-send-time (negotiated
                 // since 690f0c7, answer-stored id) — the console's own send

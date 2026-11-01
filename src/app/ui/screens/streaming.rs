@@ -47,6 +47,10 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
         let lag = f("lag:");
         let bw = f("bw:");
         let lagmax = f("lagMax:");
+        let cta = f("cta:");
+        let cta_max = f("ctaMax:");
+        let srage = f("srAge:");
+        let srcoff = f("srCoff:");
         let fl = f("fl:");
         let rs = f("rs:");
         let tw_s = f("tw:");
@@ -68,6 +72,8 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Repl:{}", repl), format!("Skip:{}", skip)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("HWbuf:{}", hwb), format!("Lag:{}ms", lag)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("BW:{}kbps", bw), format!("LagMx:{}ms", lagmax)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("CTA:{}ms", cta), format!("CTAMx:{}ms", cta_max)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("SRage:{}ms", srage), format!("SRcoff:{}ms", srcoff)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Resync:{}", rs), format!("Flush:{}", fl)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("TWCC:{}", tw_s), format!("Strd:{}", st)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Pick:{}us", pick), ""),
