@@ -24,6 +24,14 @@ const RR_INTERVAL: Duration = Duration::from_millis(800);
 const SEND_RR: bool = true;
 /// S5b master switch (A2 method): hand-rolled NACK send on/off.
 const SEND_NACK: bool = true;
+
+/// REMB feedback master switch (A2 pattern): OFF = Chrome-parity — the
+/// 2026-10-30 pcap shows Chrome negotiates goog-remb but sends ZERO REMB
+/// packets (the console paces from TWCC). Our constant 15 Mbps REMB
+/// advertised headroom the 2.4 GHz link does not have; disabled
+/// 2026-11-01 for the late-ramp A/B (bw drifted 3.5→5.1 Mbps through
+/// the wall despite TWCC+RR feedback).
+const SEND_REMB: bool = false;
 /// Matches the SDP bitrate cap so pacing never becomes the limit.
 /// Deliberate UNDER-report of the link capacity, sent to the console every
 /// `REMB_INTERVAL` (policy: latency over quality).
@@ -359,6 +367,9 @@ impl VideoReceiver {
     /// with weak prior (verdict #8 ruled computed REMB wrong; the const
     /// sidesteps computation but advertises 15 Mbps ≫ wifi capacity anyway).
     pub(crate) fn send_remb(&mut self, peer: &mut RTCPeerConnection, now: Instant) {
+        if !SEND_REMB {
+            return;
+        }
         let (Some(receiver_id), Some(ssrc)) = (self.receiver_id, self.ssrc) else {
             return;
         };
