@@ -206,7 +206,13 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
                 let n_left = if two_columns { (n + 1) / 2 } else { n };
                 let n_right = if two_columns { n - n_left } else { 0 };
 
-                let panel_h = ROW_HEIGHT * n as f32 + 16.0;
+                // 2026-11-01 fix: the panel is as tall as the TALLER column
+                // (left), not all n rows stacked — right-column rows are
+                // y-indexed within their own column (the old global-index
+                // Y made the right column trail below the left = "broken
+                // columns").
+                let rows_tall = if two_columns { n_left } else { n };
+                let panel_h = rows_tall as f32 * ROW_HEIGHT + 16.0;
 
                 egui::Area::new(egui::Id::new("debug_overlay"))
                     .order(egui::Order::Foreground)
@@ -247,7 +253,14 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
 
                         // Draw rows from build_debug_rows (measured-width columns)
                         for (i, cell_text) in rows.iter().enumerate() {
-                            let y = 8.0 + i as f32 * ROW_HEIGHT;
+                            // Right-column rows are indexed within their own
+                            // column so both columns start at the same top.
+                            let row_in_col = if two_columns && i >= n_left {
+                                i - n_left
+                            } else {
+                                i
+                            };
+                            let y = 8.0 + row_in_col as f32 * ROW_HEIGHT;
 
                             if two_columns && i >= n_left {
                                 // Right column: split cell text into label and value
