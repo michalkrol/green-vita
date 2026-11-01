@@ -5,7 +5,9 @@ use crate::api::streaming::rtc::twcc::recorder::Recorder;
 use crate::pipeline::clock::queue_delay::QueueDelayEstimator;
 use crate::pipeline::clock::send_time::SendTimeUnwrapper;
 use crate::pipeline::media::assembler::{AccessUnitAssembler, AssemblyOutcome};
+use std::collections::VecDeque;
 use std::sync::LazyLock;
+use std::sync::Mutex;
 use bytes::Bytes;
 use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::sps::SeqParameterSet;
@@ -339,10 +341,13 @@ impl VideoRtp {
             if MANUAL_TWCC
                 && let Some(twcc_seq) = parse_transport_wide_seq(&ext.payload[..])
             {
+                // Stamp with TRUE socket arrival (seq-tagged FIFO fed by the
+                // transport from CapturedDatagram.at); SHADOW_CLOCK fallback
+                // covers SRTP drops/reorder so stamps stay monotonic-ish.
                 self.twcc_recorder.record(
                     packet.header.ssrc,
                     twcc_seq,
-                    SHADOW_CLOCK.elapsed().as_micros() as i64,
+                    take_twcc_arrival(packet.header.sequence_number),
                 );
             }
         }
@@ -1570,6 +1575,59 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
 /// Monotonic µs clock for the shadow assembler's 12 ms hold window.
 static SHADOW_CLOCK: LazyLock<Instant> = LazyLock::new(Instant::now);
 
+// ---------------------------------------------------------------------------
+// TWCC socket-arrival stamping (A arm of the 2026-11-01 stamp A/B). The
+// 2026-11-01 diag build measured what we REPORT: median delay 42 µs but a
+// ~36 ms per-second max tail (264 ms spikes). Suspicion: our stamps used
+// processing time (SHADOW_CLOCK at VideoRtp::receive, after the 2048-deep
+// capture channel + pump scheduling), so the tail may be OUR jitter, not
+// radio. The transport now tags video-RTP datagrams with their true wire
+// arrival (CapturedDatagram.at) and the recorder is fed from that.
+// ---------------------------------------------------------------------------
+
+/// Anchor for the socket-arrival µs domain. FORCED by the RX thread before
+/// its recv loop starts, so capture instants can never precede it.
+pub(crate) static RX_CLOCK: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// (seq, arrival µs on RX_CLOCK) for video-RTP datagrams, capture order.
+/// Pushed by the transport's receive drain, popped by the TWCC record site.
+static TWCC_ARRIVALS: LazyLock<Mutex<VecDeque<(u16, u64)>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::with_capacity(512)));
+
+/// Transport side: staple a video-RTP datagram's capture instant to its seq.
+pub(crate) fn offer_twcc_arrival(seq: u16, at_us: u64) {
+    if let Ok(mut fifo) = TWCC_ARRIVALS.lock() {
+        if fifo.len() >= 512 {
+            fifo.pop_front();
+        }
+        fifo.push_back((seq, at_us));
+    }
+}
+
+/// TWCC record side: the arrival stamp for `seq`. Pops stale heads (the fork
+/// may drop a datagram post-SRTP); falls back to SHADOW_CLOCK when nothing
+/// matches, so fidelity degrades gracefully instead of mis-stamping.
+pub(crate) fn take_twcc_arrival(seq: u16) -> i64 {
+    let shadow = SHADOW_CLOCK.elapsed().as_micros() as i64;
+    let Ok(mut fifo) = TWCC_ARRIVALS.lock() else {
+        return shadow;
+    };
+    while let Some(&(head_seq, at_us)) = fifo.front() {
+        if head_seq == seq {
+            fifo.pop_front();
+            return at_us as i64;
+        }
+        let ahead = seq.wrapping_sub(head_seq);
+        if ahead > 0 && ahead <= 128 {
+            // Head is older and will never be asked for again — evict.
+            fifo.pop_front();
+            continue;
+        }
+        break;
+    }
+    shadow
+}
+
 /// FNV-1a — deterministic byte hash for legacy↔new AU parity comparison.
 fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -2528,3 +2586,43 @@ pub(crate) mod mismatch_log;
 #[cfg(test)]
 #[path = "diff_replay.rs"]
 mod diff_replay;
+
+#[cfg(test)]
+mod twcc_arrival_tests {
+    use super::{TWCC_ARRIVALS, take_twcc_arrival};
+
+    #[test]
+    fn exact_seq_match_returns_stapled_arrival() {
+        let mut fifo = TWCC_ARRIVALS.lock().unwrap();
+        fifo.clear();
+        fifo.push_back((100, 111_111));
+        drop(fifo);
+        assert_eq!(take_twcc_arrival(100), 111_111);
+    }
+
+    #[test]
+    fn stale_heads_are_evicted_until_match() {
+        let mut fifo = TWCC_ARRIVALS.lock().unwrap();
+        fifo.clear();
+        // 50 was dropped before its consumer ever ran (fork discard) — the
+        // request for 60 must evict it, not mis-stamp 60 with 50's arrival.
+        fifo.push_back((50, 500));
+        fifo.push_back((60, 600));
+        drop(fifo);
+        assert_eq!(take_twcc_arrival(60), 600);
+        assert!(TWCC_ARRIVALS.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unmatched_seq_falls_back_instead_of_stealing() {
+        let mut fifo = TWCC_ARRIVALS.lock().unwrap();
+        fifo.clear();
+        fifo.push_back((5000, 999));
+        drop(fifo);
+        // 5000 is far AHEAD of 100 (not stale) — must not consume it.
+        let fallback = take_twcc_arrival(100);
+        assert_eq!(TWCC_ARRIVALS.lock().unwrap().len(), 1);
+        assert!(fallback > 0); // SHADOW_CLOCK-domain µs
+        TWCC_ARRIVALS.lock().unwrap().clear();
+    }
+}

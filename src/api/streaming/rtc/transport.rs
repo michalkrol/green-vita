@@ -18,6 +18,8 @@ struct CapturedDatagram {
     data: Vec<u8>,
     peer_addr: SocketAddr,
     at: Instant,
+    /// µs since RX_CLOCK at capture (true wire arrival) — feeds TWCC stamps.
+    at_us: u64,
 }
 
 /// UDP/ICE transport shared by WebRTC streaming providers.
@@ -86,6 +88,9 @@ impl RtcTransport {
                     }
                 }
                 let mut buf = vec![0u8; 2048];
+                // Arm the arrival clock BEFORE the first recv so every
+                // capture instant is >= the anchor (no duration underflow).
+                std::sync::LazyLock::force(&crate::api::streaming::rtc::rtp::RX_CLOCK);
                 loop {
                     match rx_socket.recv_from(&mut buf) {
                         Ok((n, peer_addr)) => {
@@ -123,10 +128,14 @@ impl RtcTransport {
                                     // downstream guards (ntp>0, delta_ts<=900_000) suppress garbage.
                                 }
                             }
+                            let at = Instant::now();
                             let datagram = CapturedDatagram {
                                 data: buf[..n].to_vec(),
                                 peer_addr,
-                                at: Instant::now(),
+                                at,
+                                at_us: at
+                                    .duration_since(*crate::api::streaming::rtc::rtp::RX_CLOCK)
+                                    .as_micros() as u64,
                             };
                             if tx.send(datagram).is_err() {
                                 break;
@@ -194,6 +203,18 @@ impl RtcTransport {
         loop {
             match self.datagrams.try_recv() {
                 Ok(datagram) => {
+                    // TWCC socket-arrival stapling: tag video-RTP datagrams
+                    // (our negotiated PTs 102/112 — deterministic offer,
+                    // echoed in every archived answer) with their capture
+                    // instant. Popped by rtp::take_twcc_arrival at the
+                    // recorder site.
+                    if datagram.data.len() >= 4
+                        && datagram.data[0] >> 6 == 2
+                        && matches!(datagram.data[1] & 0x7F, 102 | 112)
+                    {
+                        let seq = u16::from_be_bytes([datagram.data[2], datagram.data[3]]);
+                        crate::api::streaming::rtc::rtp::offer_twcc_arrival(seq, datagram.at_us);
+                    }
                     if let Err(error) = peer.handle_read(TaggedBytesMut {
                         now: datagram.at,
                         transport: TransportContext {
