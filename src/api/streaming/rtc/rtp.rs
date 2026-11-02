@@ -23,7 +23,7 @@ use rtc::rtp::codec::opus::OpusPacket;
 #[cfg(test)]
 use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 #[cfg(test)]
 use std::time::Duration;
@@ -250,6 +250,7 @@ impl PendingVideoFrame {
 }
 
 impl VideoRtp {
+
     pub(crate) fn new() -> Self {
         Self {
             // 8b (§6.3): legacy `depacketizer`/`pending` fields deleted.
@@ -777,6 +778,24 @@ impl VideoRtp {
                 }
                 if desc.holes > 0 {
                     METRICS.dam_holes.fetch_add(1, Ordering::Relaxed);
+                }
+                // Step 6 damage policy (settings): Balanced sheds severe
+                // damage (leading slice lost / multi-hole — the worst
+                // decoder-concealment cases); Quality sheds EVERY damaged
+                // AU — artefact-free at the cost of a PLI→IDR micro-freeze
+                // per event. LowLatency (default) decodes through: the
+                // dropped AU makes the decoder conceal on the next Complete
+                // frames until the PLI/IDR resets the chain.
+                let severe = !desc.had_first_slice || desc.holes > 1;
+                let shed = match DAMAGE_POLICY.load(Ordering::Relaxed) {
+                    2 => true,
+                    1 => severe,
+                    _ => false,
+                };
+                if shed && !self.waiting_for_keyframe {
+                    self.waiting_for_keyframe = true;
+                    worker.begin_resync();
+                    METRICS.damaged_dropped.fetch_add(1, Ordering::Relaxed);
                 }
             }
             AssemblyOutcome::Discarded { .. } => {
@@ -1464,6 +1483,12 @@ fn randomized_differential_matches() {
 /// worker::exchange_sdp after signaling.
 static NEG_TWCC_EXT_ID: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 static NEG_AST_EXT_ID: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Damage policy (settings → stream start): 0 LowLatency (decode through —
+/// the decoder conceals on following frames), 1 Balanced (shed-to-IDR on
+/// severe damage), 2 Quality (shed-to-IDR on every damaged AU). Step 6;
+/// written by the app at stream start, read in the Damaged arm.
+pub(crate) static DAMAGE_POLICY: AtomicU8 = AtomicU8::new(0);
 static NEG_VT_EXT_ID: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// 2a: store the answer-negotiated TWCC extension id (this was an empty stub

@@ -102,6 +102,26 @@ pub enum H264Profile {
     Main,
 }
 
+/// What happens when an access unit resolves Damaged (unrepairable in its
+/// grace/RTX window). Step 6 (2026-11-02): per-game artefact-vs-freeze
+/// choice. Damaged AUs are never decoded — the hardware decoder conceals on
+/// the FOLLOWING frames (macroblocking) until the PLI→IDR reset; the
+/// Quality/Balanced policies shed-to-IDR instead, trading a micro-freeze
+/// per damage event for artefact-free output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DamagePolicy {
+    /// Drop + decode-through: the decoder conceals on the next frames
+    /// (brief artefacts, no stall). Default.
+    #[default]
+    LowLatency,
+    /// Drop; immediate shed-to-IDR only on severe damage (leading slice
+    /// lost or multiple holes) — worst concealment avoided.
+    Balanced,
+    /// Drop + immediate shed-to-IDR on EVERY damaged frame — artefact-free,
+    /// accepts a micro-freeze per event.
+    Quality,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -122,6 +142,11 @@ pub struct Settings {
     /// by the Vita's HW decoder. Main and High may produce artifacts or fail entirely
     /// depending on tile/bitstream compatibility.
     pub video_h264_profile: H264Profile,
+    /// What happens when an access unit resolves Damaged. LowLatency (default)
+    /// decodes through (decoder conceals — brief artefacts); Balanced sheds to
+    /// IDR on severe damage; Quality sheds on every damaged frame
+    /// (artefact-free, micro-freeze per event). See DamagePolicy.
+    pub damage_policy: DamagePolicy,
     /// When true, a keyframe (IDR) is requested from the console every 200 ms via
     /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
     /// cost of slightly larger periodic frames and a small bandwidth overhead.
@@ -165,6 +190,7 @@ impl Default for Settings {
             home_console_ip: None,
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
+            damage_policy: DamagePolicy::default(),
             periodic_keyframe: true,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,

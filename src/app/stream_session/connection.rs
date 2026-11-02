@@ -106,6 +106,15 @@ impl App {
                 METRICS.probe_suggest_kbps.store(advice.suggested_kbps as u64, Ordering::Relaxed);
             }
         }
+        // Damage policy (Step 6): settings → stream start → the RTP Damaged arm.
+        crate::api::streaming::rtc::rtp::DAMAGE_POLICY.store(
+            match self.settings.damage_policy {
+                crate::settings::DamagePolicy::LowLatency => 0,
+                crate::settings::DamagePolicy::Balanced => 1,
+                crate::settings::DamagePolicy::Quality => 2,
+            },
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let api = self.service.api.clone();
         let kind = target.kind;
         let target_id = target.target_id.clone();

@@ -27,6 +27,7 @@ pub enum Command {
     SetShowStreamDebugInfo(bool),
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
+    SetDamagePolicy(crate::settings::DamagePolicy),
     SetPeriodicKeyframe(bool),
     SetLatencyTestMode(bool),
 }
@@ -43,6 +44,7 @@ enum SettingsRow {
     StreamDebug(bool),
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
+    DamagePolicy(crate::settings::DamagePolicy),
     PeriodicKeyframe(bool),
     LatencyTest(bool),
     Back,
@@ -97,6 +99,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::LatencyTest(app.settings.latency_test_mode));
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
+    rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
     rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
     rows.push(SettingsRow::Back);
     rows
@@ -337,6 +340,34 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                {
+                    let label = format!(
+                        "Damage policy: {}",
+                        match app.settings.damage_policy {
+                            crate::settings::DamagePolicy::LowLatency => "Low latency",
+                            crate::settings::DamagePolicy::Balanced => "Balanced",
+                            crate::settings::DamagePolicy::Quality => "Quality",
+                        }
+                    );
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.damage_policy {
+                            crate::settings::DamagePolicy::LowLatency => {
+                                crate::settings::DamagePolicy::Balanced
+                            }
+                            crate::settings::DamagePolicy::Balanced => {
+                                crate::settings::DamagePolicy::Quality
+                            }
+                            crate::settings::DamagePolicy::Quality => {
+                                crate::settings::DamagePolicy::LowLatency
+                            }
+                        };
+                        commands.push(Command::SetDamagePolicy(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
@@ -563,6 +594,20 @@ impl App {
                 };
                 return self.handle_settings_command(Command::SetVideoH264Profile(next));
             }
+            SettingsRow::DamagePolicy(policy) => {
+                let next = match policy {
+                    crate::settings::DamagePolicy::LowLatency => {
+                        crate::settings::DamagePolicy::Balanced
+                    }
+                    crate::settings::DamagePolicy::Balanced => {
+                        crate::settings::DamagePolicy::Quality
+                    }
+                    crate::settings::DamagePolicy::Quality => {
+                        crate::settings::DamagePolicy::LowLatency
+                    }
+                };
+                return self.handle_settings_command(Command::SetDamagePolicy(next));
+            }
             SettingsRow::PeriodicKeyframe(enabled) => {
                 return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
             }
@@ -670,6 +715,10 @@ impl App {
             }
             Command::SetVideoH264Profile(profile) => {
                 self.settings.video_h264_profile = profile;
+                self.settings.save();
+            }
+            Command::SetDamagePolicy(policy) => {
+                self.settings.damage_policy = policy;
                 self.settings.save();
             }
             Command::SetPeriodicKeyframe(enabled) => {

@@ -101,6 +101,8 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) jb_boost: u64,
     pub(crate) jb_depth: u64,
     pub(crate) jb_absorbed: u64,
+    // Damaged AUs shed-to-IDR under the Quality/Balanced damage policies.
+    pub(crate) damaged_dropped: u64,
 }
 
 pub(crate) struct VideoMetrics {
@@ -204,6 +206,8 @@ pub(crate) struct VideoMetrics {
     pub(crate) jb_boost: AtomicU64,
     pub(crate) jb_depth: AtomicU64,
     pub(crate) jb_absorbed: AtomicU64,
+    /// Damaged AUs shed-to-IDR under the Quality/Balanced damage policies.
+    pub(crate) damaged_dropped: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -297,6 +301,7 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     jb_boost: AtomicU64::new(0),
     jb_depth: AtomicU64::new(0),
     jb_absorbed: AtomicU64::new(0),
+    damaged_dropped: AtomicU64::new(0),
     rtcp_rtpfb_any: AtomicU64::new(0),
 };
 
@@ -441,6 +446,7 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         jb_boost: METRICS.jb_boost.load(Ordering::Relaxed),
         jb_depth: METRICS.jb_depth.load(Ordering::Relaxed),
         jb_absorbed: METRICS.jb_absorbed.swap(0, Ordering::Relaxed),
+        damaged_dropped: METRICS.damaged_dropped.swap(0, Ordering::Relaxed),
         rtp_abandons: METRICS.rtp_abandons.swap(0, Ordering::Relaxed),
         rtp_wait_drops: METRICS.rtp_wait_drops.swap(0, Ordering::Relaxed),
         rtp_invalid: METRICS.rtp_invalid.swap(0, Ordering::Relaxed),
@@ -498,6 +504,8 @@ pub(crate) fn reset_session_metrics() {
     METRICS.rtp_assembly_sum_us.store(0, Ordering::Relaxed);
     METRICS.rtp_assembly_count.store(0, Ordering::Relaxed);
     METRICS.rtp_assembly_max_us.store(0, Ordering::Relaxed);
+    METRICS.jb_absorbed.store(0, Ordering::Relaxed);
+    METRICS.damaged_dropped.store(0, Ordering::Relaxed);
     METRICS.decode_us.store(0, Ordering::Relaxed);
     METRICS.pipeline_age_us.store(0, Ordering::Relaxed);
     METRICS.decoded.store(0, Ordering::Relaxed);
