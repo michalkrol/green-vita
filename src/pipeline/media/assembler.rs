@@ -121,16 +121,23 @@ pub struct AccessUnitAssembler {
     /// synchronous 1:1 legacy-comparison harness cannot express. Resolve
     /// semantics are unchanged by grace — only timing.
     grace_enabled: bool,
+    /// Seq the CURRENT AU should have started at (prev close + 1),
+    /// snapshotted at AU start before `last_closed_seq` is overwritten with
+    /// the new AU's first seq. Feeds the leading-loss expected-first.
+    prev_close_before_current: u16,
     /// Grace v2 (2026-11-02): ONE parked AU. A holed, NACK-reported,
     /// marker-seen AU that a resolve path (rule-2 boundary or newer-ts
     /// force-out — the two doors real traffic damage actually takes) would
     /// damage instead parks here for GRACE_BUDGET_US so S5 RTX can land.
-    /// Tuple = (parked AU, deadline µs). Output ORDER: while parked, the
-    /// queue must not drain (poll/push tails gate on this) — the parked
-    /// AU's outcome resolves to the queue FRONT, so newer frames queue
-    /// behind it (bounded HOL ≤ GRACE_BUDGET_US on damaged moments only;
-    /// zero cost on clean frames).
-    grace_parked: Option<(AuBuilder, u64)>,
+    /// Tuple = (parked AU, deadline µs, expected_first_seq): the AU's true
+    /// first seq (prev close + 1) — leading-loss AUs present a span that
+    /// STARTS after their true first seq, so RTX span checks must run
+    /// against this, not the parked payloads' own first seq. Output ORDER:
+    /// while parked, the queue must not drain (poll/push tails gate on
+    /// this) — the parked AU's outcome resolves to the queue FRONT, so
+    /// newer frames queue behind it (bounded HOL ≤ GRACE_BUDGET_US on
+    /// damaged moments only; zero cost on clean frames).
+    grace_parked: Option<(AuBuilder, u64, u16)>,
 }
 
 impl AccessUnitAssembler {
@@ -157,6 +164,7 @@ impl AccessUnitAssembler {
             last_resolved_ts: None,
             late_after_resolve: 0,
             grace_enabled: true,
+            prev_close_before_current: 0,
             grace_parked: None,
         }
     }
@@ -213,8 +221,9 @@ impl AccessUnitAssembler {
                         && self.grace_parked.is_none()
                         && Self::grace_eligible(&au)
                     {
+                        let expected_first = seq_bounds(&au.payloads).0;
                         self.grace_parked =
-                            Some((au, arrival_us.saturating_add(GRACE_BUDGET_US)));
+                            Some((au, arrival_us.saturating_add(GRACE_BUDGET_US), expected_first));
                         METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
                     } else {
                         let outcome = self.resolve_au_now(&mut au, arrival_us);
@@ -265,6 +274,9 @@ impl AccessUnitAssembler {
                 // For now, just check the simple case.
                 self.gap_au = self.gap_au.saturating_add(1);
             }
+            // Grace v2.2: snapshot the expected start BEFORE last_closed_seq
+            // is overwritten — the leading-loss door needs it at marker time.
+            self.prev_close_before_current = self.last_closed_seq;
             self.last_closed_seq = seq; // Initialize for future gap checks
             self.au_first_arrival_us = arrival_us; // hold-window anchor for flush_due
             self.current_au = Some(AuBuilder {
@@ -342,6 +354,12 @@ impl AccessUnitAssembler {
                 }
             }
             if holes_now == 0 {
+                // Grace v2.2: leading-loss door — a marker-seen AU with an
+                // unverified start looks contiguous but is missing its LEADING
+                // packets. Park for RTX instead of resolving Damaged now.
+                if self.grace_leading_loss_park(arrival_us) {
+                    return None; // parked: output gate holds
+                }
                 let mut resolved_au = self.current_au.take().unwrap();
                 let outcome = self.resolve_au_now(&mut resolved_au, arrival_us);
                 self.resolved_queue.push_back(outcome);
@@ -548,8 +566,12 @@ impl AccessUnitAssembler {
             None => return None,
         };
         if holes > 0 && nack_reported && self.grace_enabled && self.grace_parked.is_none() {
+            let expected_first = {
+                let au = self.current_au.as_ref().expect("AU present at rule-2 boundary");
+                seq_bounds(&au.payloads).0
+            };
             let au = self.current_au.take().expect("AU present at rule-2 boundary");
-            self.grace_parked = Some((au, now_us.saturating_add(GRACE_BUDGET_US)));
+            self.grace_parked = Some((au, now_us.saturating_add(GRACE_BUDGET_US), expected_first));
             METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
             return None;
         }
@@ -564,6 +586,49 @@ impl AccessUnitAssembler {
         self.resolved_queue.pop_front()
     }
 
+    /// Leading-loss span cap: a first-slice-lost AU's true start is at most
+    /// this many seqs before its first present seq. Beyond it, treat as
+    /// stream desync (don't NACK blindly).
+    const GRACE_MAX_LEADING_LOSS: u16 = 32;
+
+    /// Grace v2.2 (2026-11-02): leading-loss door. A marker-seen AU whose
+    /// FIRST slice was lost looks contiguous to `compute_holes` (the span
+    /// starts at the first present seq) but `had_first_slice == false`
+    /// proves the leading packets are missing. Today it resolves Damaged at
+    /// the marker instantly — never NACKed, never repairable. Instead: NACK
+    /// the leading range once (prev close + 1 .. first present − 1, capped)
+    /// and PARK for RTX. Expiry resolves Damaged identically to today; a
+    /// landed start packet upgrades `had_first_slice` (try_fill v2.1) and
+    /// completes the frame.
+    fn grace_leading_loss_park(&mut self, arrival_us: u64) -> bool {
+        if !self.grace_enabled || self.grace_parked.is_some() {
+            return false;
+        }
+        let expect = self.prev_close_before_current.wrapping_add(1);
+        let first_seq = {
+            let au = self.current_au.as_ref().expect("leading-loss check at marker");
+            seq_bounds(&au.payloads).0
+        };
+        let lead = first_seq.wrapping_sub(expect);
+        if lead == 0 || lead > Self::GRACE_MAX_LEADING_LOSS {
+            return false;
+        }
+        let (nack_reported, had_first) = {
+            let au = self.current_au.as_ref().expect("AU present");
+            (au.nack_reported, au.had_first_slice)
+        };
+        if had_first || nack_reported {
+            return false; // verified start ⇒ not leading loss; already reported
+        }
+        // Take the AU, NACK the leading range, park.
+        let mut au = self.current_au.take().expect("AU present for leading park");
+        au.nack_reported = true;
+        self.pending_nacks.push((expect, first_seq.wrapping_sub(1)));
+        self.grace_parked = Some((au, arrival_us.saturating_add(GRACE_BUDGET_US), expect));
+        METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
     /// Grace v2: resolve the parked AU if past its deadline — the existing
     /// resolve path (damaged by construction: it parked with holes), pushed
     /// to the queue FRONT because it is older than anything queued behind
@@ -571,11 +636,11 @@ impl AccessUnitAssembler {
     /// they belong to the NEWEST resolved AU and must not rewind when a
     /// parked AU resolves late.
     fn grace_expire_if_due(&mut self, now_us: u64) {
-        let due = matches!(&self.grace_parked, Some((_, deadline)) if now_us >= *deadline);
+        let due = matches!(&self.grace_parked, Some((_, deadline, _)) if now_us >= *deadline);
         if !due {
             return;
         }
-        let (mut au, _) = self.grace_parked.take().unwrap();
+        let (mut au, _, _) = self.grace_parked.take().unwrap();
         METRICS.grace_expired.fetch_add(1, Ordering::Relaxed);
         let (lcs, lrt) = (self.last_closed_seq, self.last_resolved_ts);
         let outcome = self.resolve_au_now(&mut au, now_us);
@@ -600,25 +665,52 @@ impl AccessUnitAssembler {
             return false;
         }
         {
-            let (au, _) = self.grace_parked.as_ref().unwrap();
+            let (au, _, expected_first) = self.grace_parked.as_ref().unwrap();
             if au.rtp_ts != timestamp {
                 return false;
             }
-            let (first_seq, last_seq) = seq_bounds(&au.payloads);
-            // Modular span: seq ∈ [first_seq, last_seq] (wrapping u16).
-            if seq.wrapping_sub(first_seq) > last_seq.wrapping_sub(first_seq) {
+            let last_seq = seq_bounds(&au.payloads).1;
+            // Modular span: seq ∈ [expected_first, last_seq] (wrapping u16)
+            // — expected_first, because a leading-loss AU's present span
+            // starts AFTER its true first seq.
+            if seq.wrapping_sub(*expected_first) > last_seq.wrapping_sub(*expected_first) {
                 return false;
             }
             if au.payloads.iter().any(|(existing, _)| *existing == seq) {
                 return false; // duplicate of a packet we already hold
             }
         }
-        let (au, _) = self.grace_parked.as_mut().unwrap();
+        let (au, _, _) = self.grace_parked.as_mut().unwrap();
         au.payloads.push((seq, payload.to_vec()));
         au.raw_len += payload.len();
         au.packet_count += 1;
+        // Grace v2.1: mirror the normal continue path's metadata upgrades —
+        // crucially `had_first_slice`: a first-slice-lost AU opens on a
+        // continuation (verified start = false) and only the RTX-arrived
+        // TRUE start packet can flip it decodable. Without this upgrade the
+        // filled AU still resolves Damaged (complete bytes, wasted rescue).
+        // Upgrade-only, never downgrade. Grace-off paths untouched.
+        {
+            let (nal_header, fu_header, is_fu_a) = parse_payload(payload);
+            let verified_start = if is_fu_a {
+                fu_header.map_or(false, |fh| fh.start)
+            } else {
+                true
+            };
+            if verified_start {
+                au.had_first_slice = true;
+            }
+            if NalHeader::is_keyframe_nal(nal_header.nal_unit_type)
+                || fu_header.map_or(false, |fh| fh.is_keyframe_nal())
+            {
+                au.is_idr = true;
+            }
+            au.nal_ref_idc = au
+                .nal_ref_idc
+                .max(fu_header.map_or_else(|| nal_header.nal_ref_idc, |fh| fh.nal_ref_idc));
+        }
         if compute_holes(&au.payloads) == 0 {
-            let (mut filled, _) = self.grace_parked.take().unwrap();
+            let (mut filled, _, _) = self.grace_parked.take().unwrap();
             METRICS.grace_filled.fetch_add(1, Ordering::Relaxed);
             let (lcs, lrt) = (self.last_closed_seq, self.last_resolved_ts);
             let outcome = self.resolve_au_now(&mut filled, arrival_us);
@@ -930,7 +1022,10 @@ mod tests {
         // H3 fix: if the FIRST packet of an AU is an FU-A continuation (no start bit)
         // or otherwise not a verified AU start, the AU resolves as `Damaged` with
         // `had_first_slice == false` — never `Complete`.
-        let mut assembler = AccessUnitAssembler::new();
+        // Grace v2: constructed grace-OFF — with grace ON this shape PARKS for
+        // RTX (leading-loss door) instead of resolving instantly (see
+        // test_grace_v22_leading_loss_parks_and_completes).
+        let mut assembler = AccessUnitAssembler::new_without_grace();
 
         // Send an FU-A packet without start bit.
         // FU-A type 28, no start bit, nal_ref_idc=0, nal_unit_type=1.
@@ -1098,7 +1193,9 @@ mod tests {
     #[test]
     fn test_fu_header_idr_without_start_bit_is_damaged() {
         // FU-A with IDR type but no start bit should resolve as Damaged (H3 fix)
-        let mut assembler = AccessUnitAssembler::new();
+        // Grace v2: grace-OFF constructor — with grace ON this shape parks
+        // (leading-loss door) instead of resolving instantly.
+        let mut assembler = AccessUnitAssembler::new_without_grace();
         // FU-A type 28 carrying IDR, no start bit, nal_ref_idc=0
         // byte1: (0 << 5) | 28 = 0x1C, forbidden_zero=0 (bit7=0)
         // byte2: start=0, end=0, upper=0 => 0x00
@@ -1818,4 +1915,75 @@ fn test_event_stale_ts_packet_dropped_parity() {
         }
         assert!(assembler.poll_outcome().is_none());
         assert_eq!(METRICS.grace_expired.load(Ordering::Relaxed), expired0 + 1, "only k parked⇒expired");
+    }
+
+    #[test]
+    fn test_grace_v22_leading_loss_parks_and_completes() {
+        // Grace v2.2: a first-slice-lost AU opens on an FU continuation
+        // (had_first_slice=false); at its marker it looks contiguous
+        // (compute_holes sees no intra-span gap) but is PARKED via the
+        // leading-loss door, NACKing the leading range once. The
+        // RTX-arrived TRUE start packet upgrades had_first_slice (v2.1) and
+        // the frame completes — instead of today's instant Damaged.
+        let (_g, held0, filled0, expired0) = grace_setup();
+        let mut assembler = AccessUnitAssembler::new();
+        let _cont1 = [0x1Cu8, 0x00, 0xAA]; // (unused in this variant)
+        let cont2 = [0x1Cu8, 0x00, 0xCC];
+        let start = [0x1Cu8, 0x80, 0xBB]; // FU-A with START bit (the lost first packet)
+        // seq 0 lost; AU opens on the continuation. last_closed_seq starts at
+        // 0 ⇒ expected first = 1 = seq 1: NO leading gap here, so lead==0...
+        // seed a previous close so the expected start is seq 0.
+        let _ = assembler.push(0xFFF0 - 5, 45000, true, &start, 500); // prev AU closes at 0xFFEB
+        // prev close ⇒ last_closed_seq = 0xFFEB; expected first = 0xFFEC.
+        // Use a lost start at 0xFFEC instead: rewrite with cont start.
+        let _ = assembler.poll_outcome();
+        let _ = assembler.poll_outcome();
+        // Now: prev close 0xFFEB. Lost packet 0xFFEC (start); AU opens at 0xFFED.
+        let c1 = [0x1Cu8, 0x00, 0xDD];
+        let _ = assembler.push(0xFFED, 90000, false, &c1, 1000);
+        assert!(assembler.push(0xFFEE, 90000, true, &cont2, 1500).is_none(), "parks at marker (leading loss)");
+        assert!(assembler.grace_parked.is_some(), "parked via leading-loss door");
+        assert_eq!(METRICS.grace_held.load(Ordering::Relaxed), held0 + 1);
+        // RTX brings the true start: fill ⇒ had_first_slice upgraded ⇒ Complete.
+        match assembler.push(0xFFEC, 90000, false, &start, 20_000).unwrap() {
+            AssemblyOutcome::Complete(desc) => {
+                assert!(desc.had_first_slice, "v2.2: start packet upgraded had_first_slice");
+                assert_eq!(desc.packet_count, 3);
+                assert_eq!(desc.rtp_ts, 90000);
+            }
+            AssemblyOutcome::Damaged(desc) => panic!(
+                "v2.2 BUG: leading-loss fill resolved Damaged (hfs={} holes={})",
+                desc.had_first_slice, desc.holes
+            ),
+            other => panic!("expected Complete, got {other:?}"),
+        }
+        assert_eq!(METRICS.grace_filled.load(Ordering::Relaxed), filled0 + 1);
+        assert_eq!(METRICS.grace_expired.load(Ordering::Relaxed), expired0);
+        assert!(assembler.grace_parked.is_none());
+    }
+
+    #[test]
+    fn test_grace_v22_leading_loss_expires_damaged() {
+        // No RTX: expiry resolves Damaged byte-identically to today's
+        // instant-resolve (no bytes, had_first_slice=false).
+        let (_g, held0, _filled0, expired0) = grace_setup();
+        let mut assembler = AccessUnitAssembler::new();
+        let cont1 = [0x1Cu8, 0x00, 0xAA];
+        let cont2 = [0x1Cu8, 0x00, 0xCC];
+        let start = [0x1Cu8, 0x80, 0xBB];
+        let _ = assembler.push(0xFFF0 - 5, 45000, true, &start, 500);
+        let _ = assembler.poll_outcome();
+        let _ = assembler.poll_outcome();
+        let _ = assembler.push(0xFFED, 90000, false, &cont1, 1000);
+        assert!(assembler.push(0xFFEE, 90000, true, &cont2, 1500).is_none(), "parks");
+        assert!(assembler.flush_due(60_000).is_none(), "expiry queued at front");
+        match assembler.poll_outcome() {
+            Some(AssemblyOutcome::Damaged(desc)) => {
+                assert!(!desc.had_first_slice);
+                assert!(desc.data.is_empty(), "§4: Damaged carries no bytes");
+            }
+            other => panic!("expected Damaged on expiry, got {other:?}"),
+        }
+        assert_eq!(METRICS.grace_expired.load(Ordering::Relaxed), expired0 + 1);
+        assert_eq!(METRICS.grace_held.load(Ordering::Relaxed), held0 + 1);
     }
