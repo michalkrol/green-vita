@@ -3,9 +3,10 @@
 use std::time::Duration;
 
 /// Micro de-jitter (Step 5, 2026-11-02): event-driven admission boost.
+/// A/B arm: TRUE on `MICRO_JB-on` builds (baseline = false build 33fc7de).
 /// When false, `jb_boost` is forced to 0 at the call site and admission is
 /// byte-identical to the f1bf114-known-good scheduler.
-pub(crate) const MICRO_JB: bool = false;
+pub(crate) const MICRO_JB: bool = true;
 /// Boost ceiling: the bank may grow by at most this many slots beyond the
 /// fps-derived limit (≈ +33 ms at 60 fps) — bounded, never unbounded.
 pub(crate) const JB_BOOST_MAX: usize = 2;
