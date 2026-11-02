@@ -50,38 +50,62 @@ pub(crate) fn suggest_kbps(rtt_ms: Option<f64>, downlink_mbps: Option<f64>) -> u
     }
 }
 
-/// Blocking probe: TCP connect RTT to the gateway (:80) + a bounded GET
-/// read-back for downlink. Total budget ≈ 3 s worst case.
+/// Blocking probe: MEDIAN of 3 TCP-connect RTTs to the gateway (:80) —
+/// single connects spike with concurrent traffic — plus a bounded GET
+/// read-back for downlink. Total budget ≈ 4 s worst case.
 pub(crate) fn run_probe(gateway: String) -> ProbeResult {
-    let (rtt_ms, downlink_mbps) = probe_gateway(&gateway);
+    let mut rtts = Vec::new();
+    for _ in 0..3 {
+        if let Some(rtt) = connect_rtt(&gateway) {
+            rtts.push(rtt);
+        }
+    }
+    rtts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let rtt_ms = match rtts.len() {
+        0 => None,
+        _ => Some(rtts[rtts.len() / 2]),
+    };
+    let downlink_mbps = if rtt_ms.is_some() {
+        probe_downlink(&gateway)
+    } else {
+        None
+    };
     let suggested_kbps = suggest_kbps(rtt_ms, downlink_mbps);
     ProbeResult { gateway, rtt_ms, downlink_mbps, suggested_kbps }
 }
 
-fn probe_gateway(gateway: &str) -> (Option<f64>, Option<f64>) {
+fn connect_rtt(gateway: &str) -> Option<f64> {
     let addr = format!("{gateway}:80");
     let started = Instant::now();
-    let Ok(mut stream) = TcpStream::connect_timeout(
+    let mut stream = TcpStream::connect_timeout(
         &addr.parse().unwrap_or_else(|_| {
             // gateway IPs from sceNetCtl are dotted quads; unreachable parse
             // errors degrade to a failed probe
             "0.0.0.0:80".parse().expect("valid placeholder addr")
         }),
         Duration::from_millis(1500),
-    ) else {
-        return (None, None);
+    )
+    .ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(1200))).ok();
+    stream.set_write_timeout(Some(Duration::from_millis(500))).ok();
+    drop(stream);
+    Some(started.elapsed().as_secs_f64() * 1000.0)
+}
+
+fn probe_downlink(gateway: &str) -> Option<f64> {
+    let addr = format!("{gateway}:80");
+    let Ok(mut stream) =
+        TcpStream::connect_timeout(&addr.parse().ok()?, Duration::from_millis(1500))
+    else {
+        return None;
     };
-    let rtt_ms = started.elapsed().as_secs_f64() * 1000.0;
     stream.set_read_timeout(Some(Duration::from_millis(1200))).ok();
     stream.set_write_timeout(Some(Duration::from_millis(500))).ok();
 
     const MIN_TRUSTWORTHY_BYTES: usize = 64 * 1024;
-    if stream
+    stream
         .write_all(b"GET / HTTP/1.1\r\nHost: gateway\r\nConnection: close\r\n\r\n")
-        .is_err()
-    {
-        return (Some(rtt_ms), None);
-    }
+        .ok()?;
     let dl_started = Instant::now();
     let mut total = 0usize;
     let mut buf = [0u8; 8192];
@@ -99,13 +123,12 @@ fn probe_gateway(gateway: &str) -> (Option<f64>, Option<f64>) {
             Err(_) => break,
         }
     }
-    let downlink = if total >= MIN_TRUSTWORTHY_BYTES {
+    if total >= MIN_TRUSTWORTHY_BYTES {
         let secs = dl_started.elapsed().as_secs_f64().max(0.001);
         Some(total as f64 * 8.0 / 1e6 / secs)
     } else {
         None // small redirect page / blocked port — not a bandwidth sample
-    };
-    (Some(rtt_ms), downlink)
+    }
 }
 
 #[cfg(test)]

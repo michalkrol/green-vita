@@ -80,9 +80,6 @@ impl App {
             settings,
         };
         app.state = app.state_after_network_check();
-        if matches!(app.state, AppState::InitializeAuthentication) {
-            app.maybe_start_cap_probe();
-        }
         Ok(app)
     }
 
@@ -115,7 +112,14 @@ impl App {
     }
 
     fn set_state(&mut self, state: AppState) {
-        if matches!(state, AppState::InitializeAuthentication) {
+        // Probe POST-auth (TitleList/ConsoleList entry), never during
+        // InitializeAuthentication — the auth cascade's own traffic inflates
+        // the RTT sample (2026-11-02: probe measured 35.5 ms during auth and
+        // suggested 1500 on a link that ran 5 M at dam 0.14/s).
+        if matches!(
+            state,
+            AppState::TitleList { .. } | AppState::ConsoleList { .. }
+        ) {
             self.maybe_start_cap_probe();
         }
         self.state = state;
