@@ -89,6 +89,9 @@ pub(crate) struct MetricsSnapshot {
     // 2c diagnostics:
     pub(crate) rtp_ext_twcc: u64,   // packets whose negotiated TWCC ext id parsed
     pub(crate) rtcp_rtpfb_any: u64, // any RTCP PT=205 that left the socket
+    pub(crate) grace_held: u64,     // times grace was granted for damaged-AU hold
+    pub(crate) grace_filled: u64,   // held AU resolved complete
+    pub(crate) grace_expired: u64,  // held AU resolved damaged
 }
 
 pub(crate) struct VideoMetrics {
@@ -180,6 +183,10 @@ pub(crate) struct VideoMetrics {
     pub(crate) dam_holes: AtomicU64,
     pub(crate) rtp_ext_twcc: AtomicU64,
     pub(crate) rtcp_rtpfb_any: AtomicU64,
+    // Grace hold metrics for damaged-AU grace hold feature:
+    pub(crate) grace_held: AtomicU64,
+    pub(crate) grace_filled: AtomicU64,
+    pub(crate) grace_expired: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -264,6 +271,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     dam_first_slice: AtomicU64::new(0),
     dam_holes: AtomicU64::new(0),
     rtp_ext_twcc: AtomicU64::new(0),
+    grace_held: AtomicU64::new(0),
+    grace_filled: AtomicU64::new(0),
+    grace_expired: AtomicU64::new(0),
     rtcp_rtpfb_any: AtomicU64::new(0),
 };
 
@@ -397,6 +407,9 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         rtp_hold_saved: METRICS.rtp_hold_saved.swap(0, Ordering::Relaxed),
         rtp_hold_expired: METRICS.rtp_hold_expired.swap(0, Ordering::Relaxed),
         rtp_gaps: METRICS.rtp_gaps.swap(0, Ordering::Relaxed),
+        grace_held: METRICS.grace_held.swap(0, Ordering::Relaxed),
+        grace_filled: METRICS.grace_filled.swap(0, Ordering::Relaxed),
+        grace_expired: METRICS.grace_expired.swap(0, Ordering::Relaxed),
         rtp_abandons: METRICS.rtp_abandons.swap(0, Ordering::Relaxed),
         rtp_wait_drops: METRICS.rtp_wait_drops.swap(0, Ordering::Relaxed),
         rtp_invalid: METRICS.rtp_invalid.swap(0, Ordering::Relaxed),
@@ -482,6 +495,9 @@ pub(crate) fn reset_session_metrics() {
     METRICS.rtp_hold_saved.store(0, Ordering::Relaxed);
     METRICS.rtp_hold_expired.store(0, Ordering::Relaxed);
     METRICS.rtp_gaps.store(0, Ordering::Relaxed);
+    METRICS.grace_held.store(0, Ordering::Relaxed);
+    METRICS.grace_filled.store(0, Ordering::Relaxed);
+    METRICS.grace_expired.store(0, Ordering::Relaxed);
     METRICS.rtp_abandons.store(0, Ordering::Relaxed);
     METRICS.rtp_wait_drops.store(0, Ordering::Relaxed);
     METRICS.rtp_invalid.store(0, Ordering::Relaxed);
