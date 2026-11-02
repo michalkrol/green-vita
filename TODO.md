@@ -42,7 +42,7 @@
      (RTT + loss/timeout from 2.4 GHz interference) → lightweight
      `GET / HTTP/1.1` read-back (downlink) → metrics to UI warning banner
      when below thresholds; must not block sign-in.
-8. **Cap-advisor RTT mechanism check** — the gateway TCP-connect RTT reads
+9. (DEMOTED 2026-11-02, user: next step = floor latency) **Cap-advisor RTT mechanism check** — the gateway TCP-connect RTT reads
    a constant ~36 ms on EVERY probe (10/10, advisor v1.1 era). Suspicious:
    the Mac on the SAME 2.4 GHz channel measures gateway RTT median 2 ms
    (netmonitor/), and the Vita's UDP stream path runs at floor latency —
@@ -56,3 +56,12 @@
    correlate with netmonitor gateway pings; consider scePower
    wireless-mode toggles scoped to the probe only (knobs exist in
    shell/power.rs, ENABLED=false for drift reasons).
+   NEW DATAPOINT (2026-11-02, user): the ~36 ms is NOT universal — it is
+   STABLE WITHIN one app run and RESETS on the next app start. Strengthens
+   the per-association hypothesis: the Vita's Wi-Fi power-save/connection
+   mode is negotiated at association/first-use and quantizes TCP RTT for
+   that whole session. The Mac on the same channel still reads 2 ms, and
+   the streaming UDP path runs at floor latency — so it is TCP/handshake
+   -path specific. Advisor impact: within a run the suggestion is at
+   least CONSISTENT (same input → same output); only across-run changes
+   shift it.
