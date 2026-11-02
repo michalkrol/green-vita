@@ -185,7 +185,7 @@ impl AccessUnitAssembler {
         // `last_resolved_ts` is newer than the parked AU's ts and rule 4
         // would swallow the parked AU's repair packets.
         self.grace_expire_if_due(arrival_us);
-        if self.grace_try_fill_parked(seq, timestamp, payload, arrival_us) {
+        if self.grace_try_fill_parked(seq, timestamp, marker, payload, arrival_us) {
             // Consumed by the parked AU. If it completed, the parked slot
             // cleared and its Complete sits at the queue FRONT — emit it.
             // Otherwise holes remain: hold all output while parked.
@@ -217,11 +217,28 @@ impl AccessUnitAssembler {
                     // PARKS instead (force-out is the dominant real-traffic
                     // damage door); the newer AU assembles normally.
                     // Ineligible or slot busy ⇒ today's resolve.
+                    // Grace v2.3: TWO park doors at force-out — the marker
+                    // door (marker-seen NACKed holed AU, v2.0) and the
+                    // MARKERLESS tail door: an AU that never saw its marker
+                    // resolves Damaged here today without NACKs ever firing
+                    // (queueing only happens at marker). Park it and NACK its
+                    // intra-span holes now — the newer frame proves this
+                    // frame's transmission ended (proven loss).
+                    let markerless_tail =
+                        !au.marker_seen && compute_holes(&au.payloads) > 0;
                     if self.grace_enabled
                         && self.grace_parked.is_none()
-                        && Self::grace_eligible(&au)
+                        && (Self::grace_eligible(&au) || markerless_tail)
                     {
                         let expected_first = seq_bounds(&au.payloads).0;
+                        let mut au = au;
+                        if markerless_tail {
+                            au.nack_reported = true;
+                            let ranges = compute_missing_ranges(&au.payloads);
+                            if !ranges.is_empty() {
+                                self.pending_nacks.extend(ranges);
+                            }
+                        }
                         self.grace_parked =
                             Some((au, arrival_us.saturating_add(GRACE_BUDGET_US), expected_first));
                         METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
@@ -649,15 +666,22 @@ impl AccessUnitAssembler {
         self.resolved_queue.push_front(outcome);
     }
 
-    /// Grace v2: try to route an arriving packet into the parked AU (S5 RTX
-    /// or a late original): same RTP timestamp, seq inside the parked span,
-    /// not a duplicate. Fill ⇒ resolve via the existing complete path to the
-    /// queue FRONT (order preserved). Returns true when the packet was
-    /// consumed by the parked AU.
+    /// Grace v2 (+v2.3): try to route an arriving packet into the parked AU
+    /// (S5 RTX or a late original): same RTP timestamp, seq inside the
+    /// parked span OR immediately adjacent above it (the lost MARKER tail —
+    /// v2.3 parks markerless AUs whose present span ends before their
+    /// marker), not a duplicate. A marker-carrying insert sets
+    /// `marker_seen`. Completion requires holes == 0 AND marker_seen — a
+    /// markerless fill with holes closed STAYS parked, waiting for the
+    /// marker RTX (expiry is the fallback). Fill ⇒ resolve via the existing
+    /// path to the queue FRONT (order preserved); `grace_filled` counts
+    /// Complete outcomes only. Returns true when the packet was consumed by
+    /// the parked AU.
     fn grace_try_fill_parked(
         &mut self,
         seq: u16,
         timestamp: u32,
+        marker: bool,
         payload: &[u8],
         arrival_us: u64,
     ) -> bool {
@@ -670,10 +694,12 @@ impl AccessUnitAssembler {
                 return false;
             }
             let last_seq = seq_bounds(&au.payloads).1;
-            // Modular span: seq ∈ [expected_first, last_seq] (wrapping u16)
-            // — expected_first, because a leading-loss AU's present span
-            // starts AFTER its true first seq.
-            if seq.wrapping_sub(*expected_first) > last_seq.wrapping_sub(*expected_first) {
+            // Modular span: seq ∈ [expected_first, last_seq + 1] —
+            // expected_first because a leading-loss AU's present span starts
+            // AFTER its true first seq (v2.2); last_seq + 1 admits the lost
+            // MARKER packet adjacent above the present span (v2.3).
+            let span_end = last_seq.wrapping_add(1);
+            if seq.wrapping_sub(*expected_first) > span_end.wrapping_sub(*expected_first) {
                 return false;
             }
             if au.payloads.iter().any(|(existing, _)| *existing == seq) {
@@ -684,6 +710,10 @@ impl AccessUnitAssembler {
         au.payloads.push((seq, payload.to_vec()));
         au.raw_len += payload.len();
         au.packet_count += 1;
+        if marker {
+            au.marker_seen = true;
+            au.marker_seen_at_us = arrival_us;
+        }
         // Grace v2.1: mirror the normal continue path's metadata upgrades —
         // crucially `had_first_slice`: a first-slice-lost AU opens on a
         // continuation (verified start = false) and only the RTX-arrived
@@ -709,13 +739,22 @@ impl AccessUnitAssembler {
                 .nal_ref_idc
                 .max(fu_header.map_or_else(|| nal_header.nal_ref_idc, |fh| fh.nal_ref_idc));
         }
-        if compute_holes(&au.payloads) == 0 {
+        if compute_holes(&au.payloads) == 0 && au.marker_seen {
             let (mut filled, _, _) = self.grace_parked.take().unwrap();
-            METRICS.grace_filled.fetch_add(1, Ordering::Relaxed);
             let (lcs, lrt) = (self.last_closed_seq, self.last_resolved_ts);
             let outcome = self.resolve_au_now(&mut filled, arrival_us);
             self.last_closed_seq = lcs;
             self.last_resolved_ts = lrt;
+            // v2.3: count honestly — a parked AU whose RTX closed its holes
+            // but whose marker never landed still resolves Damaged.
+            match outcome {
+                AssemblyOutcome::Complete(_) => {
+                    METRICS.grace_filled.fetch_add(1, Ordering::Relaxed);
+                }
+                _ => {
+                    METRICS.grace_expired.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             self.resolved_queue.push_front(outcome);
         }
         true
@@ -1980,6 +2019,71 @@ fn test_event_stale_ts_packet_dropped_parity() {
         match assembler.poll_outcome() {
             Some(AssemblyOutcome::Damaged(desc)) => {
                 assert!(!desc.had_first_slice);
+                assert!(desc.data.is_empty(), "§4: Damaged carries no bytes");
+            }
+            other => panic!("expected Damaged on expiry, got {other:?}"),
+        }
+        assert_eq!(METRICS.grace_expired.load(Ordering::Relaxed), expired0 + 1);
+        assert_eq!(METRICS.grace_held.load(Ordering::Relaxed), held0 + 1);
+    }
+
+    #[test]
+    fn test_grace_v23_markerless_tail_parks_fills_completes() {
+        // Tail loss: FU start + one mid packet present; mid-tail + MARKER
+        // lost. Force-out must PARK (v2.3) and NACK the intra-span hole;
+        // the mid-hole RTX does NOT complete (marker still missing — no
+        // premature Damaged); the marker RTX completes the frame.
+        let (_g, held0, filled0, expired0) = grace_setup();
+        let mut assembler = AccessUnitAssembler::new();
+        let start = [0x1Cu8, 0x80, 0xBB]; // FU start
+        let cont = [0x1Cu8, 0x00, 0xAA];  // continuation
+        let _ = assembler.push(0, 90000, false, &start, 1000);
+        let _ = assembler.push(2, 90000, false, &cont, 1500); // hole at seq 1, NO marker
+        // Next frame's packet forces the markerless holed AU out ⇒ PARK + NACK.
+        let _ = assembler.push(4, 180000, false, &start, 20_000);
+        assert!(assembler.grace_parked.is_some(), "markerless tail-loss parks at force-out");
+        assert_eq!(METRICS.grace_held.load(Ordering::Relaxed), held0 + 1);
+        assert!(
+            assembler.pending_nacks.contains(&(1, 1)),
+            "tail hole must be NACKed at park: {:?}",
+            assembler.pending_nacks
+        );
+        // RTX mid hole: consumed, holes close, marker still missing ⇒ parked.
+        assert!(
+            assembler.push(1, 90000, false, &cont, 30_000).is_none(),
+            "markerless fill waits for the marker"
+        );
+        assert!(assembler.grace_parked.is_some());
+        assert_eq!(METRICS.grace_filled.load(Ordering::Relaxed), filled0, "no premature fill count");
+        // Marker RTX lands ⇒ Complete.
+        match assembler.push(3, 90000, true, &cont, 40_000).unwrap() {
+            AssemblyOutcome::Complete(desc) => {
+                assert_eq!(desc.packet_count, 4);
+                assert_eq!(desc.rtp_ts, 90000);
+            }
+            other => panic!("marker rescue must Complete, got {other:?}"),
+        }
+        assert_eq!(METRICS.grace_filled.load(Ordering::Relaxed), filled0 + 1);
+        assert_eq!(METRICS.grace_expired.load(Ordering::Relaxed), expired0);
+        assert!(assembler.grace_parked.is_none());
+    }
+
+    #[test]
+    fn test_grace_v23_markerless_tail_expires_damaged() {
+        // No RTX: expiry resolves Damaged identically to today's force-out
+        // damage (no bytes, marker unseen).
+        let (_g, held0, _filled0, expired0) = grace_setup();
+        let mut assembler = AccessUnitAssembler::new();
+        let start = [0x1Cu8, 0x80, 0xBB];
+        let cont = [0x1Cu8, 0x00, 0xAA];
+        let _ = assembler.push(0, 90000, false, &start, 1000);
+        let _ = assembler.push(2, 90000, false, &cont, 1500);
+        let _ = assembler.push(4, 180000, false, &start, 20_000);
+        assert!(assembler.grace_parked.is_some());
+        assert!(assembler.flush_due(60_000).is_none(), "expiry queued at front");
+        match assembler.poll_outcome() {
+            Some(AssemblyOutcome::Damaged(desc)) => {
+                assert!(!desc.marker_seen);
                 assert!(desc.data.is_empty(), "§4: Damaged carries no bytes");
             }
             other => panic!("expected Damaged on expiry, got {other:?}"),
