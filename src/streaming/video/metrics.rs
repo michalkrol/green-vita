@@ -96,6 +96,11 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) probe_rtt_ms_x10: u64,
     pub(crate) probe_dl_mbps_x10: u64,
     pub(crate) probe_suggest_kbps: u64,
+    // Micro-jb (Step 5): boost slots at last submit, bank depth at last
+    // submit, submits admitted under boost.
+    pub(crate) jb_boost: u64,
+    pub(crate) jb_depth: u64,
+    pub(crate) jb_absorbed: u64,
 }
 
 pub(crate) struct VideoMetrics {
@@ -195,6 +200,10 @@ pub(crate) struct VideoMetrics {
     pub(crate) probe_rtt_ms_x10: AtomicU64,
     pub(crate) probe_dl_mbps_x10: AtomicU64,
     pub(crate) probe_suggest_kbps: AtomicU64,
+    // Micro-jb (Step 5): boost/depth are last-value stores, absorbed counts.
+    pub(crate) jb_boost: AtomicU64,
+    pub(crate) jb_depth: AtomicU64,
+    pub(crate) jb_absorbed: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -285,6 +294,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     probe_rtt_ms_x10: AtomicU64::new(0),
     probe_dl_mbps_x10: AtomicU64::new(0),
     probe_suggest_kbps: AtomicU64::new(0),
+    jb_boost: AtomicU64::new(0),
+    jb_depth: AtomicU64::new(0),
+    jb_absorbed: AtomicU64::new(0),
     rtcp_rtpfb_any: AtomicU64::new(0),
 };
 
@@ -425,6 +437,10 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         probe_rtt_ms_x10: METRICS.probe_rtt_ms_x10.load(Ordering::Relaxed),
         probe_dl_mbps_x10: METRICS.probe_dl_mbps_x10.load(Ordering::Relaxed),
         probe_suggest_kbps: METRICS.probe_suggest_kbps.load(Ordering::Relaxed),
+        // Micro-jb: boost/depth last-value loads; absorbed is a counter.
+        jb_boost: METRICS.jb_boost.load(Ordering::Relaxed),
+        jb_depth: METRICS.jb_depth.load(Ordering::Relaxed),
+        jb_absorbed: METRICS.jb_absorbed.swap(0, Ordering::Relaxed),
         rtp_abandons: METRICS.rtp_abandons.swap(0, Ordering::Relaxed),
         rtp_wait_drops: METRICS.rtp_wait_drops.swap(0, Ordering::Relaxed),
         rtp_invalid: METRICS.rtp_invalid.swap(0, Ordering::Relaxed),

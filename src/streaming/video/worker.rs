@@ -40,7 +40,14 @@ pub struct VideoDecodeWorker {
     /// Updated from RTP timestamps to pace the decoder to the console's encoder rate.
     pub(crate) last_source_duration_us: Arc<AtomicU64>,
     scheduler: Arc<DecodeScheduler>,
+    /// Micro-jb (Step 5): burst-event boost slots + last-event wall ms.
+    jb_boost: Arc<AtomicU64>,
+    jb_last_event_ms: Arc<AtomicU64>,
 }
+
+/// Micro-jb event feeder: grace parks / damage bursts increment this; the
+/// submit path swaps it to grow the bank's admission boost (Step 5).
+pub(crate) static MICRO_JB_EVENTS: AtomicU64 = AtomicU64::new(0);
 
 impl VideoDecodeWorker {
     pub fn spawn(config: DecoderConfig, direct_output: Arc<DirectVideoOutput>) -> Result<Self> {
@@ -112,6 +119,8 @@ impl VideoDecodeWorker {
             // source_duration removed; last_source_duration_us initialized with default interval
             last_source_duration_us: Arc::new(AtomicU64::new(DEFAULT_DECODE_INTERVAL_US)),
             scheduler,
+            jb_boost: Arc::new(AtomicU64::new(0)),
+            jb_last_event_ms: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -121,12 +130,44 @@ impl VideoDecodeWorker {
         {
             self.last_source_duration_us.store(duration, Ordering::Relaxed);
         }
+        // Micro-jb (Step 5): swap burst events → grow boost; decay to zero
+        // after JB_DECAY_MS of quiet. Forced off (boost 0) when MICRO_JB is
+        // false — admission identical to the known-good scheduler.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let burst_events = MICRO_JB_EVENTS.swap(0, Ordering::Relaxed);
+        let mut boost = self.jb_boost.load(Ordering::Relaxed) as usize;
+        if burst_events > 0 {
+            boost = (boost + 1).min(crate::pipeline::decode::scheduler::JB_BOOST_MAX);
+            self.jb_last_event_ms.store(now_ms, Ordering::Relaxed);
+            self.jb_boost.store(boost as u64, Ordering::Relaxed);
+        } else if boost > 0
+            && now_ms.saturating_sub(self.jb_last_event_ms.load(Ordering::Relaxed))
+                >= crate::pipeline::decode::scheduler::JB_DECAY_MS
+        {
+            boost = 0;
+            self.jb_boost.store(0, Ordering::Relaxed);
+        }
+        if !crate::pipeline::decode::scheduler::MICRO_JB {
+            boost = 0;
+        }
+        metrics::METRICS
+            .jb_boost
+            .store(boost as u64, Ordering::Relaxed);
+        metrics::METRICS
+            .jb_depth
+            .store(self.access_units.len() as u64, Ordering::Relaxed);
         if let Admission::RejectQueueFull = self
             .scheduler
-            .admit(self.access_units.len(), source_frame_duration_us)
+            .admit(self.access_units.len(), source_frame_duration_us, boost)
         {
             metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
             return false;
+        }
+        if boost > 0 {
+            metrics::METRICS.jb_absorbed.fetch_add(1, Ordering::Relaxed);
         }
 
         let access_unit = QueuedAccessUnit {

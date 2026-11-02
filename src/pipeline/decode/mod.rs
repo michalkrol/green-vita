@@ -17,36 +17,36 @@ mod tests {
     #[test]
     fn admit_fps_none_limit_1_len0_accept_len1_reject() {
         let sched = DecodeScheduler::new(SchedulerMode::DisplayClocked);
-        assert_eq!(sched.admit(0, None), Admission::Accept);
-        assert_eq!(sched.admit(1, None), Admission::RejectQueueFull);
+        assert_eq!(sched.admit(0, None, 0), Admission::Accept);
+        assert_eq!(sched.admit(1, None, 0), Admission::RejectQueueFull);
     }
 
     #[test]
     fn admit_16667_limit_6_len5_accept_len6_reject() {
         let sched = DecodeScheduler::new(SchedulerMode::DisplayClocked);
-        assert_eq!(sched.admit(5, Some(16667)), Admission::Accept);
-        assert_eq!(sched.admit(6, Some(16667)), Admission::RejectQueueFull);
+        assert_eq!(sched.admit(5, Some(16667), 0), Admission::Accept);
+        assert_eq!(sched.admit(6, Some(16667), 0), Admission::RejectQueueFull);
     }
 
     #[test]
     fn admit_20000_limit_5_len4_accept_len5_reject() {
         let sched = DecodeScheduler::new(SchedulerMode::DisplayClocked);
-        assert_eq!(sched.admit(4, Some(20000)), Admission::Accept);
-        assert_eq!(sched.admit(5, Some(20000)), Admission::RejectQueueFull);
+        assert_eq!(sched.admit(4, Some(20000), 0), Admission::Accept);
+        assert_eq!(sched.admit(5, Some(20000), 0), Admission::RejectQueueFull);
     }
 
     #[test]
     fn admit_40000_limit_1() {
         let sched = DecodeScheduler::new(SchedulerMode::DisplayClocked);
-        assert_eq!(sched.admit(0, Some(40000)), Admission::Accept);
-        assert_eq!(sched.admit(1, Some(40000)), Admission::RejectQueueFull);
+        assert_eq!(sched.admit(0, Some(40000), 0), Admission::Accept);
+        assert_eq!(sched.admit(1, Some(40000), 0), Admission::RejectQueueFull);
     }
 
     #[test]
     fn admit_pass_through_always_accept() {
         let sched = DecodeScheduler::new(SchedulerMode::PassThrough);
-        assert_eq!(sched.admit(100, None), Admission::Accept);
-        assert_eq!(sched.admit(100, Some(40000)), Admission::Accept);
+        assert_eq!(sched.admit(100, None, 0), Admission::Accept);
+        assert_eq!(sched.admit(100, Some(40000), 0), Admission::Accept);
     }
 
     #[test]
@@ -86,5 +86,24 @@ mod tests {
         assert_eq!(sched.mode(), SchedulerMode::Paced);
         sched.set_mode(SchedulerMode::PassThrough);
         assert_eq!(sched.mode(), SchedulerMode::PassThrough);
+    }
+
+    #[test]
+    fn admit_boost_raises_limit_bounded() {
+        let sched = DecodeScheduler::new(SchedulerMode::DisplayClocked);
+        // 60 fps limit 6; boost 2 → limit 8 (bounded by JB_BOOST_MAX).
+        assert_eq!(sched.admit(6, Some(16667), 2), Admission::Accept);
+        assert_eq!(sched.admit(7, Some(16667), 2), Admission::Accept);
+        assert_eq!(sched.admit(8, Some(16667), 2), Admission::RejectQueueFull);
+        // Boost above the ceiling is clamped.
+        assert_eq!(sched.admit(8, Some(16667), 9), Admission::RejectQueueFull);
+        assert_eq!(sched.admit(7, Some(16667), 9), Admission::Accept);
+    }
+
+    #[test]
+    fn admit_boost_zero_is_legacy_identical() {
+        let sched = DecodeScheduler::new(SchedulerMode::DisplayClocked);
+        assert_eq!(sched.admit(5, Some(16667), 0), Admission::Accept);
+        assert_eq!(sched.admit(6, Some(16667), 0), Admission::RejectQueueFull);
     }
 }

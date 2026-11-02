@@ -12,6 +12,7 @@
 
 use crate::pipeline::media::nal::{FuHeader, NalHeader};
 use crate::streaming::video::metrics::METRICS;
+use crate::streaming::video::worker::MICRO_JB_EVENTS;
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 
@@ -242,6 +243,8 @@ impl AccessUnitAssembler {
                         self.grace_parked =
                             Some((au, arrival_us.saturating_add(GRACE_BUDGET_US), expected_first));
                         METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
+                        // Micro-jb event: parked AU = burst signature.
+                        MICRO_JB_EVENTS.fetch_add(1, Ordering::Relaxed);
                     } else {
                         let outcome = self.resolve_au_now(&mut au, arrival_us);
                         self.resolved_queue.push_back(outcome);
@@ -590,6 +593,9 @@ impl AccessUnitAssembler {
             let au = self.current_au.take().expect("AU present at rule-2 boundary");
             self.grace_parked = Some((au, now_us.saturating_add(GRACE_BUDGET_US), expected_first));
             METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
+            // Micro-jb event: a parked AU is a burst signature — the decode
+            // bank may grow (bounded) to absorb the next burst invisibly.
+            MICRO_JB_EVENTS.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
@@ -643,6 +649,8 @@ impl AccessUnitAssembler {
         self.pending_nacks.push((expect, first_seq.wrapping_sub(1)));
         self.grace_parked = Some((au, arrival_us.saturating_add(GRACE_BUDGET_US), expect));
         METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
+        // Micro-jb event: parked AU = burst signature.
+        MICRO_JB_EVENTS.fetch_add(1, Ordering::Relaxed);
         true
     }
 
