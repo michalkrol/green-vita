@@ -92,6 +92,10 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) grace_held: u64,     // times grace was granted for damaged-AU hold
     pub(crate) grace_filled: u64,   // held AU resolved complete
     pub(crate) grace_expired: u64,  // held AU resolved damaged
+    // Cap-advisor provenance (constant per session; 0 = no probe ran).
+    pub(crate) probe_rtt_ms_x10: u64,
+    pub(crate) probe_dl_mbps_x10: u64,
+    pub(crate) probe_suggest_kbps: u64,
 }
 
 pub(crate) struct VideoMetrics {
@@ -187,6 +191,10 @@ pub(crate) struct VideoMetrics {
     pub(crate) grace_held: AtomicU64,
     pub(crate) grace_filled: AtomicU64,
     pub(crate) grace_expired: AtomicU64,
+    // Cap-advisor provenance (set at stream start, NOT reset mid-session).
+    pub(crate) probe_rtt_ms_x10: AtomicU64,
+    pub(crate) probe_dl_mbps_x10: AtomicU64,
+    pub(crate) probe_suggest_kbps: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -274,6 +282,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     grace_held: AtomicU64::new(0),
     grace_filled: AtomicU64::new(0),
     grace_expired: AtomicU64::new(0),
+    probe_rtt_ms_x10: AtomicU64::new(0),
+    probe_dl_mbps_x10: AtomicU64::new(0),
+    probe_suggest_kbps: AtomicU64::new(0),
     rtcp_rtpfb_any: AtomicU64::new(0),
 };
 
@@ -410,6 +421,10 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         grace_held: METRICS.grace_held.swap(0, Ordering::Relaxed),
         grace_filled: METRICS.grace_filled.swap(0, Ordering::Relaxed),
         grace_expired: METRICS.grace_expired.swap(0, Ordering::Relaxed),
+        // Provenance constants: loaded, never swapped (survive session reset).
+        probe_rtt_ms_x10: METRICS.probe_rtt_ms_x10.load(Ordering::Relaxed),
+        probe_dl_mbps_x10: METRICS.probe_dl_mbps_x10.load(Ordering::Relaxed),
+        probe_suggest_kbps: METRICS.probe_suggest_kbps.load(Ordering::Relaxed),
         rtp_abandons: METRICS.rtp_abandons.swap(0, Ordering::Relaxed),
         rtp_wait_drops: METRICS.rtp_wait_drops.swap(0, Ordering::Relaxed),
         rtp_invalid: METRICS.rtp_invalid.swap(0, Ordering::Relaxed),

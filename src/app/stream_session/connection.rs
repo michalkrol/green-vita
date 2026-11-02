@@ -91,6 +91,21 @@ pub(in crate::app) async fn cleanup_active_sessions(api: &ApiClient, kind: Strea
 
 impl App {
     pub(in crate::app) fn start_stream_for_target(&mut self, target: StreamStartTarget) {
+        // Cap-advisor provenance for this session's CSV rows (constant per
+        // session; 0 = no probe/none accepted). Overwritten every start.
+        {
+            use crate::streaming::video::metrics::METRICS;
+            use std::sync::atomic::Ordering;
+            if let Some(advice) = &self.cap_advice {
+                if let Some(rtt) = advice.rtt_ms {
+                    METRICS.probe_rtt_ms_x10.store((rtt * 10.0) as u64, Ordering::Relaxed);
+                }
+                if let Some(dl) = advice.downlink_mbps {
+                    METRICS.probe_dl_mbps_x10.store((dl * 10.0) as u64, Ordering::Relaxed);
+                }
+                METRICS.probe_suggest_kbps.store(advice.suggested_kbps as u64, Ordering::Relaxed);
+            }
+        }
         let api = self.service.api.clone();
         let kind = target.kind;
         let target_id = target.target_id.clone();

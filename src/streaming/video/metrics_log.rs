@@ -24,7 +24,7 @@ pub(crate) struct RowExtras {
 
 const MAX_ROWS: usize = 20_000;
 /// CSV header for per-session metrics log. Updated in sync with the cols array in write_row.
-const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,q_us,q_us_max,q_slope_mpm,sh_match,sh_bound_mismatch,sh_bytes_mismatch,sh_class_mismatch,sh_new_damaged_old_complete,sh_new_complete_old_abandon,sh_hold_saved,sh_legacy_unmatched,sh_new_unmatched,au_submitted,au_no_startcode,au_idr_submitted,sh_reject_bound_artifact,late_after_resolve,dam_markerless,dam_first_slice,dam_holes,rtp_ext_twcc,rtcp_rtpfb_any,rtcp_sr_count,rtcp_sr_raw,rtcp_nack_sent,rtx_packets_received,rtx_crate_seen,sr_age_ms,sr_clock_offset_ms,capture_to_arrival_us,capture_to_arrival_max_us,twcc_delay_med_us,twcc_delay_max_us,sr_anc_ntp,sr_anc_rtp,sr_anc_lus,sr_anc_wall,grace_held,grace_filled,grace_expired";
+const HEADER: &str = "t_s,rtp_assembly_sum_us,rtp_assembly_count,rtp_assembly_max_us,decode_us,pipeline_age_us,decoded,skipped,rate_limited,presented,replaced,queue_full,resyncs,resets,hw_buffered,pipeline_age_max_us,stream_lag_us,stream_lag_max_us,rtp_hold_saved,rtp_hold_expired,rtp_gaps,rtp_abandons,rtp_wait_drops,rtp_invalid,dec_queue_full,flushes,twcc_sent,twcc_samples,rtp_ext_any,twcc_stride,video_metadata_sent,video_bandwidth_kbps,display_pickup_us,display_pickup_max_us,stream_slip_us,stream_slip_max_us,audio_queue_ms,src_fps,enc_width,enc_height,waiting_keyframe,drops,decode_errors,vt_exit_count,vt_max_0,vt_max_1,vt_max_2,vt_max_3,vt_max_4,vt_max_5,q_us,q_us_max,q_slope_mpm,sh_match,sh_bound_mismatch,sh_bytes_mismatch,sh_class_mismatch,sh_new_damaged_old_complete,sh_new_complete_old_abandon,sh_hold_saved,sh_legacy_unmatched,sh_new_unmatched,au_submitted,au_no_startcode,au_idr_submitted,sh_reject_bound_artifact,late_after_resolve,dam_markerless,dam_first_slice,dam_holes,rtp_ext_twcc,rtcp_rtpfb_any,rtcp_sr_count,rtcp_sr_raw,rtcp_nack_sent,rtx_packets_received,rtx_crate_seen,sr_age_ms,sr_clock_offset_ms,capture_to_arrival_us,capture_to_arrival_max_us,twcc_delay_med_us,twcc_delay_max_us,sr_anc_ntp,sr_anc_rtp,sr_anc_lus,sr_anc_wall,grace_held,grace_filled,grace_expired,probe_rtt_ms_x10,probe_dl_mbps_x10,probe_suggest_kbps";
 
 /// RAM-buffered CSV log for a streaming session.
 /// Rows are accumulated at 1 Hz from status() and flushed once at session end.
@@ -59,7 +59,7 @@ impl MetricsCsvLog {
         let t_s = self.started_at.elapsed().as_secs();
         // Fixed-size array so the column count is compiler-enforced and can never
         // drift out of sync with HEADER. Order MUST match HEADER below.
-        let cols: [i64; 90] = [
+        let cols: [i64; 93] = [
             t_s as i64,
             snapshot.rtp_assembly_sum_us as i64,
             snapshot.rtp_assembly_count as i64,
@@ -150,6 +150,9 @@ impl MetricsCsvLog {
             snapshot.grace_held as i64,
             snapshot.grace_filled as i64,
             snapshot.grace_expired as i64,
+            snapshot.probe_rtt_ms_x10 as i64,
+            snapshot.probe_dl_mbps_x10 as i64,
+            snapshot.probe_suggest_kbps as i64,
         ];
         let row = cols
             .iter()
@@ -216,7 +219,7 @@ impl MetricsCsvLog {
 // Private helper: build a CSV row string from a MetricsSnapshot (mirrors write_row logic).
 fn csv_row_from_snapshot(snapshot: &MetricsSnapshot) -> String {
     // Same 55-element layout as the cols array in write_row, using i64 values.
-    let cols: [i64; 90] = [
+    let cols: [i64; 93] = [
         0 as i64,                                                    // t_s
         snapshot.rtp_assembly_sum_us as i64,
         snapshot.rtp_assembly_count as i64,
@@ -307,6 +310,9 @@ fn csv_row_from_snapshot(snapshot: &MetricsSnapshot) -> String {
         snapshot.grace_held as i64,
         snapshot.grace_filled as i64,
         snapshot.grace_expired as i64,
+        snapshot.probe_rtt_ms_x10 as i64,
+        snapshot.probe_dl_mbps_x10 as i64,
+        snapshot.probe_suggest_kbps as i64,
     ];
     cols.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(",")
 }
@@ -402,6 +408,9 @@ mod tests {
             grace_held: 0,
             grace_filled: 0,
             grace_expired: 0,
+            probe_rtt_ms_x10: 0,
+            probe_dl_mbps_x10: 0,
+            probe_suggest_kbps: 0,
         };
 
         let row = csv_row_from_snapshot(&snapshot);
@@ -502,6 +511,9 @@ mod tests {
             grace_held: 0,
             grace_filled: 0,
             grace_expired: 0,
+            probe_rtt_ms_x10: 0,
+            probe_dl_mbps_x10: 0,
+            probe_suggest_kbps: 0,
         };
 
         let row = csv_row_from_snapshot(&snapshot);

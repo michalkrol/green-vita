@@ -18,26 +18,32 @@ pub(crate) struct ProbeResult {
 
 /// Pure heuristic (unit-tested): gateway RTT + downlink → suggested cap.
 ///
-/// Trustworthy downlink (≥ 64 KB actually transferred from the gateway)
-/// overrides RTT; otherwise RTT alone drives the suggestion (gateway RTT
-/// spikes 20–100 ms on a congested 2.4 GHz channel vs 1–3 ms quiet —
-/// measured on-device 2026-11-02, see netmonitor/).
+/// v1.1 (2026-11-02, after the cap-2500 device lesson): only suggest BELOW
+/// 5000 when the link is PROVABLY bad. Evidence: S5 NACK/RTX + grace make
+/// 5 M viable on mediocre radio (dam 0.066/s calm day; user-preferred 5 M
+/// over an advisor-suggested 2500), while under-capping costs race-start
+/// latency (697 ms at 2500) and per-frame quality. RTT alone no longer
+/// down-caps a healthy-looking link.
 pub(crate) fn suggest_kbps(rtt_ms: Option<f64>, downlink_mbps: Option<f64>) -> u32 {
     if let Some(dl) = downlink_mbps {
-        if dl >= 6.0 && rtt_ms.map_or(true, |r| r < 5.0) {
-            return 5_000;
+        if dl < 0.8 {
+            return 1_000;
         }
-        if dl >= 2.5 {
-            return 2_500;
-        }
-        if dl >= 0.8 {
+        if dl < 2.5 {
             return 1_500;
         }
-        return 1_000;
+        // 2.5–6 Mbps: 2500 ONLY when RTT also proves congestion.
+        if dl < 6.0 {
+            return if rtt_ms.map_or(false, |r| r >= 15.0) {
+                2_500
+            } else {
+                5_000
+            };
+        }
+        return 5_000;
     }
     match rtt_ms {
-        Some(rtt) if rtt < 5.0 => 5_000,
-        Some(rtt) if rtt < 15.0 => 2_500,
+        Some(rtt) if rtt < 15.0 => 5_000,
         Some(rtt) if rtt < 40.0 => 1_500,
         Some(_) => 1_000,
         None => 0,
@@ -110,17 +116,21 @@ mod tests {
     fn calm_fast_link_suggests_5000() {
         assert_eq!(suggest_kbps(Some(1.5), Some(40.0)), 5_000);
         assert_eq!(suggest_kbps(Some(1.5), None), 5_000);
+        // v1.1: mediocre RTT no longer down-caps a link with headroom
+        assert_eq!(suggest_kbps(Some(10.0), None), 5_000);
     }
 
     #[test]
-    fn congested_rtt_downgrades_even_with_headroom() {
-        assert_eq!(suggest_kbps(Some(22.0), Some(40.0)), 2_500);
-    }
-
-    #[test]
-    fn weak_downlink_overrides_fast_rtt() {
+    fn provably_bad_link_down_caps() {
+        assert_eq!(suggest_kbps(Some(50.0), None), 1_000);
         assert_eq!(suggest_kbps(Some(1.0), Some(1.0)), 1_500);
         assert_eq!(suggest_kbps(Some(1.0), Some(0.2)), 1_000);
+    }
+
+    #[test]
+    fn mid_downlink_needs_congested_rtt_for_2500() {
+        assert_eq!(suggest_kbps(Some(10.0), Some(3.0)), 5_000);
+        assert_eq!(suggest_kbps(Some(30.0), Some(3.0)), 2_500);
     }
 
     #[test]
