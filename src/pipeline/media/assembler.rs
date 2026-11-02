@@ -115,13 +115,32 @@ pub struct AccessUnitAssembler {
     /// reorder tail). Drained once per push by VideoRtp — pure module, no
     /// clocks, no I/O here.
     pending_nacks: Vec<(u16, u16)>,
-    /// Grace hold deadline: if set, the current AU with holes will be held
-    /// open until this µs timestamp (GRACE_BUDGET_US ≈ 40 ms after first
-    /// flush_due call), giving RTX packets time to land. None when no grace
-    /// hold is active. Reset whenever the AU resolves (fill, expiry, or any
-    /// push-side force-out/complete path) so the deadline never leaks to the
-    /// next AU.
-    grace_deadline_us: Option<u64>,
+    /// Grace enable flag — production default ON (`new()`). The byte-parity
+    /// harnesses (`diff_fixtures`/`diff_replay`) construct with grace OFF:
+    /// parking DEFERS resolve outcomes (identical bytes, later), which a
+    /// synchronous 1:1 legacy-comparison harness cannot express. Resolve
+    /// semantics are unchanged by grace — only timing.
+    grace_enabled: bool,
+    /// Grace v2 (2026-11-02): ONE parked AU. A holed, NACK-reported,
+    /// marker-seen AU that a resolve path (rule-2 boundary or newer-ts
+    /// force-out — the two doors real traffic damage actually takes) would
+    /// damage instead parks here for GRACE_BUDGET_US so S5 RTX can land.
+    /// Tuple = (parked AU, deadline µs). Output ORDER: while parked, the
+    /// queue must not drain (poll/push tails gate on this) — the parked
+    /// AU's outcome resolves to the queue FRONT, so newer frames queue
+    /// behind it (bounded HOL ≤ GRACE_BUDGET_US on damaged moments only;
+    /// zero cost on clean frames).
+    grace_parked: Option<(AuBuilder, u64)>,
+}
+
+impl AccessUnitAssembler {
+    /// Byte-parity harness constructor: grace parking OFF (see
+    /// `grace_enabled`). Everything else identical to `new()`.
+    pub fn new_without_grace() -> Self {
+        let mut assembler = Self::new();
+        assembler.grace_enabled = false;
+        assembler
+    }
 }
 
 impl AccessUnitAssembler {
@@ -137,7 +156,8 @@ impl AccessUnitAssembler {
             last_closed_seq: 0,
             last_resolved_ts: None,
             late_after_resolve: 0,
-            grace_deadline_us: None,
+            grace_enabled: true,
+            grace_parked: None,
         }
     }
 
@@ -151,6 +171,23 @@ impl AccessUnitAssembler {
     ///
     /// Sequence numbers are resolved modular-16-bit (u16 wrapping).
     pub fn push(&mut self, seq: u16, timestamp: u32, marker: bool, payload: &[u8], arrival_us: u64) -> Option<AssemblyOutcome> {
+        // Grace v2 FIRST: expire a parked AU past its deadline, then try to
+        // route this packet into a parked AU (S5 RTX / late original). This
+        // must precede the rule-4 guard: once a newer AU has resolved,
+        // `last_resolved_ts` is newer than the parked AU's ts and rule 4
+        // would swallow the parked AU's repair packets.
+        self.grace_expire_if_due(arrival_us);
+        if self.grace_try_fill_parked(seq, timestamp, payload, arrival_us) {
+            // Consumed by the parked AU. If it completed, the parked slot
+            // cleared and its Complete sits at the queue FRONT — emit it.
+            // Otherwise holes remain: hold all output while parked.
+            return if self.grace_parked.is_none() {
+                self.resolved_queue.pop_front()
+            } else {
+                None
+            };
+        }
+
         // Rule 4 (§11): packets at/older than the last resolved AU's
         // timestamp are late stragglers — drop and count them; they never
         // open an AU (kills the phantom same-ts AU after a hold/timer fire).
@@ -168,15 +205,21 @@ impl AccessUnitAssembler {
             if timestamp != au.rtp_ts {
                 let is_newer = timestamp_is_newer(timestamp, au.rtp_ts);
                 if is_newer {
-                    // Resolve the older AU before starting the new one.
-                    // A held grace deadline dies with the AU — never leak it.
-                    // Superseded before filling ⇒ counts as expired.
-                    if self.grace_deadline_us.is_some() {
-                        METRICS.grace_expired.fetch_add(1, Ordering::Relaxed);
+                    // Grace v2: a holed NACKed AU the force-out would damage
+                    // PARKS instead (force-out is the dominant real-traffic
+                    // damage door); the newer AU assembles normally.
+                    // Ineligible or slot busy ⇒ today's resolve.
+                    if self.grace_enabled
+                        && self.grace_parked.is_none()
+                        && Self::grace_eligible(&au)
+                    {
+                        self.grace_parked =
+                            Some((au, arrival_us.saturating_add(GRACE_BUDGET_US)));
+                        METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        let outcome = self.resolve_au_now(&mut au, arrival_us);
+                        self.resolved_queue.push_back(outcome);
                     }
-                    self.grace_deadline_us = None;
-                    let outcome = self.resolve_au_now(&mut au, arrival_us);
-                    self.resolved_queue.push_back(outcome);
                     // current_au stays None; start fresh below.
                 } else {
                     // Older timestamp arrives while an older AU is still open.
@@ -300,16 +343,15 @@ impl AccessUnitAssembler {
             }
             if holes_now == 0 {
                 let mut resolved_au = self.current_au.take().unwrap();
-                // AU resolved outside flush_due — clear any armed grace
-                // deadline so it cannot leak onto the next AU. Filled while
-                // held ⇒ counts as grace_filled.
-                if self.grace_deadline_us.is_some() {
-                    METRICS.grace_filled.fetch_add(1, Ordering::Relaxed);
-                }
-                self.grace_deadline_us = None;
                 let outcome = self.resolve_au_now(&mut resolved_au, arrival_us);
                 self.resolved_queue.push_back(outcome);
-                return self.resolved_queue.pop_front();
+                // Grace v2: while an AU is parked, nothing may drain — this
+                // outcome is newer than the parked AU and must queue behind.
+                return if self.grace_parked.is_none() {
+                    self.resolved_queue.pop_front()
+                } else {
+                    None
+                };
             }
         }
 
@@ -319,16 +361,14 @@ impl AccessUnitAssembler {
         if let Some(au) = self.current_au.as_ref() {
             if au.marker_seen && compute_holes(&au.payloads) == 0 {
                 let mut resolved = self.current_au.take().unwrap();
-                // AU resolved outside flush_due — clear any armed grace
-                // deadline so it cannot leak onto the next AU. Filled while
-                // held ⇒ counts as grace_filled.
-                if self.grace_deadline_us.is_some() {
-                    METRICS.grace_filled.fetch_add(1, Ordering::Relaxed);
-                }
-                self.grace_deadline_us = None;
                 let outcome = self.resolve_au_now(&mut resolved, arrival_us);
                 self.resolved_queue.push_back(outcome);
-                return self.resolved_queue.pop_front();
+                // Grace v2: parked gate — queue behind the parked AU.
+                return if self.grace_parked.is_none() {
+                    self.resolved_queue.pop_front()
+                } else {
+                    None
+                };
             }
         }
 
@@ -350,6 +390,11 @@ impl AccessUnitAssembler {
         // We don't flush here; flush_due() is called explicitly from the pump.
 
         // Return None if AU not yet resolved; return if we got an outcome from queue
+        // Grace v2: parked gate — never drain around a parked AU (it is
+        // older; its outcome resolves to the queue FRONT on fill/expiry).
+        if self.grace_parked.is_some() {
+            return None;
+        }
         if let Some(outcome) = self.resolved_queue.pop_front() {
             return Some(outcome);
         }
@@ -360,6 +405,13 @@ impl AccessUnitAssembler {
     /// S5b: drain the NACK side-channel (see the `pending_nacks` field).
     pub fn take_nack_ranges(&mut self) -> Vec<(u16, u16)> {
         std::mem::take(&mut self.pending_nacks)
+    }
+
+    /// Grace v2 eligibility: marker SEEN (frame fully transmitted — holes
+    /// are mid-frame losses RTX can repair), NACKs queued for the holes,
+    /// holes still present.
+    fn grace_eligible(au: &AuBuilder) -> bool {
+        au.marker_seen && au.nack_reported && compute_holes(&au.payloads) > 0
     }
 
     /// Resolve the current AU immediately (called when marker is seen or newer
@@ -447,20 +499,23 @@ impl AccessUnitAssembler {
     /// Time-based hold: resolve any open AU older than the 12 ms hold window
     /// (A19: fixed 12 ms, no RTT available). Call from the pump with `now_us`.
     ///
-    /// Grace hold (2026-11-02): AT THE RULE-2 BOUNDARY (marker + 12 ms with
-    /// holes still unfilled), a NACK-reported AU is held open ONCE for
-    /// GRACE_BUDGET_US (≈ one radio tail, TWCC med 36–39 ms) so S5 RTX repair
-    /// can land. Fill ⇒ the existing instant-complete push path
-    /// (`grace_filled`); expiry ⇒ the very same rule-2 damaged resolve,
-    /// byte-identical to the no-grace build (`grace_expired`). Rule 2 always
+    /// Grace v2 (2026-11-02): AT THE RULE-2 BOUNDARY (marker + 12 ms with
+    /// holes still unfilled), a NACK-reported AU is PARKED (see
+    /// `grace_parked`) instead of resolving damaged — assembly of newer AUs
+    /// proceeds normally, RTX fill completes the parked AU via the existing
+    /// complete path, deadline expiry resolves it via the very same rule-2
+    /// damaged resolve, byte-identical to the no-grace build. Rule 2 always
     /// evaluates FIRST — grace is an extension of its damaged resolve, never
-    /// a bypass of the 12 ms window. Markerless AUs are NEVER grace-eligible:
-    /// they are still mid-transmission (the retired ~40 ms backstop class —
-    /// timers must not kill frames whose last byte hasn't arrived).
+    /// a bypass of the 12 ms window. Markerless AUs are NEVER eligible: they
+    /// are still mid-transmission (the retired ~40 ms backstop class).
     ///
     /// Returns one outcome per call (queues internally if several AUs age out;
     /// documented as acceptable since this is not the packet hot path).
     pub fn flush_due(&mut self, now_us: u64) -> Option<AssemblyOutcome> {
+        // Grace v2: a parked AU past its deadline resolves damaged (existing
+        // path) to the queue FRONT before anything else this tick.
+        self.grace_expire_if_due(now_us);
+
         // Rule 2 (§11, amended 2026-10-30): a timer NEVER produces Complete.
         // Marker + holes gets ≤12 ms of fill (A19) and then resolves
         // (Complete if filled, else Damaged). A markerless AU has NO timer —
@@ -481,51 +536,97 @@ impl AccessUnitAssembler {
             return None;
         }
 
-        // Rule-2 boundary reached. Grace hold (2026-11-02): a holed,
-        // NACK-reported AU gets ONE bounded extension for RTX before the
-        // damaged resolve. Eligibility: marker SEEN (frame fully
-        // transmitted — holes are mid-frame losses RTX can repair), holes
-        // > 0, AND NACKs queued (`nack_reported` = proxy for "not given
-        // up"). Freshness class is decided downstream — V1 is
-        // grace-on-all-holed-markerseen; the filled/expired CSV split tells
-        // us whether tighter eligibility is needed.
+        // Rule-2 boundary reached. Grace v2: a holed, NACK-reported AU PARKS
+        // (one slot) instead of resolving damaged — see `grace_parked`.
+        // Eligibility: marker SEEN, holes > 0, AND NACKs queued
+        // (`nack_reported` = proxy for "not given up"). Freshness class is
+        // decided downstream — V2 is grace-on-all-holed-markerseen; the
+        // filled/expired CSV split tells us whether tighter eligibility is
+        // needed. Slot occupied ⇒ today's resolve below (no double-park).
         let (holes, nack_reported) = match self.current_au.as_ref() {
             Some(au) => (compute_holes(&au.payloads), au.nack_reported),
             None => return None,
         };
-        if holes > 0 && nack_reported {
-            match self.grace_deadline_us {
-                None => {
-                    // First arrival at the boundary ⇒ grant once, hold.
-                    self.grace_deadline_us = Some(now_us.saturating_add(GRACE_BUDGET_US));
-                    METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
-                    return None;
-                }
-                Some(deadline) if now_us < deadline => {
-                    // Held: inside the window. Fills complete instantly via
-                    // push (which clears the deadline — no leak).
-                    return None;
-                }
-                Some(_) => {
-                    // Window expired ⇒ count it and fall through to the
-                    // rule-2 damaged resolve below, byte-identical to the
-                    // no-grace build.
-                    METRICS.grace_expired.fetch_add(1, Ordering::Relaxed);
-                    self.grace_deadline_us = None;
-                }
-            }
-        } else if self.grace_deadline_us.is_some() {
-            // Not eligible (or holes vanished): never leak an armed deadline.
-            if holes == 0 {
-                METRICS.grace_filled.fetch_add(1, Ordering::Relaxed);
-            }
-            self.grace_deadline_us = None;
+        if holes > 0 && nack_reported && self.grace_enabled && self.grace_parked.is_none() {
+            let au = self.current_au.take().expect("AU present at rule-2 boundary");
+            self.grace_parked = Some((au, now_us.saturating_add(GRACE_BUDGET_US)));
+            METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
+            return None;
         }
 
         let mut au = self.current_au.take().expect("AU present for deadline");
         let outcome = self.resolve_au_now(&mut au, now_us);
         self.resolved_queue.push_back(outcome);
+        // Grace v2: parked gate — never drain around a parked AU.
+        if self.grace_parked.is_some() {
+            return None;
+        }
         self.resolved_queue.pop_front()
+    }
+
+    /// Grace v2: resolve the parked AU if past its deadline — the existing
+    /// resolve path (damaged by construction: it parked with holes), pushed
+    /// to the queue FRONT because it is older than anything queued behind
+    /// it. Anchors (`last_closed_seq`, `last_resolved_ts`) are restored:
+    /// they belong to the NEWEST resolved AU and must not rewind when a
+    /// parked AU resolves late.
+    fn grace_expire_if_due(&mut self, now_us: u64) {
+        let due = matches!(&self.grace_parked, Some((_, deadline)) if now_us >= *deadline);
+        if !due {
+            return;
+        }
+        let (mut au, _) = self.grace_parked.take().unwrap();
+        METRICS.grace_expired.fetch_add(1, Ordering::Relaxed);
+        let (lcs, lrt) = (self.last_closed_seq, self.last_resolved_ts);
+        let outcome = self.resolve_au_now(&mut au, now_us);
+        self.last_closed_seq = lcs;
+        self.last_resolved_ts = lrt;
+        self.resolved_queue.push_front(outcome);
+    }
+
+    /// Grace v2: try to route an arriving packet into the parked AU (S5 RTX
+    /// or a late original): same RTP timestamp, seq inside the parked span,
+    /// not a duplicate. Fill ⇒ resolve via the existing complete path to the
+    /// queue FRONT (order preserved). Returns true when the packet was
+    /// consumed by the parked AU.
+    fn grace_try_fill_parked(
+        &mut self,
+        seq: u16,
+        timestamp: u32,
+        payload: &[u8],
+        arrival_us: u64,
+    ) -> bool {
+        if self.grace_parked.is_none() {
+            return false;
+        }
+        {
+            let (au, _) = self.grace_parked.as_ref().unwrap();
+            if au.rtp_ts != timestamp {
+                return false;
+            }
+            let (first_seq, last_seq) = seq_bounds(&au.payloads);
+            // Modular span: seq ∈ [first_seq, last_seq] (wrapping u16).
+            if seq.wrapping_sub(first_seq) > last_seq.wrapping_sub(first_seq) {
+                return false;
+            }
+            if au.payloads.iter().any(|(existing, _)| *existing == seq) {
+                return false; // duplicate of a packet we already hold
+            }
+        }
+        let (au, _) = self.grace_parked.as_mut().unwrap();
+        au.payloads.push((seq, payload.to_vec()));
+        au.raw_len += payload.len();
+        au.packet_count += 1;
+        if compute_holes(&au.payloads) == 0 {
+            let (mut filled, _) = self.grace_parked.take().unwrap();
+            METRICS.grace_filled.fetch_add(1, Ordering::Relaxed);
+            let (lcs, lrt) = (self.last_closed_seq, self.last_resolved_ts);
+            let outcome = self.resolve_au_now(&mut filled, arrival_us);
+            self.last_closed_seq = lcs;
+            self.last_resolved_ts = lrt;
+            self.resolved_queue.push_front(outcome);
+        }
+        true
     }
     pub fn late_after_resolve(&self) -> u64 {
         self.late_after_resolve
@@ -534,7 +635,16 @@ impl AccessUnitAssembler {
     /// Drain one resolved outcome from the internal queue. `push` may queue an
     /// outcome (e.g. a force-out) while returning another; callers must drain
     /// until `None` after each push.
+    ///
+    /// Grace v2: while an AU is parked, nothing may drain — the parked AU is
+    /// OLDER than any queued outcome and resolves to the queue FRONT on
+    /// fill/expiry; draining around it would submit newer frames out of
+    /// H.264 decode order. Parked expiry is clocked in push/flush_due, both
+    /// of which run before this in the pump, so the gate cannot stall.
     pub fn poll_outcome(&mut self) -> Option<AssemblyOutcome> {
+        if self.grace_parked.is_some() {
+            return None;
+        }
         self.resolved_queue.pop_front()
     }
 
@@ -888,9 +998,10 @@ mod tests {
         let _g = GRACE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         assert!(
             assembler.flush_due(13_001).is_none(),
-            "rule-2 boundary: grace granted, AU held for RTX"
+            "rule-2 boundary: AU parks for RTX (grace v2)"
         );
-        match assembler.flush_due(53_002) {
+        assert!(assembler.flush_due(53_002).is_none(), "expiry queues at front");
+        match assembler.poll_outcome() {
             Some(AssemblyOutcome::Damaged(desc)) => {
                 assert_eq!(desc.holes, 1, "Should have 1 hole (seq 2 missing)");
                 assert_eq!(desc.packet_count, 3);
@@ -1029,9 +1140,10 @@ mod tests {
         let _g = GRACE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         assert!(
             assembler.flush_due(20_000).is_none(),
-            "boundary: grace granted, AU held for RTX"
+            "boundary: AU parks for RTX (grace v2)"
         );
-        match assembler.flush_due(60_001) {
+        assert!(assembler.flush_due(60_001).is_none(), "expiry queued at front");
+        match assembler.poll_outcome() {
             Some(AssemblyOutcome::Damaged(desc)) => {
                 assert_eq!(desc.holes, 1, "Should have 1 hole (seq 1 missing)");
                 assert_eq!(assembler.gap_hole(), 1, "gap_hole should be incremented");
@@ -1491,13 +1603,15 @@ fn test_event_stale_ts_packet_dropped_parity() {
         other => panic!("FIX: expected Complete(5594), got {:?}", other),
     }
 }
-
-    // ---- Grace hold (2026-11-02): damaged-AU hold for RTX repair ----
+    // ---- Grace v2 (2026-11-02): parked-AU grace for RTX repair ----
     //
-    // A marker-seen AU with holes whose seqs were NACK-queued is held once
-    // for GRACE_BUDGET_US (40 ms ≈ one radio tail) before the damaged
-    // resolve. Global METRICS counters are asserted under a shared lock —
-    // tests run in parallel and the counters are process-global.
+    // A marker-seen NACKed holed AU that a resolve path would damage parks
+    // instead (rule-2 boundary + newer-ts force-out — the two doors real
+    // traffic damage takes). RTX fill ⇒ Complete via the existing path;
+    // 40 ms deadline ⇒ the identical damaged resolve. While parked, output
+    // holds (order gate) — bounded HOL on damaged moments only. Global
+    // METRICS counters are asserted under a shared lock — tests run in
+    // parallel and the counters are process-global.
 
     use std::sync::Mutex as GraceTestMutex;
     static GRACE_LOCK: GraceTestMutex<()> = GraceTestMutex::new(());
@@ -1530,30 +1644,32 @@ fn test_event_stale_ts_packet_dropped_parity() {
     fn test_grace_fills_before_deadline() {
         let (_g, held0, filled0, expired0) = grace_setup();
         let mut assembler = grace_holed_au();
-        // First flush_due PAST the rule-2 boundary (marker at 2000 µs + 12 ms
-        // window) grants grace: AU stays open, held counter bumps.
-        assert!(assembler.flush_due(14_001).is_none(), "grace grant keeps AU open");
+        // Rule-2 boundary (marker 2000 µs + 12 ms): the AU PARKS.
+        assert!(assembler.flush_due(14_001).is_none(), "park at boundary");
+        assert!(assembler.grace_parked.is_some(), "AU parked");
+        assert!(assembler.current_au.is_none(), "assembly slot free for next AU");
         assert_eq!(METRICS.grace_held.load(Ordering::Relaxed), held0 + 1);
-        // RTX lands within the window ⇒ push fills the hole and completes.
+        // RTX lands within the window ⇒ parked AU fills ⇒ Complete at FRONT.
         let p = [0x01, 0x00, 0x00];
         match assembler.push(2, 90000, false, &p, 20_000).unwrap() {
             AssemblyOutcome::Complete(desc) => assert_eq!(desc.packet_count, 4),
-            other => panic!("filled AU must resolve Complete, got {other:?}"),
+            other => panic!("filled parked AU must Complete, got {other:?}"),
         }
         assert_eq!(METRICS.grace_filled.load(Ordering::Relaxed), filled0 + 1);
         assert_eq!(METRICS.grace_expired.load(Ordering::Relaxed), expired0);
-        // The deadline must not leak onto the next AU.
-        assert!(assembler.grace_deadline_us.is_none());
+        assert!(assembler.grace_parked.is_none(), "slot released on fill");
     }
 
     #[test]
     fn test_grace_expires_to_damaged() {
         let (_g, held0, filled0, expired0) = grace_setup();
         let mut assembler = grace_holed_au();
-        assert!(assembler.flush_due(14_001).is_none(), "grace grant at rule-2 boundary");
-        assert!(assembler.flush_due(20_000).is_none(), "still held inside window");
-        // Beyond the 40 ms window from the FIRST grant ⇒ today's damaged path.
-        match assembler.flush_due(54_002) {
+        assert!(assembler.flush_due(14_001).is_none(), "park");
+        assert!(assembler.flush_due(20_000).is_none(), "still parked inside window");
+        // Beyond the 40 ms window from the park instant: expiry resolves the
+        // SAME damaged outcome the no-grace build would have produced.
+        assert!(assembler.flush_due(54_002).is_none(), "expiry queues at front");
+        match assembler.poll_outcome() {
             Some(AssemblyOutcome::Damaged(desc)) => {
                 assert_eq!(desc.holes, 1);
                 assert_eq!(desc.packet_count, 3);
@@ -1563,20 +1679,21 @@ fn test_event_stale_ts_packet_dropped_parity() {
         assert_eq!(METRICS.grace_expired.load(Ordering::Relaxed), expired0 + 1);
         assert_eq!(METRICS.grace_filled.load(Ordering::Relaxed), filled0);
         assert_eq!(METRICS.grace_held.load(Ordering::Relaxed), held0 + 1);
-        assert!(assembler.grace_deadline_us.is_none(), "deadline reset after expiry");
+        assert!(assembler.grace_parked.is_none(), "slot released on expiry");
     }
 
     #[test]
     fn test_grace_window_not_extended() {
         let (_g, held0, _filled0, _expired0) = grace_setup();
         let mut assembler = grace_holed_au();
-        assert!(assembler.flush_due(14_001).is_none(), "grant at rule-2 boundary");
-        // An interim flush_due inside the window must NOT push the deadline out:
-        // resolution still happens at grant+40 ms, not at last-check+40 ms.
+        assert!(assembler.flush_due(14_001).is_none(), "park at boundary");
+        // An interim flush_due inside the window must NOT push the deadline:
+        // expiry still fires at park+40 ms, not last-check+40 ms.
         assert!(assembler.flush_due(30_000).is_none(), "interim check holds");
-        match assembler.flush_due(54_002) {
+        assert!(assembler.flush_due(54_002).is_none(), "expired, queued");
+        match assembler.poll_outcome() {
             Some(AssemblyOutcome::Damaged(_)) => {}
-            other => panic!("window anchored to first grant, got {other:?}"),
+            other => panic!("window anchored to park instant, got {other:?}"),
         }
         assert_eq!(METRICS.grace_held.load(Ordering::Relaxed), held0 + 1);
     }
@@ -1587,13 +1704,14 @@ fn test_event_stale_ts_packet_dropped_parity() {
         let mut assembler = AccessUnitAssembler::new();
         let p = [0x01, 0x00, 0x00];
         let _ = assembler.push(0, 90000, false, &p, 1000);
-        // Contiguous marker ⇒ completes immediately at push, no grace.
+        // Contiguous marker ⇒ completes immediately at push, no parking.
         match assembler.push(1, 90000, true, &p, 2000).unwrap() {
             AssemblyOutcome::Complete(_) => {}
             other => panic!("clean AU must Complete at push, got {other:?}"),
         }
         assert!(assembler.flush_due(3_000).is_none());
         assert_eq!(METRICS.grace_held.load(Ordering::Relaxed), held0);
+        assert!(assembler.grace_parked.is_none());
     }
 
     #[test]
@@ -1603,10 +1721,101 @@ fn test_event_stale_ts_packet_dropped_parity() {
         let p = [0x01, 0x00, 0x00];
         let _ = assembler.push(0, 90000, false, &p, 1000);
         let _ = assembler.push(2, 90000, false, &p, 1500); // hole at seq 1, NO marker
-        // Even far past any would-be deadline: no timer may kill a frame
-        // still mid-transmission (retired-backstop rule).
-        assert!(assembler.flush_due(3_000).is_none(), "markerless: no grace grant");
-        assert!(assembler.flush_due(100_000).is_none(), "markerless: no timer resolve");
+        // No marker ⇒ no rule-2 timer, no parking, no force-out park: a
+        // frame still mid-transmission must never be timer-killed
+        // (retired-backstop rule).
+        assert!(assembler.flush_due(3_000).is_none());
+        assert!(assembler.flush_due(100_000).is_none());
         assert_eq!(METRICS.grace_held.load(Ordering::Relaxed), held0);
+        assert!(assembler.grace_parked.is_none());
         assert!(assembler.current_au.is_some(), "AU still open for its marker");
+    }
+
+    #[test]
+    fn test_grace_force_out_parks() {
+        // THE dominant real-traffic damage door: the next frame's packets
+        // force the holed AU out before any rule-2 flush. Force-out must
+        // PARK it, and the newer AU must assemble normally.
+        let (_g, held0, _filled0, expired0) = grace_setup();
+        let mut assembler = grace_holed_au();
+        // Newer timestamp arrives (next frame, seq 4): force-out path.
+        let p = [0x01, 0x00, 0x00];
+        assert!(
+            assembler.push(4, 180000, false, &p, 20_000).is_none(),
+            "force-out parks instead of resolving"
+        );
+        assert!(assembler.grace_parked.is_some(), "parked on force-out");
+        assert_eq!(METRICS.grace_held.load(Ordering::Relaxed), held0 + 1);
+        assert!(
+            assembler.current_au.as_ref().map_or(false, |au| au.rtp_ts == 180000),
+            "newer AU assembles normally while parked"
+        );
+        assert_eq!(METRICS.grace_expired.load(Ordering::Relaxed), expired0);
+        // RTX for the parked frame lands: fill ⇒ Complete, emitted now.
+        match assembler.push(2, 90000, false, &p, 30_000).unwrap() {
+            AssemblyOutcome::Complete(desc) => {
+                assert_eq!(desc.packet_count, 4);
+                assert_eq!(desc.rtp_ts, 90000);
+            }
+            other => panic!("parked fill must Complete, got {other:?}"),
+        }
+        assert!(assembler.grace_parked.is_none());
+    }
+
+    #[test]
+    fn test_grace_order_preserved() {
+        // While parked, newer completed frames must queue BEHIND the parked
+        // AU — poll drains nothing, and after a fill the order is k, k+1.
+        let (_g, _held0, _filled0, _expired0) = grace_setup();
+        let mut assembler = grace_holed_au();
+        assert!(assembler.flush_due(14_001).is_none(), "park k");
+        // Frame k+1 assembles and completes while k is parked.
+        let p = [0x01, 0x00, 0x00];
+        let _ = assembler.push(4, 180000, false, &p, 20_000);
+        let _ = assembler.push(5, 180000, false, &p, 20_500);
+        assert!(
+            assembler.push(6, 180000, true, &p, 21_000).is_none(),
+            "k+1 completed but must queue behind parked k (no drain)"
+        );
+        assert!(assembler.poll_outcome().is_none(), "parked gate: no drain");
+        // RTX fills k ⇒ k's Complete comes out FIRST, then k+1's.
+        match assembler.push(2, 90000, false, &p, 30_000).unwrap() {
+            AssemblyOutcome::Complete(desc) => assert_eq!(desc.rtp_ts, 90000, "k first"),
+            other => panic!("expected k Complete, got {other:?}"),
+        }
+        match assembler.poll_outcome() {
+            Some(AssemblyOutcome::Complete(desc)) => assert_eq!(desc.rtp_ts, 180000, "k+1 second"),
+            other => panic!("expected k+1 Complete, got {other:?}"),
+        }
+        assert!(assembler.poll_outcome().is_none());
+    }
+
+    #[test]
+    fn test_grace_slot_occupied_damages_immediately() {
+        // One slot: a second grace-eligible AU while one is parked resolves
+        // damaged immediately (today's behaviour) and still queues in order.
+        let (_g, held0, _filled0, expired0) = grace_setup();
+        let mut assembler = grace_holed_au();
+        assert!(assembler.flush_due(14_001).is_none(), "park k");
+        // Frame k+1 assembles holed (seq 4,5,7 marker ⇒ hole at 6).
+        let p = [0x01, 0x00, 0x00];
+        let _ = assembler.push(4, 180000, false, &p, 20_000);
+        let _ = assembler.push(5, 180000, false, &p, 20_500);
+        assert!(assembler.push(7, 180000, true, &p, 21_000).is_none(), "k2 holed, waits");
+        // k2's rule-2 boundary: slot busy ⇒ damaged resolve NOW (no park).
+        assert!(assembler.flush_due(34_001).is_none(), "k2 damaged, queued; parked gate holds");
+        assert_eq!(METRICS.grace_held.load(Ordering::Relaxed), held0 + 1, "k2 NOT parked");
+        assert!(assembler.poll_outcome().is_none(), "gate: k still parked");
+        // k expires ⇒ k damaged FIRST (older), then k2 damaged.
+        assert!(assembler.flush_due(54_002).is_none(), "k expiry queued");
+        match assembler.poll_outcome() {
+            Some(AssemblyOutcome::Damaged(desc)) => assert_eq!(desc.rtp_ts, 90000, "k first"),
+            other => panic!("expected k Damaged, got {other:?}"),
+        }
+        match assembler.poll_outcome() {
+            Some(AssemblyOutcome::Damaged(desc)) => assert_eq!(desc.rtp_ts, 180000, "k2 second"),
+            other => panic!("expected k2 Damaged, got {other:?}"),
+        }
+        assert!(assembler.poll_outcome().is_none());
+        assert_eq!(METRICS.grace_expired.load(Ordering::Relaxed), expired0 + 1, "only k parked⇒expired");
     }

@@ -1336,7 +1336,7 @@ fn randomized_differential_matches() {
 
         // New path: feed packets with increasing now_us (1ms inter-arrival)
         // respecting MARKER_FILL_WINDOW_US=12ms and MARKERLESS_BACKSTOP_US=40ms
-        let mut assembler = crate::pipeline::media::assembler::AccessUnitAssembler::new();
+        let mut assembler = crate::pipeline::media::assembler::AccessUnitAssembler::new_without_grace();
         let mut new_events: Vec<(usize, crate::pipeline::media::assembler::AssemblyOutcome)> = Vec::new();
         for (i, packet) in packets.iter().enumerate() {
             let arrival_us = 1_000 + i as u64 * 1_000; // 1 ms inter-arrival
@@ -2145,7 +2145,9 @@ mod diff_fixtures {
     /// Run packets through the new assembler (1 ms inter-arrival), draining
     /// the outcome queue after every push.
     fn new_run(packets: &[Packet]) -> Vec<(usize, AssemblyOutcome)> {
-        let mut assembler = AccessUnitAssembler::new();
+        // Byte-parity harness: grace parking OFF (defers outcomes; this
+        // harness compares resolve events 1:1 with legacy).
+        let mut assembler = AccessUnitAssembler::new_without_grace();
         let mut events = Vec::new();
         for (i, packet) in packets.iter().enumerate() {
             let arrival_us = 1_000 + i as u64 * 1_000;

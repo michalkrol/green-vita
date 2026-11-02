@@ -120,7 +120,7 @@ struct NewRec {
 }
 
 fn new_records(dump: &[DumpPacket]) -> Vec<NewRec> {
-    let mut assembler = AccessUnitAssembler::new();
+    let mut assembler = AccessUnitAssembler::new_without_grace();
     let mut out = Vec::new();
     for p in dump {
         if let Some(outcome) = assembler.push(p.seq, p.ts, p.marker, &p.payload, p.t_us) {
@@ -368,7 +368,7 @@ fn dump_bucket1_clause_failures() {
         .collect();
 
     // New side, keeping descriptors this time.
-    let mut assembler = AccessUnitAssembler::new();
+    let mut assembler = AccessUnitAssembler::new_without_grace();
     let mut outcomes: Vec<(AssemblyOutcome, bool)> = Vec::new();
     for p in &dump {
         if let Some(o) = assembler.push(p.seq, p.ts, p.marker, &p.payload, p.t_us) {
