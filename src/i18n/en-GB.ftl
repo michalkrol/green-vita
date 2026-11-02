@@ -84,3 +84,6 @@ error-technical-details = Technical details: { $error }
 settings-video-bitrate-cap = Bitrate cap: { $kbps } kbps
 settings-video-bitrate-nocap = Bitrate cap: none (unlimited)
 settings-swap-shoulders-global = Swap L1/L2 and R1/R2 (all games)
+
+error-no-wifi = No Wi-Fi connection detected
+error-no-wifi-details = Connect the PS Vita to a Wi-Fi network, then retry.

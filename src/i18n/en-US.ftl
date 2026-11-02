@@ -86,3 +86,6 @@ error-stream-state = Failed to check stream state
 error-webrtc-session = WebRTC session failed
 error-stream-ended = Stream session ended
 error-technical-details = Technical details: { $error }
+
+error-no-wifi = No Wi-Fi connection detected
+error-no-wifi-details = Connect the PS Vita to a Wi-Fi network, then retry.

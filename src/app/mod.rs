@@ -38,11 +38,29 @@ pub struct App {
 }
 
 impl App {
+    /// Phase 1 network validation (TODO 7a): the state to enter after any
+    /// sign-in entry point. Offline Wi-Fi ⇒ the existing Error screen with
+    /// `retry_sign_in` — retry re-runs this gate, so coming back online
+    /// flows straight into sign-in. Online/Unknown ⇒ normal sign-in.
+    pub(crate) fn state_after_network_check(&self) -> AppState {
+        use crate::shell::netctl::{blocks_sign_in, wifi_state};
+        if blocks_sign_in(wifi_state()) {
+            let i18n = I18n::new(self.settings.locale);
+            AppState::Error {
+                reason: i18n.text("error-no-wifi"),
+                details: i18n.text("error-no-wifi-details"),
+                retry_sign_in: true,
+            }
+        } else {
+            AppState::InitializeAuthentication
+        }
+    }
+
     pub fn new() -> Result<Self> {
         let settings = Settings::load();
         let service = Service::new(settings.locale.as_str());
 
-        Ok(Self {
+        let mut app = Self {
             service,
             state: AppState::InitializeAuthentication,
             menu: MenuState::default(),
@@ -50,7 +68,9 @@ impl App {
             title_search_query: String::new(),
             title_search_requested: false,
             settings,
-        })
+        };
+        app.state = app.state_after_network_check();
+        Ok(app)
     }
 
     fn set_state(&mut self, state: AppState) {

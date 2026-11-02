@@ -118,7 +118,11 @@ impl App {
             AppState::Error { retry_sign_in, .. } => {
                 if command == InputCommand::Back {
                     if *retry_sign_in {
-                        self.set_state(AppState::InitializeAuthentication);
+                        // Re-run the Phase 1 network gate: coming back online
+                        // flows straight into sign-in; still offline returns
+                        // to the offline screen.
+                        let next = self.state_after_network_check();
+                        self.set_state(next);
                     } else {
                         self.set_state(AppState::ModeSelect { selected: 0 });
                     }

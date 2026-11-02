@@ -3,6 +3,7 @@
 unsafe extern "C" {}
 
 mod egui_painter;
+pub(crate) mod netctl;
 pub(crate) mod power;
 mod surface;
 
