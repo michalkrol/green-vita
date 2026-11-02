@@ -42,3 +42,17 @@
      (RTT + loss/timeout from 2.4 GHz interference) → lightweight
      `GET / HTTP/1.1` read-back (downlink) → metrics to UI warning banner
      when below thresholds; must not block sign-in.
+8. **Cap-advisor RTT mechanism check** — the gateway TCP-connect RTT reads
+   a constant ~36 ms on EVERY probe (10/10, advisor v1.1 era). Suspicious:
+   the Mac on the SAME 2.4 GHz channel measures gateway RTT median 2 ms
+   (netmonitor/), and the Vita's UDP stream path runs at floor latency —
+   so ~36 ms is Vita-TCP-path quantization (Wi-Fi power-save buffering the
+   SYN handshake?) rather than channel truth. Interim effect: v1.1/v1.2
+   thresholds (RTT ≥15 ms ⇒ ≤2500, ≥40 ms ⇒ 1500) mean a constant 36 ms
+   forces a low suggestion at EVERY sign-in — the advisor is effectively
+   blind until this is resolved. Check plan: flash d9b4dd8 (median-of-3,
+   post-auth) and log all 3 components; try a UDP probe variant (the
+   streaming UDP path is fast, so UDP RTT sidesteps TCP/power-save);
+   correlate with netmonitor gateway pings; consider scePower
+   wireless-mode toggles scoped to the probe only (knobs exist in
+   shell/power.rs, ENABLED=false for drift reasons).
