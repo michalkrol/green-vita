@@ -87,3 +87,7 @@ settings-swap-shoulders-global = Swap L1/L2 and R1/R2 (all games)
 
 error-no-wifi = No Wi-Fi connection detected
 error-no-wifi-details = Connect the PS Vita to a Wi-Fi network, then retry.
+
+net-cap-advice = Link check: { $mbps } Mbps, { $rtt } ms RTT — suggested cap: { $kbps } kbps
+net-cap-apply = Apply cap
+net-cap-dismiss = Dismiss

@@ -33,6 +33,13 @@ pub struct App {
     pub(crate) state: AppState,
     pub(crate) menu: MenuState,
     pub(crate) title_initial_overlay: Option<TitleInitialOverlay>,
+    /// Cap advisor (TODO 7b): thread→app mailbox + consumed suggestion.
+    /// Advisory only; `cap_probe` holds None while no probe is in flight.
+    pub(crate) cap_probe: std::sync::Arc<
+        std::sync::Mutex<Option<crate::shell::netprobe::ProbeResult>>,
+    >,
+    pub(crate) cap_advice: Option<crate::shell::netprobe::ProbeResult>,
+    pub(crate) cap_advice_dismissed: bool,
     pub(crate) title_search_query: String,
     pub(crate) title_search_requested: bool,
 }
@@ -67,13 +74,50 @@ impl App {
             title_initial_overlay: None,
             title_search_query: String::new(),
             title_search_requested: false,
+            cap_probe: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            cap_advice: None,
+            cap_advice_dismissed: false,
             settings,
         };
         app.state = app.state_after_network_check();
+        if matches!(app.state, AppState::InitializeAuthentication) {
+            app.maybe_start_cap_probe();
+        }
         Ok(app)
     }
 
+    /// Phase 2 cap advisor (TODO 7b): one probe per sign-in entry, on a
+    /// worker thread (blocking socket I/O). A pending mailbox means a probe
+    /// is already in flight; `tick` moves finished results into
+    /// `cap_advice` and resets the mailbox for the next entry.
+    pub(crate) fn maybe_start_cap_probe(&mut self) {
+        if self
+            .cap_probe
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            return;
+        }
+        let Some(gateway) = crate::shell::netctl::default_route() else {
+            return;
+        };
+        let mailbox = std::sync::Arc::clone(&self.cap_probe);
+        let spawned = std::thread::Builder::new()
+            .name("cap-probe".into())
+            .spawn(move || {
+                let result = crate::shell::netprobe::run_probe(gateway);
+                *mailbox.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+            });
+        if let Err(error) = spawned {
+            eprintln!("cap-probe thread failed to spawn: {error}");
+        }
+    }
+
     fn set_state(&mut self, state: AppState) {
+        if matches!(state, AppState::InitializeAuthentication) {
+            self.maybe_start_cap_probe();
+        }
         self.state = state;
         self.menu.open = false;
     }

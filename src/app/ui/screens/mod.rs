@@ -1,3 +1,4 @@
+pub mod cap_advice;
 pub mod connecting;
 pub mod console_list;
 pub mod error;

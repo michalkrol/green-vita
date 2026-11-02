@@ -68,6 +68,7 @@ fn title_rows(
 
 /// Cloud Titles screen: a highlight-only list on the left, details + Play button on the right.
 pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand>) {
+    crate::app::ui::screens::cap_advice::show_banner(ctx, app, commands);
     let selected = match &app.state {
         AppState::TitleList { selected } => *selected,
         AppState::LoadingTitles(_) => 0,

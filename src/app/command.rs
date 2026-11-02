@@ -1,5 +1,5 @@
 use crate::app::ui::header;
-use crate::app::ui::screens::{language_select, paused_overlay, settings, title_list};
+use crate::app::ui::screens::{cap_advice, language_select, paused_overlay, settings, title_list};
 use crate::{App, AppState};
 use anyhow::Result;
 
@@ -28,6 +28,7 @@ pub enum NavigationCommand {
 
 #[derive(Clone, PartialEq)]
 pub enum ScreenCommand {
+    CapAdvice(cap_advice::Command),
     LanguageSelect(language_select::Command),
     PausedOverlay(paused_overlay::Command),
     Settings(settings::Command),
@@ -135,6 +136,16 @@ impl App {
 
     async fn handle_screen_command(&mut self, command: ScreenCommand) -> Result<()> {
         match command {
+            ScreenCommand::CapAdvice(command) => match command {
+                cap_advice::Command::ApplyCap(kbps) => {
+                    self.settings.video_bitrate_kbps = kbps;
+                    self.settings.save();
+                    self.cap_advice_dismissed = true;
+                }
+                cap_advice::Command::Dismiss => {
+                    self.cap_advice_dismissed = true;
+                }
+            },
             ScreenCommand::LanguageSelect(command) => {
                 self.handle_language_select_command(command);
             }

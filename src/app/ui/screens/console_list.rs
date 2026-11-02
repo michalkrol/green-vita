@@ -9,6 +9,7 @@ use anyhow::Result;
 use std::sync::Arc;
 
 pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand>) {
+    crate::app::ui::screens::cap_advice::show_banner(ctx, app, commands);
     let selected = match &app.state {
         AppState::ConsoleList { selected } => *selected,
         AppState::LoadingConsoles(_) => 0,

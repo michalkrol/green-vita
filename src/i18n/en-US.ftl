@@ -89,3 +89,7 @@ error-technical-details = Technical details: { $error }
 
 error-no-wifi = No Wi-Fi connection detected
 error-no-wifi-details = Connect the PS Vita to a Wi-Fi network, then retry.
+
+net-cap-advice = Link check: { $mbps } Mbps, { $rtt } ms RTT — suggested cap: { $kbps } kbps
+net-cap-apply = Apply cap
+net-cap-dismiss = Dismiss

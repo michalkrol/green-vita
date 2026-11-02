@@ -45,6 +45,35 @@ pub(crate) fn wifi_state() -> NetworkState {
     NetworkState::Online
 }
 
+/// Default route (gateway IP) via sceNetCtl — the cap advisor's probe
+/// target. Host builds return None (no banner).
+#[cfg(target_os = "vita")]
+pub(crate) fn default_route() -> Option<String> {
+    use vitasdk_sys::{
+        sceNetCtlInetGetInfo, sceNetCtlInit, SCE_NETCTL_INFO_GET_DEFAULT_ROUTE, SceNetCtlInfo,
+    };
+
+    unsafe {
+        let _ = sceNetCtlInit();
+        let mut info: SceNetCtlInfo = std::mem::zeroed();
+        if sceNetCtlInetGetInfo(
+            SCE_NETCTL_INFO_GET_DEFAULT_ROUTE as std::ffi::c_int,
+            &mut info,
+        ) < 0
+        {
+            return None;
+        }
+        let route =
+            std::ffi::CStr::from_ptr(info.default_route.as_ptr()).to_string_lossy().to_string();
+        (!route.is_empty()).then_some(route)
+    }
+}
+
+#[cfg(not(target_os = "vita"))]
+pub(crate) fn default_route() -> Option<String> {
+    None
+}
+
 /// Pure decision: should the offline gate block sign-in? `Unknown` fails
 /// open — the check must never brick sign-in on an API quirk.
 pub(crate) fn blocks_sign_in(state: NetworkState) -> bool {
