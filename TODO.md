@@ -65,3 +65,56 @@
    -path specific. Advisor impact: within a run the suggestion is at
    least CONSISTENT (same input → same output); only across-run changes
    shift it.
+
+## Roadmap 0.3.2 → 0.3.3 (added 2026-11-03, user-directed)
+
+10. **Xbox home button / in-stream menu redesign (BRAINSTORM).** Current:
+    Xbox button → pause overlay [Resume, Settings, PressGuide, ExitGame].
+    User finds the settings depth unintuitive. OS CONSTRAINTS (verified):
+    the Vita's physical PS button is owned by the OS (LiveArea) — userland
+    apps cannot hook it, so a "PS-home opens our menu" model is impossible;
+    a crashed app AUTO-returns to LiveArea (OS kills the process — no
+    zombie), and third-party apps CANNOT inject entries into the system
+    settings menu (needs system privileges). Ecosystem comparison: Moonlight
+    = guide long-press → in-app menu, short → passthrough (we already do
+    both via PressGuideButton); RetroArch = hotkey combos; PS Remote Play
+    on Vita = PS button → OS overlay. PROPOSALS: (a) add "Quit app (to
+    LiveArea)" entry to the overlay — covers intentional-close without
+    menu navigation; (b) quick-toggle chips INSIDE the overlay (damage
+    policy, bitrate preset, debug mode — no separate settings page depth);
+    (c) long-press Xbox button = overlay, short = passthrough (explicit
+    distinction, Moonlight-style); (d) crashes are OS-handled — document,
+    don't engineer. DECISION NEEDED: which proposals to adopt.
+11. **Mid-game video settings (feasibility matrix).** Bitrate cap: ✗ NOT
+    possible mid-session — b=AS is SDP-time; the only mid-session rate
+    signal is REMB (verdicted harmful). H264 profile: ✗ NOT possible —
+    fmtp is SDP-time. Buffer/jb params (target/boost/decay): ✓ runtime —
+    promote consts to settings, store to statics the worker reads per
+    submit. Damage policy: ✓ ALREADY runtime-capable — DAMAGE_POLICY
+    static is read per-event; wire settings changes to re-store live
+    (~5-line change, highest value per effort).
+12. **RGBA8888 + H264 High profile.** RGBA8888 = item 3 above (queue
+    history: 5076be8/3d3e075 killed 565 banding; caveat: 32-bit decode
+    output doubles per-frame memory bandwidth — device A/B required).
+    H264 High: add enum variant to H264Profile + fmtp profile-level-id
+    handling; CAVEAT: Vita decoder compatibility unproven for High
+    (Main verified working). External context: new PSVita WiFi driver
+    (+20–40 % connectivity) and Series X faster encode are EXTERNAL
+    improvements — they benefit every client; our stack already exposes
+    the knobs (caps, policies) to exploit them.
+13. **i18n audit findings (2026-11-03).** Hardcoded English labels:
+    "H264 profile: {}", "Damage policy: {}", "Debug: {}" (format! in
+    settings.rs), damage-policy value labels (Low latency/Balanced/
+    Quality), debug value labels (Off/FPS+Bitrate/Full), "Exit app" (when
+    added, item 10). Locale coverage: net-cap-* keys en-US/en-GB only
+    (I18n falls back to en-US). Fix plan: ftl keys for all format!
+    labels + value enums; propagate the 4 newest key groups (net-cap-*,
+    error-no-wifi, damage/debug labels) to all 19 locales.
+14. **Gamepad mappings config page (0.3.3, BRAINSTORM).** GameProfile
+    already carries per-title toggles — extend with a button→button
+    mapping table (persisted, per-title, UI page with capture-a-press
+    flow: "press the physical button, then the target"). Combos/macros:
+    record a press sequence with inter-press timing, replay on a trigger
+    button (bound per profile). Risks: input loop ordering (SDL events vs
+    the mapping layer), combo firing rate vs the 4 ms input floor.
+    Feasibility: high — everything flows through GamepadFrame already.
