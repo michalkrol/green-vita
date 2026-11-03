@@ -4,7 +4,7 @@ use super::{DecodedFrame, DecoderConfig, DirectVideoOutput};
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased, unbounded};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use crate::pipeline::decode::{Admission, DecodeScheduler, SchedulerMode};
@@ -48,6 +48,11 @@ pub struct VideoDecodeWorker {
 /// Micro-jb event feeder: grace parks / damage bursts increment this; the
 /// submit path swaps it to grow the bank's admission boost (Step 5).
 pub(crate) static MICRO_JB_EVENTS: AtomicU64 = AtomicU64::new(0);
+
+/// Latency profile (item 15, settings → stream start + live settings
+/// changes): 0 = Fast (shallow bank, boost ≤2), 1 = Smooth (deep bank,
+/// boost ≤6 — bursts and damage-shed stalls absorbed; +100–200 ms floor).
+pub(crate) static LATENCY_PROFILE: AtomicU8 = AtomicU8::new(0);
 
 impl VideoDecodeWorker {
     pub fn spawn(config: DecoderConfig, direct_output: Arc<DirectVideoOutput>) -> Result<Self> {
@@ -130,9 +135,16 @@ impl VideoDecodeWorker {
         {
             self.last_source_duration_us.store(duration, Ordering::Relaxed);
         }
-        // Micro-jb (Step 5): swap burst events → grow boost; decay to zero
-        // after JB_DECAY_MS of quiet. Forced off (boost 0) when MICRO_JB is
-        // false — admission identical to the known-good scheduler.
+        // Latency profile (item 15): Fast = shallow bank (boost ≤2, no extra
+        // limit — bursts shed or conceal; minimal floor); Smooth = deep bank
+        // (boost ≤6, +6 slots on the fps-derived limit ⇒ capacity 12 ≈ +200 ms
+        // — bursts and damage-shed stalls absorbed invisibly). Read per-submit
+        // ⇒ live-switchable from Settings. Accumulation-safe by construction:
+        // the admission limit is the hard bound on bank depth, and TWCC
+        // arrival stamps are taken pre-bank (console feedback undistorted).
+        let smooth = LATENCY_PROFILE.load(Ordering::Relaxed) == 1;
+        let boost_max = if smooth { 6 } else { 2 };
+        let jb_target: u64 = if smooth { 6 } else { 0 };
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -140,7 +152,7 @@ impl VideoDecodeWorker {
         let burst_events = MICRO_JB_EVENTS.swap(0, Ordering::Relaxed);
         let mut boost = self.jb_boost.load(Ordering::Relaxed) as usize;
         if burst_events > 0 {
-            boost = (boost + 1).min(crate::pipeline::decode::scheduler::JB_BOOST_MAX);
+            boost = (boost + 1).min(boost_max);
             self.jb_last_event_ms.store(now_ms, Ordering::Relaxed);
             self.jb_boost.store(boost as u64, Ordering::Relaxed);
         } else if boost > 0
@@ -150,15 +162,15 @@ impl VideoDecodeWorker {
             boost = 0;
             self.jb_boost.store(0, Ordering::Relaxed);
         }
-        if !crate::pipeline::decode::scheduler::MICRO_JB {
-            boost = 0;
-        }
         metrics::METRICS
             .jb_boost
             .store(boost as u64, Ordering::Relaxed);
         metrics::METRICS
             .jb_depth
             .store(self.access_units.len() as u64, Ordering::Relaxed);
+        metrics::METRICS
+            .jb_target
+            .store(jb_target, Ordering::Relaxed);
         if let Admission::RejectQueueFull = self
             .scheduler
             .admit(self.access_units.len(), source_frame_duration_us, boost)

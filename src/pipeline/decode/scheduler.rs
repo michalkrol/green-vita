@@ -2,15 +2,10 @@
 
 use std::time::Duration;
 
-/// Micro de-jitter (Step 5, 2026-11-02): event-driven admission boost.
-/// A/B arm: TRUE on `MICRO_JB-on` builds (baseline = false build 33fc7de).
-/// When false, `jb_boost` is forced to 0 at the call site and admission is
-/// byte-identical to the f1bf114-known-good scheduler.
-pub(crate) const MICRO_JB: bool = true;
-/// Boost ceiling: the bank may grow by at most this many slots beyond the
-/// fps-derived limit (≈ +33 ms at 60 fps) — bounded, never unbounded.
-pub(crate) const JB_BOOST_MAX: usize = 2;
-/// Boost decays to 0 after this long without a burst event (ms).
+/// Boost decay: the event boost returns to 0 after this long without a
+/// burst event (ms). (The micro-jb const gate and JB_BOOST_MAX were
+/// superseded 2026-11-03 by the settings-driven LatencyProfile — see
+/// VideoDecodeWorker::submit.)
 pub(crate) const JB_DECAY_MS: u64 = 2_000;
 
 /// Admission decision for a new access unit into the decode queue.
@@ -69,15 +64,14 @@ impl DecodeScheduler {
 
     /// Submit-side admission. `queue_len` = queued AUs; `source_frame_duration_us`
     /// = per-frame source duration as passed today (raw, not range-filtered).
-    /// `jb_boost` = micro-jb event boost (0 when MICRO_JB is false): slots
-    /// added on top of the fps-derived limit so a damage burst queues instead
-    /// of shedding (absorbed over the next frame slots; bounded by
-    /// JB_BOOST_MAX).
+    /// `extra_limit` = caller-side latency-profile slots added on top of the
+    /// fps-derived limit (Fast: 0–2; Smooth: 0–6 — see VideoDecodeWorker::submit;
+    /// NOT clamped here — the caller owns the profile bound).
     pub fn admit(
         &self,
         queue_len: usize,
         source_frame_duration_us: Option<u64>,
-        jb_boost: usize,
+        extra_limit: usize,
     ) -> Admission {
         match self.mode {
             SchedulerMode::PassThrough => Admission::Accept,
@@ -95,8 +89,7 @@ impl DecodeScheduler {
                     .saturating_add(12)
                     / 25;
 
-                let pending_limit =
-                    1usize + extra_capacity as usize + jb_boost.min(JB_BOOST_MAX);
+                let pending_limit = 1usize + extra_capacity as usize + extra_limit;
 
                 if queue_len >= pending_limit {
                     Admission::RejectQueueFull

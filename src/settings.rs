@@ -133,6 +133,18 @@ pub enum DamagePolicy {
     Quality,
 }
 
+/// Decode-bank depth profile (item 15): Fast = shallow bank (minimal floor);
+/// Smooth = deep bank (bursts + shed stalls absorbed invisibly — the 0.3.1
+/// quality recreation, accumulation-safe by construction).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LatencyProfile {
+    /// Bank target 0, boost ≤2 (+33 ms worst case). Default.
+    #[default]
+    Fast,
+    /// Bank target 6, admission limit 12 (≈ +100–200 ms floor).
+    Smooth,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -158,6 +170,12 @@ pub struct Settings {
     /// IDR on severe damage; Quality sheds on every damaged frame
     /// (artefact-free, micro-freeze per event). See DamagePolicy.
     pub damage_policy: DamagePolicy,
+    /// Decode-bank depth profile (item 15): Fast = shallow bank (target 0,
+    /// bursts shed or conceal — minimal floor); Smooth = deep bank (target 6,
+    /// hard cap 12 ≈ +100–200 ms floor) — bursts and damage-shed stalls
+    /// absorbed invisibly (the 0.3.1 quality recreation, accumulation-safe:
+    /// the bank is hard-capped in admission and TWCC stamps pre-bank).
+    pub latency_profile: LatencyProfile,
     /// When true, a keyframe (IDR) is requested from the console every 200 ms via
     /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
     /// cost of slightly larger periodic frames and a small bandwidth overhead.
@@ -201,6 +219,7 @@ impl Default for Settings {
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
             damage_policy: DamagePolicy::default(),
+            latency_profile: LatencyProfile::default(),
             periodic_keyframe: true,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,

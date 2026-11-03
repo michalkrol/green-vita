@@ -27,6 +27,7 @@ pub enum Command {
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
     SetDamagePolicy(crate::settings::DamagePolicy),
+    SetLatencyProfile(crate::settings::LatencyProfile),
     SetPeriodicKeyframe(bool),
     SetLatencyTestMode(bool),
 }
@@ -43,6 +44,7 @@ enum SettingsRow {
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
     DamagePolicy(crate::settings::DamagePolicy),
+    LatencyProfile(crate::settings::LatencyProfile),
     PeriodicKeyframe(bool),
     LatencyTest(bool),
     Back,
@@ -95,6 +97,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
     rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
+    rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
     rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
     rows.push(SettingsRow::Back);
     rows
@@ -359,6 +362,30 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                {
+                    let label = format!(
+                        "Latency profile: {}",
+                        match app.settings.latency_profile {
+                            crate::settings::LatencyProfile::Fast => "Fast",
+                            crate::settings::LatencyProfile::Smooth => "Smooth",
+                        }
+                    );
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = match app.settings.latency_profile {
+                            crate::settings::LatencyProfile::Fast => {
+                                crate::settings::LatencyProfile::Smooth
+                            }
+                            crate::settings::LatencyProfile::Smooth => {
+                                crate::settings::LatencyProfile::Fast
+                            }
+                        };
+                        commands.push(Command::SetLatencyProfile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
@@ -596,6 +623,17 @@ impl App {
                 };
                 return self.handle_settings_command(Command::SetDamagePolicy(next));
             }
+            SettingsRow::LatencyProfile(profile) => {
+                let next = match profile {
+                    crate::settings::LatencyProfile::Fast => {
+                        crate::settings::LatencyProfile::Smooth
+                    }
+                    crate::settings::LatencyProfile::Smooth => {
+                        crate::settings::LatencyProfile::Fast
+                    }
+                };
+                return self.handle_settings_command(Command::SetLatencyProfile(next));
+            }
             SettingsRow::PeriodicKeyframe(enabled) => {
                 return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
             }
@@ -704,6 +742,29 @@ impl App {
             Command::SetDamagePolicy(policy) => {
                 self.settings.damage_policy = policy;
                 self.settings.save();
+                // Live: the RTP Damaged arm reads this per event — applies
+                // mid-stream without reconnecting (item 11).
+                crate::api::streaming::rtc::rtp::DAMAGE_POLICY.store(
+                    match policy {
+                        crate::settings::DamagePolicy::LowLatency => 0,
+                        crate::settings::DamagePolicy::Balanced => 1,
+                        crate::settings::DamagePolicy::Quality => 2,
+                    },
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+            Command::SetLatencyProfile(profile) => {
+                self.settings.latency_profile = profile;
+                self.settings.save();
+                // Live: the decode-bank admission limit reads this per submit
+                // (item 15) — applies mid-stream without reconnecting.
+                crate::streaming::video::worker::LATENCY_PROFILE.store(
+                    match profile {
+                        crate::settings::LatencyProfile::Fast => 0,
+                        crate::settings::LatencyProfile::Smooth => 1,
+                    },
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             }
             Command::SetPeriodicKeyframe(enabled) => {
                 self.settings.periodic_keyframe = enabled;
