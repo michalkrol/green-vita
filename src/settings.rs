@@ -102,6 +102,17 @@ pub enum H264Profile {
     Main,
 }
 
+/// Mini debug mode: bitrate/bandwidth + displayed FPS only, white text on semi-transparent dark rectangle, TOP-RIGHT corner.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StreamDebugMode {
+    #[default]
+    Off,
+    /// Mini overlay (TOP-RIGHT): measured bandwidth Mbps + displayed FPS.
+    Minimal,
+    /// The existing full debug overlay, unchanged.
+    Full,
+}
+
 /// What happens when an access unit resolves Damaged (unrepairable in its
 /// grace/RTX window). Step 6 (2026-11-02): per-game artefact-vs-freeze
 /// choice. Damaged AUs are never decoded — the hardware decoder conceals on
@@ -129,7 +140,7 @@ pub struct Settings {
     /// Requests and presents up to 60 FPS. Off by default to protect Vita performance.
     pub unlock_video_fps: bool,
     /// Shows internal stream/session state on the `Streaming` screen. Off by default.
-    pub show_stream_debug_info: bool,
+    pub stream_debug_mode: StreamDebugMode,
     /// Home-console LAN IPv4 override (e.g. "192.168.0.123"). When set, home-stream ICE
     /// candidates target this address directly instead of the Teredo-decoded WAN endpoint,
     /// bypassing router NAT hairpin (which can be slow/lossy and cause growing video lag).
@@ -186,7 +197,7 @@ impl Default for Settings {
         Self {
             locale: Locale::default(),
             unlock_video_fps: false,
-            show_stream_debug_info: false,
+            stream_debug_mode: StreamDebugMode::default(),
             home_console_ip: None,
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),

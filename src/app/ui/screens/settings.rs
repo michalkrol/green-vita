@@ -4,7 +4,7 @@ use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::smooth_scroll_area;
 use crate::i18n::{I18n, arg_string};
-use crate::settings::H264Profile;
+use crate::settings::{H264Profile, StreamDebugMode};
 use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
@@ -24,7 +24,7 @@ pub enum Command {
     SetRearTouchEnabled { title_id: String, enabled: bool },
     SetFrontTouchAuxiliaryButtons { title_id: String, enabled: bool },
     SetUnlockVideoFps(bool),
-    SetShowStreamDebugInfo(bool),
+    SetStreamDebugMode(StreamDebugMode),
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
     SetDamagePolicy(crate::settings::DamagePolicy),
@@ -41,7 +41,7 @@ enum SettingsRow {
     GameFrontTouchAuxiliary { title_id: String, enabled: bool },
     SwapShouldersTriggers(bool),
     UnlockVideoFps(bool),
-    StreamDebug(bool),
+    StreamDebug(StreamDebugMode),
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
     DamagePolicy(crate::settings::DamagePolicy),
@@ -93,9 +93,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
         rows.push(SettingsRow::SwapShouldersTriggers(app.settings.swap_shoulders_and_triggers));
     }
     rows.push(SettingsRow::UnlockVideoFps(app.settings.unlock_video_fps));
-    rows.push(SettingsRow::StreamDebug(
-        app.settings.show_stream_debug_info,
-    ));
+    rows.push(SettingsRow::StreamDebug(app.settings.stream_debug_mode));
     rows.push(SettingsRow::LatencyTest(app.settings.latency_test_mode));
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
@@ -276,16 +274,21 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 }
                 row_index += 1;
 
-                if checkbox_row(
-                    ui,
-                    selected_index == row_index,
-                    app.settings.show_stream_debug_info,
-                    i18n.text("settings-stream-debug-info"),
-                ) {
-                    commands.push(
-                        Command::SetShowStreamDebugInfo(!app.settings.show_stream_debug_info)
-                            .into(),
-                    );
+                let label = format!(
+                    "Debug: {}",
+                    match app.settings.stream_debug_mode {
+                        StreamDebugMode::Off => "Off",
+                        StreamDebugMode::Minimal => "FPS+Bitrate",
+                        StreamDebugMode::Full => "Full",
+                    }
+                );
+                if focus_row(ui, selected_index == row_index, label) {
+                    let next = match app.settings.stream_debug_mode {
+                        StreamDebugMode::Off => StreamDebugMode::Minimal,
+                        StreamDebugMode::Minimal => StreamDebugMode::Full,
+                        StreamDebugMode::Full => StreamDebugMode::Off,
+                    };
+                    commands.push(Command::SetStreamDebugMode(next).into());
                 }
                 row_index += 1;
 
@@ -576,8 +579,8 @@ impl App {
             SettingsRow::UnlockVideoFps(enabled) => {
                 return self.handle_settings_command(Command::SetUnlockVideoFps(!enabled));
             }
-            SettingsRow::StreamDebug(enabled) => {
-                return self.handle_settings_command(Command::SetShowStreamDebugInfo(!enabled));
+            SettingsRow::StreamDebug(mode) => {
+                return self.handle_settings_command(Command::SetStreamDebugMode(*mode));
             }
             SettingsRow::LatencyTest(enabled) => {
                 return self.handle_settings_command(Command::SetLatencyTestMode(!enabled));
@@ -690,8 +693,8 @@ impl App {
                 self.settings.unlock_video_fps = enabled;
                 self.settings.save();
             }
-            Command::SetShowStreamDebugInfo(enabled) => {
-                self.settings.show_stream_debug_info = enabled;
+            Command::SetStreamDebugMode(mode) => {
+                self.settings.stream_debug_mode = mode;
                 self.settings.save();
             }
             Command::SetLatencyTestMode(enabled) => {
