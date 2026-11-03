@@ -96,6 +96,7 @@ pub(crate) struct VideoRtp {
     damage_score: u8,
     stream_too_large: bool,
     waiting_for_keyframe: bool,
+    pli_idr_pending_at: Option<std::time::Instant>,
     stream_clock_anchor: Option<(Instant, u32)>,
     /// Drift instrumentation: (arrival, RTP timestamp) of the newest video
     /// packet seen; used by stream_slip() for the accumulation trend.
@@ -260,6 +261,7 @@ impl VideoRtp {
             damage_score: 0,
             stream_too_large: false,
             waiting_for_keyframe: false,
+            pli_idr_pending_at: None,
             stream_clock_anchor: None,
             newest_received_ts: None,
             latest_rtp: None,
@@ -610,6 +612,12 @@ impl VideoRtp {
         self.last_frame_timestamp = Some(au.timestamp);
 
         let unit = inspect_h264_access_unit(&data);
+        if self.pli_idr_pending_at.is_some() && unit.has_idr {
+            let elapsed_ms = self.pli_idr_pending_at.unwrap().elapsed().as_millis() as u64;
+            METRICS.pli_idr_ms_last.store(elapsed_ms, Ordering::Relaxed);
+            METRICS.pli_idr_ms_max.fetch_max(elapsed_ms, Ordering::Relaxed);
+            self.pli_idr_pending_at = None;
+        }
         stats.encoded_resolution = unit.resolution;
         stats.color = unit.color;
         let sample_too_large = unit
@@ -794,6 +802,7 @@ impl VideoRtp {
                 };
                 if shed && !self.waiting_for_keyframe {
                     self.waiting_for_keyframe = true;
+                    self.pli_idr_pending_at = Some(std::time::Instant::now());
                     worker.begin_resync();
                     METRICS.damaged_dropped.fetch_add(1, Ordering::Relaxed);
                 }

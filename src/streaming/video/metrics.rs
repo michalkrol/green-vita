@@ -103,6 +103,9 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) jb_absorbed: u64,
     // Damaged AUs shed-to-IDR under the Quality/Balanced damage policies.
     pub(crate) damaged_dropped: u64,
+    // PLI→IDR latency metrics (Task D): last-value and max-over-session.
+    pub(crate) pli_idr_ms_last: u64,
+    pub(crate) pli_idr_ms_max: u64,
 }
 
 pub(crate) struct VideoMetrics {
@@ -206,6 +209,9 @@ pub(crate) struct VideoMetrics {
     pub(crate) jb_boost: AtomicU64,
     pub(crate) jb_depth: AtomicU64,
     pub(crate) jb_absorbed: AtomicU64,
+    // PLI→IDR latency metrics (Task D): last-value and max-over-session.
+    pub(crate) pli_idr_ms_last: AtomicU64,
+    pub(crate) pli_idr_ms_max: AtomicU64,
     /// Damaged AUs shed-to-IDR under the Quality/Balanced damage policies.
     pub(crate) damaged_dropped: AtomicU64,
 }
@@ -301,6 +307,9 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     jb_boost: AtomicU64::new(0),
     jb_depth: AtomicU64::new(0),
     jb_absorbed: AtomicU64::new(0),
+    // PLI→IDR latency metrics (Task D).
+    pli_idr_ms_last: AtomicU64::new(0),
+    pli_idr_ms_max: AtomicU64::new(0),
     damaged_dropped: AtomicU64::new(0),
     rtcp_rtpfb_any: AtomicU64::new(0),
 };
@@ -493,6 +502,9 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         dam_markerless: METRICS.dam_markerless.swap(0, Ordering::Relaxed),
         dam_first_slice: METRICS.dam_first_slice.swap(0, Ordering::Relaxed),
         dam_holes: METRICS.dam_holes.swap(0, Ordering::Relaxed),
+        // PLI→IDR latency metrics (Task D): last-value and max-over-session.
+        pli_idr_ms_last: METRICS.pli_idr_ms_last.load(Ordering::Relaxed),
+        pli_idr_ms_max: METRICS.pli_idr_ms_max.load(Ordering::Relaxed),
         rtp_ext_twcc: METRICS.rtp_ext_twcc.swap(0, Ordering::Relaxed),
         rtcp_rtpfb_any: METRICS.rtcp_rtpfb_any.swap(0, Ordering::Relaxed),
     }
@@ -577,6 +589,9 @@ pub(crate) fn reset_session_metrics() {
     METRICS.dam_markerless.store(0, Ordering::Relaxed);
     METRICS.dam_first_slice.store(0, Ordering::Relaxed);
     METRICS.dam_holes.store(0, Ordering::Relaxed);
+    // PLI→IDR latency metrics (Task D).
+    METRICS.pli_idr_ms_last.store(0, Ordering::Relaxed);
+    METRICS.pli_idr_ms_max.store(0, Ordering::Relaxed);
     METRICS.rtp_ext_twcc.store(0, Ordering::Relaxed);
     METRICS.rtcp_rtpfb_any.store(0, Ordering::Relaxed);
 }
