@@ -45,6 +45,37 @@ pub(crate) fn wifi_state() -> NetworkState {
     NetworkState::Online
 }
 
+/// Local IP address via sceNetCtl — used by the cap-probe loopback RTT.
+/// Host builds return None → loopback probe returns None.
+#[cfg(target_os = "vita")]
+pub(crate) fn local_ip() -> Option<String> {
+    use std::ffi::CStr;
+    use vitasdk_sys::{
+        sceNetCtlInetGetInfo, sceNetCtlInit, SCE_NETCTL_INFO_GET_IP_ADDRESS, SceNetCtlInfo,
+    };
+
+    unsafe {
+        let _ = sceNetCtlInit();
+        let mut info: SceNetCtlInfo = std::mem::zeroed();
+        let result =
+            sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS as std::ffi::c_int, &mut info);
+        if result < 0 {
+            return None;
+        }
+        let ip = CStr::from_ptr(info.ip_address.as_ptr()).to_string_lossy();
+        if ip.is_empty() || ip == "0.0.0.0" {
+            None
+        } else {
+            Some(ip.to_string())
+        }
+    }
+}
+
+#[cfg(not(target_os = "vita"))]
+pub(crate) fn local_ip() -> Option<String> {
+    None
+}
+
 /// Default route (gateway IP) via sceNetCtl — the cap advisor's probe
 /// target. Host builds return None (no banner).
 #[cfg(target_os = "vita")]

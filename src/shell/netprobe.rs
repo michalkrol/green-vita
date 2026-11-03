@@ -12,8 +12,10 @@ use std::time::{Duration, Instant};
 pub(crate) struct ProbeResult {
     pub(crate) gateway: String,
     pub(crate) rtt_ms: Option<f64>,
+    pub(crate) rtt_components_ms: [Option<f64>; 3],
     pub(crate) downlink_mbps: Option<f64>,
     pub(crate) suggested_kbps: u32,
+    pub(crate) loopback_rtt_ms: Option<f64>,
 }
 
 /// Pure heuristic (unit-tested): gateway RTT + downlink → suggested cap.
@@ -54,9 +56,11 @@ pub(crate) fn suggest_kbps(rtt_ms: Option<f64>, downlink_mbps: Option<f64>) -> u
 /// single connects spike with concurrent traffic — plus a bounded GET
 /// read-back for downlink. Total budget ≈ 4 s worst case.
 pub(crate) fn run_probe(gateway: String) -> ProbeResult {
+    let mut rtt_components = [None; 3];
     let mut rtts = Vec::new();
-    for _ in 0..3 {
+    for i in 0..3 {
         if let Some(rtt) = connect_rtt(&gateway) {
+            rtt_components[i] = Some(rtt);
             rtts.push(rtt);
         }
     }
@@ -65,13 +69,24 @@ pub(crate) fn run_probe(gateway: String) -> ProbeResult {
         0 => None,
         _ => Some(rtts[rtts.len() / 2]),
     };
+    let loopback_rtt = loopback_rtt_ms();
     let downlink_mbps = if rtt_ms.is_some() {
         probe_downlink(&gateway)
     } else {
         None
     };
     let suggested_kbps = suggest_kbps(rtt_ms, downlink_mbps);
-    ProbeResult { gateway, rtt_ms, downlink_mbps, suggested_kbps }
+    eprintln!(
+        "cap-probe: components=[{:+.1?} {:+.1?} {:+.1?}] median={:+.1?} loopback={:+.1?} dl={:+.1?} suggest={}",
+        rtt_components[0],
+        rtt_components[1],
+        rtt_components[2],
+        rtt_ms,
+        loopback_rtt,
+        downlink_mbps,
+        suggested_kbps,
+    );
+    ProbeResult { gateway, rtt_ms, rtt_components_ms: rtt_components, downlink_mbps, suggested_kbps, loopback_rtt_ms: loopback_rtt }
 }
 
 fn connect_rtt(gateway: &str) -> Option<f64> {
@@ -83,6 +98,22 @@ fn connect_rtt(gateway: &str) -> Option<f64> {
             // errors degrade to a failed probe
             "0.0.0.0:80".parse().expect("valid placeholder addr")
         }),
+        Duration::from_millis(1500),
+    )
+    .ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(1200))).ok();
+    stream.set_write_timeout(Some(Duration::from_millis(500))).ok();
+    drop(stream);
+    Some(started.elapsed().as_secs_f64() * 1000.0)
+}
+
+pub(crate) fn loopback_rtt_ms() -> Option<f64> {
+    use crate::shell::netctl::local_ip;
+    let ip = local_ip()?;
+    let addr = format!("{ip}:80");
+    let started = Instant::now();
+    let mut stream = TcpStream::connect_timeout(
+        &addr.parse().unwrap_or_else(|_| "0.0.0.0:80".parse().expect("valid placeholder addr")),
         Duration::from_millis(1500),
     )
     .ok()?;
