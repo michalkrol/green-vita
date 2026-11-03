@@ -257,7 +257,7 @@ impl App {
                     session.kind,
                     title_id,
                     session.return_selected,
-                    self.settings.unlock_video_fps,
+                    true, // always request 60: the console encodes ~60 regardless of a=framerate (54-session src_fps survey)
                     self.settings.video_bitrate_kbps,
                     self.settings.video_h264_profile,
                     self.settings.periodic_keyframe,

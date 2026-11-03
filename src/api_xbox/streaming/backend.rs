@@ -31,14 +31,14 @@ pub(crate) struct XboxStreamingBackend {
 impl XboxStreamingBackend {
     pub(crate) fn start(
         stream: Stream,
-        unlock_video_fps: bool,
+        request_60fps: bool,
         video_bitrate_kbps: u32,
         video_h264_profile: H264Profile,
         periodic_keyframe: bool,
     ) -> Result<Self> {
         let worker = worker::spawn(
             stream.clone(),
-            unlock_video_fps,
+            request_60fps,
             video_bitrate_kbps,
             video_h264_profile,
             periodic_keyframe,

@@ -26,14 +26,14 @@ pub(crate) enum PlaybackBackend {
 impl PlaybackBackend {
     pub(crate) fn start_xbox(
         stream: Stream,
-        unlock_video_fps: bool,
+        request_60fps: bool,
         video_bitrate_kbps: u32,
         video_h264_profile: H264Profile,
         periodic_keyframe: bool,
     ) -> Result<Self> {
         Ok(Self::Xbox(XboxStreamingBackend::start(
             stream,
-            unlock_video_fps,
+            request_60fps,
             video_bitrate_kbps,
             video_h264_profile,
             periodic_keyframe,

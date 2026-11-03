@@ -84,12 +84,12 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
 
 pub(crate) fn spawn(
     stream: Stream,
-    unlock_video_fps: bool,
+    request_60fps: bool,
     video_bitrate_kbps: u32,
     video_h264_profile: H264Profile,
     periodic_keyframe: bool,
 ) -> Result<RtcWorker> {
-    let video_fps = if unlock_video_fps {
+    let video_fps = if request_60fps {
         UNLOCKED_VIDEO_FPS
     } else {
         DEFAULT_VIDEO_FPS

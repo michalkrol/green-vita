@@ -137,18 +137,18 @@ pub enum DamagePolicy {
 #[serde(default)]
 pub struct Settings {
     pub locale: Locale,
-    /// Requests and presents up to 60 FPS. Off by default to protect Vita performance.
-    pub unlock_video_fps: bool,
+    /// Video bitrate cap in kbps sent to the console via SDP (b=AS / b=TIAS).
+    /// NOTE: the old `unlock_video_fps` 60/30 switch was removed (2026-11-03)
+    /// as misleading — the console encodes ~60 fps regardless of the
+    /// `a=framerate` SDP attribute (54-session src_fps survey: 58 median
+    /// across every era, cap, and setting). The offer always requests 60.
+    pub video_bitrate_kbps: u32,
     /// Shows internal stream/session state on the `Streaming` screen. Off by default.
     pub stream_debug_mode: StreamDebugMode,
     /// Home-console LAN IPv4 override (e.g. "192.168.0.123"). When set, home-stream ICE
     /// candidates target this address directly instead of the Teredo-decoded WAN endpoint,
     /// bypassing router NAT hairpin (which can be slow/lossy and cause growing video lag).
     pub home_console_ip: Option<String>,
-    /// Video bitrate cap in kbps sent to the console via SDP (b=AS / b=TIAS).
-    /// Range 2 000–50 000 kbps, default 15 000 (15 Mbps). Higher values can improve
-    /// visual quality at the cost of network bandwidth and potentially more drift.
-    pub video_bitrate_kbps: u32,
     /// H264 profile offered to the console in the SDP. Baseline is universally supported
     /// by the Vita's HW decoder. Main and High may produce artifacts or fail entirely
     /// depending on tile/bitstream compatibility.
@@ -196,7 +196,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             locale: Locale::default(),
-            unlock_video_fps: false,
             stream_debug_mode: StreamDebugMode::default(),
             home_console_ip: None,
             video_bitrate_kbps: 15_000,
