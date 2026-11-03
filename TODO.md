@@ -118,3 +118,19 @@
     button (bound per profile). Risks: input loop ordering (SDL events vs
     the mapping layer), combo firing rate vs the 4 ms input floor.
     Feasibility: high — everything flows through GamepadFrame already.
+15. **Latency profile setting (Fast / Smooth) — the 0.3.1 quality
+    recreation, accumulation-safe (2026-11-03, user-approved direction).**
+    Promote micro-jb consts to a settings-driven config: Fast = current
+    (target 0–1, boost ≤2, +0 ms floor); Smooth = bank target ~6, hard
+    cap 12 (≈ +100–200 ms floor), paced drain — bursts and PLI→IDR shed
+    stalls absorbed invisibly. ACCUMULATION SAFETY: the bank is
+    hard-capped in admission (bounded latency by construction); TWCC
+    arrival stamps pre-bank (console feedback undistorted); stream_lag +
+    jb_depth monitor drift per-second. Interplay: Smooth + Quality
+    damage policy = the full 0.3.1 recreation (bank hides the 240 ms
+    PLI→IDR shed stalls — measured) with the repair stack 0.3.1 lacked.
+    Per-title pairing with DamagePolicy = the per-game control.
+    IMPLEMENTATION: MicroJbConfig from Settings (promote consts), add
+    target-depth hold to the worker admission/drain, extend jb telemetry
+    (target + held counts). Effort: small-medium — admission param,
+    paced drain, and telemetry all already landed.
