@@ -7,8 +7,8 @@
 ## 1. Two-Queue Model
 
 **Console pacer queue (Queue A)** — fills when the console is told to send slower than content demands. Primary mechanisms:
-- REMB = 15 Mbps constant (the invariant) tells the console its rate; console selects its own ~1.9–3.7 Mbps.
-- `b=AS` cap in SDP is effectively ignored by the console; REMB is the real rate knob.
+- CURRENT (since `b542e50`, 2026-11-01): we send ZERO REMB (Chrome parity — Chrome negotiates goog-remb but sends none; pcap-verified) and the static `b=AS` SDP cap IS respected as the console's steady-state ceiling (cap-dial device evidence: cap 1500 held ~1.5–2 M, cap 5000 held ~4.2–5 M). Caveat: under congestion the console OVERSHOOTS b=AS in encoder bursts (measured max 8.6 M at a 5 M cap, 7.8 M at 2500).
+- HISTORICAL: the REMB-15M-constant era over-announced headroom and caused the original accumulating-latency bug; the REMB-descent ladder (2275aa8) ratcheted down on ordinary radio bursts. Both verdicts: harmful — see the asymmetry lesson below.
 - Menu/pause drains Queue A to floor: lobby lag 1–3 ms with Queue A empty. PROVEN: the console pacer queue is the latency reservoir; freezes release as catch-up bursts to the accumulated point, not floor.
 
 **AP/link queue (Queue B)** — fills when send rate exceeds link capacity. Primary mechanisms:
