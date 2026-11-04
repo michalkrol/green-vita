@@ -277,7 +277,7 @@ impl App {
             }
             MenuItem::Logout => {
                 self.service.logout();
-                self.set_state(AppState::InitializeAuthentication);
+                self.set_state(self.state_after_network_check());
             }
         }
     }

@@ -14,6 +14,23 @@ use rtc::data_channel::RTCDataChannelId;
 /// video lag; zero input instead trips the console's ~60 s liveness watchdog
 /// (session freezes) — reports must keep flowing even when state is unchanged.
 pub(super) const INPUT_MIN_INTERVAL: Duration = Duration::from_millis(16);
+/// Floor lever (Step 7): a CHANGED gamepad state bypasses the 16 ms cadence
+/// (bounded by this small floor against pathological pump rates) — cuts the
+/// fixed-cadence phase-alignment penalty (~8 ms average) to ~0. Unchanged
+/// state keeps the 16 ms liveness keepalive (reference-client parity).
+pub(super) const INPUT_MIN_INTERVAL_CHANGED: Duration = Duration::from_millis(4);
+
+/// Pure throttle decision (unit-tested): `elapsed_since_last` = time since
+/// the last input send (None = never sent). Unchanged state obeys the 16 ms
+/// keepalive cadence; changed state obeys only the 4 ms floor.
+fn input_throttled(elapsed_since_last: Option<Duration>, changed: bool) -> bool {
+    let min = if changed {
+        INPUT_MIN_INTERVAL_CHANGED
+    } else {
+        INPUT_MIN_INTERVAL
+    };
+    matches!(elapsed_since_last, Some(e) if e < min)
+}
 
 #[derive(Clone, Copy)]
 pub(in crate::api_xbox::streaming) struct ChannelIds {
@@ -76,12 +93,16 @@ impl XboxRtcProtocol {
             }
             return false;
         }
-        // 16 ms fixed-cadence input sampling (parity with reference clients).
-        // Neutral reports on idle periods keep the liveness watchdog fed.
-        if self
-            .last_input_sent_at
-            .is_some_and(|sent_at| now.duration_since(sent_at) < INPUT_MIN_INTERVAL)
-        {
+        // Event-driven input (Step 7 floor lever): a CHANGED gamepad state
+        // sends immediately (4 ms floor); UNCHANGED state keeps the 16 ms
+        // fixed cadence as the liveness keepalive (parity with reference
+        // clients on idle streams).
+        let changed = self.last_gamepad.as_ref().map_or(true, |last| *last != frame);
+        if input_throttled(
+            self.last_input_sent_at
+                .map(|sent_at| now.duration_since(sent_at)),
+            changed,
+        ) {
             return false;
         }
         self.last_input_sent_at = Some(now);
@@ -232,5 +253,24 @@ impl RtcSessionBackend for XboxRtcProtocol {
             self.handshake_label(),
             if self.input_channel_ready { "y" } else { "n" }
         )
+    }
+}
+
+#[cfg(test)]
+mod input_throttle_tests {
+    use super::*;
+
+    #[test]
+    fn unchanged_state_keeps_16ms_keepalive() {
+        assert!(!input_throttled(None, false), "never sent ⇒ send");
+        assert!(!input_throttled(Some(Duration::from_millis(16)), false));
+        assert!(input_throttled(Some(Duration::from_millis(15)), false));
+    }
+
+    #[test]
+    fn changed_state_sends_immediately_with_4ms_floor() {
+        assert!(!input_throttled(Some(Duration::from_millis(15)), true), "changed ⇒ bypass cadence");
+        assert!(!input_throttled(Some(Duration::from_millis(4)), true));
+        assert!(input_throttled(Some(Duration::from_millis(3)), true), "4 ms floor still applies");
     }
 }

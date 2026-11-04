@@ -104,6 +104,18 @@ impl AppState {
 
 impl App {
     pub async fn tick(&mut self) -> Result<()> {
+        // Cap advisor: consume a finished probe exactly once and reset the
+        // mailbox so the next sign-in entry probes again.
+        if self.cap_advice.is_none() {
+            if let Some(result) = self
+                .cap_probe
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
+                self.cap_advice = Some(result);
+            }
+        }
         match &self.state {
             AppState::InitializeAuthentication => {
                 if self.service.auth.has_saved_login() {

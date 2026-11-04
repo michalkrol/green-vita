@@ -102,26 +102,62 @@ pub enum H264Profile {
     Main,
 }
 
+/// Mini debug mode: bitrate/bandwidth + displayed FPS only, white text on semi-transparent dark rectangle, TOP-RIGHT corner.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StreamDebugMode {
+    #[default]
+    Off,
+    /// Mini overlay (TOP-RIGHT): measured bandwidth Mbps + displayed FPS.
+    Minimal,
+    /// The existing full debug overlay, unchanged.
+    Full,
+}
+
+/// What happens when an access unit resolves Damaged (unrepairable in its
+/// grace/RTX window). Step 6 (2026-11-02): per-game artefact-vs-freeze
+/// choice. Damaged AUs are never decoded — the hardware decoder conceals on
+/// the FOLLOWING frames (macroblocking) until the PLI→IDR reset; the
+/// Quality/Balanced policies shed-to-IDR instead, trading a micro-freeze
+/// per damage event for artefact-free output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DamagePolicy {
+    /// Drop + decode-through: the decoder conceals on the next frames
+    /// (brief artefacts, no stall). Default.
+    #[default]
+    LowLatency,
+    /// Drop; immediate shed-to-IDR only on severe damage (leading slice
+    /// lost or multiple holes) — worst concealment avoided.
+    Balanced,
+    /// Drop + immediate shed-to-IDR on EVERY damaged frame — artefact-free,
+    /// accepts a micro-freeze per event.
+    Quality,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub locale: Locale,
-    /// Requests and presents up to 60 FPS. Off by default to protect Vita performance.
-    pub unlock_video_fps: bool,
+    /// Video bitrate cap in kbps sent to the console via SDP (b=AS / b=TIAS).
+    /// NOTE: the old `unlock_video_fps` 60/30 switch was removed (2026-11-03)
+    /// as misleading — the console encodes ~60 fps regardless of the
+    /// `a=framerate` SDP attribute (54-session src_fps survey: 58 median
+    /// across every era, cap, and setting). The offer always requests 60.
+    pub video_bitrate_kbps: u32,
     /// Shows internal stream/session state on the `Streaming` screen. Off by default.
-    pub show_stream_debug_info: bool,
+    pub stream_debug_mode: StreamDebugMode,
     /// Home-console LAN IPv4 override (e.g. "192.168.0.123"). When set, home-stream ICE
     /// candidates target this address directly instead of the Teredo-decoded WAN endpoint,
     /// bypassing router NAT hairpin (which can be slow/lossy and cause growing video lag).
     pub home_console_ip: Option<String>,
-    /// Video bitrate cap in kbps sent to the console via SDP (b=AS / b=TIAS).
-    /// Range 2 000–50 000 kbps, default 15 000 (15 Mbps). Higher values can improve
-    /// visual quality at the cost of network bandwidth and potentially more drift.
-    pub video_bitrate_kbps: u32,
     /// H264 profile offered to the console in the SDP. Baseline is universally supported
     /// by the Vita's HW decoder. Main and High may produce artifacts or fail entirely
     /// depending on tile/bitstream compatibility.
     pub video_h264_profile: H264Profile,
+    /// What happens when an access unit resolves Damaged. LowLatency (default)
+    /// decodes through (decoder conceals — brief artefacts); Balanced sheds to
+    /// IDR on severe damage; Quality sheds on every damaged frame
+    /// (artefact-free, micro-freeze per event). See DamagePolicy.
+    pub damage_policy: DamagePolicy,
     /// When true, a keyframe (IDR) is requested from the console every 200 ms via
     /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
     /// cost of slightly larger periodic frames and a small bandwidth overhead.
@@ -160,11 +196,11 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             locale: Locale::default(),
-            unlock_video_fps: false,
-            show_stream_debug_info: false,
+            stream_debug_mode: StreamDebugMode::default(),
             home_console_ip: None,
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
+            damage_policy: DamagePolicy::default(),
             periodic_keyframe: true,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,

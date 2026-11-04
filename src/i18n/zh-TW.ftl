@@ -80,3 +80,6 @@ error-stream-state = 檢查串流狀態失敗
 error-webrtc-session = WebRTC 工作階段失敗
 error-stream-ended = 串流工作階段已結束
 error-technical-details = 技術詳細資料：{ $error }
+
+error-no-wifi = 未偵測到 Wi-Fi 連線
+error-no-wifi-details = 請將 PS Vita 連接到 Wi-Fi 網路，然後重試。

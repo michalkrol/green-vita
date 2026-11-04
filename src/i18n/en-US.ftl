@@ -23,7 +23,6 @@ settings-rear-touch-enabled = Enable rear touch controls
 settings-cloud-host = Cloud host: { $host }
 settings-home-host = Home host: { $host }
 settings-stream-debug-info = Show streaming debug info
-settings-unlock-video-fps = Unlock video to 60 FPS
 settings-latency-test = Latency test (blinking square + stopwatch)
 settings-video-bitrate-cap = Bitrate cap: { $kbps } kbps
 settings-video-bitrate-nocap = Bitrate cap: none (unlimited)
@@ -86,3 +85,11 @@ error-stream-state = Failed to check stream state
 error-webrtc-session = WebRTC session failed
 error-stream-ended = Stream session ended
 error-technical-details = Technical details: { $error }
+
+error-no-wifi = No Wi-Fi connection detected
+error-no-wifi-details = Connect the PS Vita to a Wi-Fi network, then retry.
+
+net-cap-advice = Link check: { $mbps } Mbps, { $rtt } ms RTT — suggested cap: { $kbps } kbps
+net-cap-apply = Apply cap
+net-cap-dismiss = Dismiss
+

@@ -4,7 +4,7 @@ use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::smooth_scroll_area;
 use crate::i18n::{I18n, arg_string};
-use crate::settings::H264Profile;
+use crate::settings::{H264Profile, StreamDebugMode};
 use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
@@ -23,10 +23,10 @@ pub enum Command {
     SetSwapShouldersTriggers(bool),
     SetRearTouchEnabled { title_id: String, enabled: bool },
     SetFrontTouchAuxiliaryButtons { title_id: String, enabled: bool },
-    SetUnlockVideoFps(bool),
-    SetShowStreamDebugInfo(bool),
+    SetStreamDebugMode(StreamDebugMode),
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
+    SetDamagePolicy(crate::settings::DamagePolicy),
     SetPeriodicKeyframe(bool),
     SetLatencyTestMode(bool),
 }
@@ -39,10 +39,10 @@ enum SettingsRow {
     GameRearTouch { title_id: String, enabled: bool },
     GameFrontTouchAuxiliary { title_id: String, enabled: bool },
     SwapShouldersTriggers(bool),
-    UnlockVideoFps(bool),
-    StreamDebug(bool),
+    StreamDebug(StreamDebugMode),
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
+    DamagePolicy(crate::settings::DamagePolicy),
     PeriodicKeyframe(bool),
     LatencyTest(bool),
     Back,
@@ -90,13 +90,11 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     if title_id.is_none() {
         rows.push(SettingsRow::SwapShouldersTriggers(app.settings.swap_shoulders_and_triggers));
     }
-    rows.push(SettingsRow::UnlockVideoFps(app.settings.unlock_video_fps));
-    rows.push(SettingsRow::StreamDebug(
-        app.settings.show_stream_debug_info,
-    ));
+    rows.push(SettingsRow::StreamDebug(app.settings.stream_debug_mode));
     rows.push(SettingsRow::LatencyTest(app.settings.latency_test_mode));
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
+    rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
     rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
     rows.push(SettingsRow::Back);
     rows
@@ -262,27 +260,23 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
-                if checkbox_row(
-                    ui,
-                    selected_index == row_index,
-                    app.settings.unlock_video_fps,
-                    i18n.text("settings-unlock-video-fps"),
-                ) {
-                    commands
-                        .push(Command::SetUnlockVideoFps(!app.settings.unlock_video_fps).into());
-                }
-                row_index += 1;
-
-                if checkbox_row(
-                    ui,
-                    selected_index == row_index,
-                    app.settings.show_stream_debug_info,
-                    i18n.text("settings-stream-debug-info"),
-                ) {
-                    commands.push(
-                        Command::SetShowStreamDebugInfo(!app.settings.show_stream_debug_info)
-                            .into(),
+                {
+                    let label = format!(
+                        "Debug: {}",
+                        match app.settings.stream_debug_mode {
+                            StreamDebugMode::Off => "Off",
+                            StreamDebugMode::Minimal => "FPS+Bitrate",
+                            StreamDebugMode::Full => "Full",
+                        }
                     );
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = match app.settings.stream_debug_mode {
+                            StreamDebugMode::Off => StreamDebugMode::Minimal,
+                            StreamDebugMode::Minimal => StreamDebugMode::Full,
+                            StreamDebugMode::Full => StreamDebugMode::Off,
+                        };
+                        commands.push(Command::SetStreamDebugMode(next).into());
+                    }
                 }
                 row_index += 1;
 
@@ -331,6 +325,34 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                             H264Profile::Main => H264Profile::Baseline,
                         };
                         commands.push(Command::SetVideoH264Profile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                {
+                    let label = format!(
+                        "Damage policy: {}",
+                        match app.settings.damage_policy {
+                            crate::settings::DamagePolicy::LowLatency => "Low latency",
+                            crate::settings::DamagePolicy::Balanced => "Balanced",
+                            crate::settings::DamagePolicy::Quality => "Quality",
+                        }
+                    );
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.damage_policy {
+                            crate::settings::DamagePolicy::LowLatency => {
+                                crate::settings::DamagePolicy::Balanced
+                            }
+                            crate::settings::DamagePolicy::Balanced => {
+                                crate::settings::DamagePolicy::Quality
+                            }
+                            crate::settings::DamagePolicy::Quality => {
+                                crate::settings::DamagePolicy::LowLatency
+                            }
+                        };
+                        commands.push(Command::SetDamagePolicy(next).into());
                     }
                 }
                 row_index += 1;
@@ -542,11 +564,8 @@ impl App {
                     enabled: !enabled,
                 });
             }
-            SettingsRow::UnlockVideoFps(enabled) => {
-                return self.handle_settings_command(Command::SetUnlockVideoFps(!enabled));
-            }
-            SettingsRow::StreamDebug(enabled) => {
-                return self.handle_settings_command(Command::SetShowStreamDebugInfo(!enabled));
+            SettingsRow::StreamDebug(mode) => {
+                return self.handle_settings_command(Command::SetStreamDebugMode(*mode));
             }
             SettingsRow::LatencyTest(enabled) => {
                 return self.handle_settings_command(Command::SetLatencyTestMode(!enabled));
@@ -562,6 +581,20 @@ impl App {
                     H264Profile::Main => H264Profile::Baseline,
                 };
                 return self.handle_settings_command(Command::SetVideoH264Profile(next));
+            }
+            SettingsRow::DamagePolicy(policy) => {
+                let next = match policy {
+                    crate::settings::DamagePolicy::LowLatency => {
+                        crate::settings::DamagePolicy::Balanced
+                    }
+                    crate::settings::DamagePolicy::Balanced => {
+                        crate::settings::DamagePolicy::Quality
+                    }
+                    crate::settings::DamagePolicy::Quality => {
+                        crate::settings::DamagePolicy::LowLatency
+                    }
+                };
+                return self.handle_settings_command(Command::SetDamagePolicy(next));
             }
             SettingsRow::PeriodicKeyframe(enabled) => {
                 return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
@@ -641,12 +674,8 @@ impl App {
                     .set_front_touch_auxiliary_buttons(title_id, enabled);
                 self.settings.save();
             }
-            Command::SetUnlockVideoFps(enabled) => {
-                self.settings.unlock_video_fps = enabled;
-                self.settings.save();
-            }
-            Command::SetShowStreamDebugInfo(enabled) => {
-                self.settings.show_stream_debug_info = enabled;
+            Command::SetStreamDebugMode(mode) => {
+                self.settings.stream_debug_mode = mode;
                 self.settings.save();
             }
             Command::SetLatencyTestMode(enabled) => {
@@ -670,6 +699,10 @@ impl App {
             }
             Command::SetVideoH264Profile(profile) => {
                 self.settings.video_h264_profile = profile;
+                self.settings.save();
+            }
+            Command::SetDamagePolicy(policy) => {
+                self.settings.damage_policy = policy;
                 self.settings.save();
             }
             Command::SetPeriodicKeyframe(enabled) => {

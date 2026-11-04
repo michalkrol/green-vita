@@ -31,6 +31,8 @@ impl App {
 
     async fn stop_stream_with_error(&mut self, reason_key: &'static str, error: String) {
         crate::streaming::video::metrics::flush_csv_log();
+        // Flush the RAM-buffered RTP dump log to ux0: at session end.
+        crate::streaming::video::rtp_dump_log::flush_rtp_dump();
         let state = std::mem::replace(&mut self.state, AppState::ModeSelect { selected: 0 });
         if let Some(streaming) = state.into_streaming() {
             let _ = streaming.stop().await;
@@ -40,6 +42,8 @@ impl App {
 
     pub(in crate::app) async fn exit_stream(&mut self) {
         crate::streaming::video::metrics::flush_csv_log();
+        // Flush the RAM-buffered RTP dump log to ux0: at session end.
+        crate::streaming::video::rtp_dump_log::flush_rtp_dump();
         let state = std::mem::replace(&mut self.state, AppState::ModeSelect { selected: 0 });
         let return_target = if let Some(streaming) = state.into_streaming() {
             let return_target = streaming.return_target;

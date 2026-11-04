@@ -36,14 +36,14 @@ impl StreamingSession {
         kind: StreamKind,
         title_id: Option<String>,
         return_selected: usize,
-        unlock_video_fps: bool,
+        request_60fps: bool,
         video_bitrate_kbps: u32,
         video_h264_profile: H264Profile,
         periodic_keyframe: bool,
     ) -> Result<Self> {
         let backend = PlaybackBackend::start_xbox(
             stream,
-            unlock_video_fps,
+            request_60fps,
             video_bitrate_kbps,
             video_h264_profile,
             periodic_keyframe,

@@ -9,6 +9,8 @@ mod i18n;
 mod input;
 mod jobs;
 mod latency_test;  // <-- added
+#[allow(dead_code)]
+mod pipeline; // pipeline core (stages land incrementally)
 mod safe_memory;
 mod settings;
 mod shell;

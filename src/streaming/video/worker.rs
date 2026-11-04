@@ -7,10 +7,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use crate::pipeline::decode::{Admission, DecodeScheduler, SchedulerMode};
 
 // Keep only one compressed frame queued at the default 30 FPS to minimize glass-to-glass
 // latency. Faster streams may still use a larger burst buffer.
-const MIN_PENDING_ACCESS_UNITS: usize = 1;
 const MAX_PENDING_ACCESS_UNITS: usize = 6;
 /// Target decoder pace range: 14-20ms (50-71 fps). Wider than the console's
 /// typical 58-62 fps so brief excursions don't clip.
@@ -39,7 +39,15 @@ pub struct VideoDecodeWorker {
     pub(crate) result_ready: Arc<tokio::sync::Notify>,
     /// Updated from RTP timestamps to pace the decoder to the console's encoder rate.
     pub(crate) last_source_duration_us: Arc<AtomicU64>,
+    scheduler: Arc<DecodeScheduler>,
+    /// Micro-jb (Step 5): burst-event boost slots + last-event wall ms.
+    jb_boost: Arc<AtomicU64>,
+    jb_last_event_ms: Arc<AtomicU64>,
 }
+
+/// Micro-jb event feeder: grace parks / damage bursts increment this; the
+/// submit path swaps it to grow the bank's admission boost (Step 5).
+pub(crate) static MICRO_JB_EVENTS: AtomicU64 = AtomicU64::new(0);
 
 impl VideoDecodeWorker {
     pub fn spawn(config: DecoderConfig, direct_output: Arc<DirectVideoOutput>) -> Result<Self> {
@@ -79,8 +87,9 @@ impl VideoDecodeWorker {
         let result_ready = Arc::new(tokio::sync::Notify::new());
         let worker_result_ready = Arc::clone(&result_ready);
         let worker_direct_output = Arc::clone(&direct_output);
-        let source_duration = Arc::new(AtomicU64::new(DEFAULT_DECODE_INTERVAL_US));
-        let worker_source_duration = Arc::clone(&source_duration);
+        // S0 arm 1: Paced mode (depth-scaled pace) for the S0 scheduler matrix.
+        let scheduler = Arc::new(DecodeScheduler::new(SchedulerMode::Paced));
+        let worker_scheduler = Arc::clone(&scheduler);
 
         std::thread::Builder::new()
             .name("green-vita-video-decode".to_owned())
@@ -96,7 +105,7 @@ impl VideoDecodeWorker {
                     decoder,
                     config,
                     worker_direct_output,
-                    worker_source_duration,
+                    worker_scheduler,
                 )
             })
             .context("failed to spawn video decode worker")?;
@@ -107,7 +116,11 @@ impl VideoDecodeWorker {
             generation,
             latest_result,
             result_ready,
-            last_source_duration_us: source_duration,
+            // source_duration removed; last_source_duration_us initialized with default interval
+            last_source_duration_us: Arc::new(AtomicU64::new(DEFAULT_DECODE_INTERVAL_US)),
+            scheduler,
+            jb_boost: Arc::new(AtomicU64::new(0)),
+            jb_last_event_ms: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -117,20 +130,44 @@ impl VideoDecodeWorker {
         {
             self.last_source_duration_us.store(duration, Ordering::Relaxed);
         }
-        let source_fps = source_frame_duration_us
-            .filter(|duration| *duration > 0)
-            .map(|duration| 1_000_000 / duration)
-            .unwrap_or(30);
-        let extra_capacity = source_fps
-            .saturating_sub(30)
-            .min(25)
-            .saturating_mul((MAX_PENDING_ACCESS_UNITS - MIN_PENDING_ACCESS_UNITS) as u64)
-            .saturating_add(12)
-            / 25;
-        let pending_limit = MIN_PENDING_ACCESS_UNITS + extra_capacity as usize;
-        if self.access_units.len() >= pending_limit {
+        // Micro-jb (Step 5): swap burst events → grow boost; decay to zero
+        // after JB_DECAY_MS of quiet. Forced off (boost 0) when MICRO_JB is
+        // false — admission identical to the known-good scheduler.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let burst_events = MICRO_JB_EVENTS.swap(0, Ordering::Relaxed);
+        let mut boost = self.jb_boost.load(Ordering::Relaxed) as usize;
+        if burst_events > 0 {
+            boost = (boost + 1).min(crate::pipeline::decode::scheduler::JB_BOOST_MAX);
+            self.jb_last_event_ms.store(now_ms, Ordering::Relaxed);
+            self.jb_boost.store(boost as u64, Ordering::Relaxed);
+        } else if boost > 0
+            && now_ms.saturating_sub(self.jb_last_event_ms.load(Ordering::Relaxed))
+                >= crate::pipeline::decode::scheduler::JB_DECAY_MS
+        {
+            boost = 0;
+            self.jb_boost.store(0, Ordering::Relaxed);
+        }
+        if !crate::pipeline::decode::scheduler::MICRO_JB {
+            boost = 0;
+        }
+        metrics::METRICS
+            .jb_boost
+            .store(boost as u64, Ordering::Relaxed);
+        metrics::METRICS
+            .jb_depth
+            .store(self.access_units.len() as u64, Ordering::Relaxed);
+        if let Admission::RejectQueueFull = self
+            .scheduler
+            .admit(self.access_units.len(), source_frame_duration_us, boost)
+        {
             metrics::METRICS.queue_full.fetch_add(1, Ordering::Relaxed);
             return false;
+        }
+        if boost > 0 {
+            metrics::METRICS.jb_absorbed.fetch_add(1, Ordering::Relaxed);
         }
 
         let access_unit = QueuedAccessUnit {
@@ -189,14 +226,13 @@ fn run_decode_loop(
     initial_decoder: HwVideoDecoder,
     config: DecoderConfig,
     direct_output: Arc<DirectVideoOutput>,
-    _source_duration: Arc<AtomicU64>,
+    scheduler: Arc<DecodeScheduler>,
 ) {
     use std::thread::sleep;
-    // Pace the decoder at roughly 62 fps (13 ms sleep + ~3 ms decode per frame)
-    // to keep up with the console's 60 fps encoder rate.  This prevents the
-    // access-unit queue from filling (which delays frames and causes drift).
-    const DECODE_PACE_SLEEP: Duration = Duration::from_micros(13_000);
-
+    // 13 ms DisplayClocked pace is the f1bf114 known-good default,
+    // now selected by the scheduler (pipeline::decode). The yield
+    // duration is chosen per-mode: DisplayClocked → 13 ms, Paced →
+    // depth-scaled, PassThrough → 1 ms or 0 if idle.
     let mut decoder = Some(initial_decoder);
 
     loop {
@@ -219,7 +255,8 @@ fn run_decode_loop(
                     access_unit,
                     &direct_output,
                 );
-                sleep(DECODE_PACE_SLEEP);
+                let queue_depth = access_units.len();
+                sleep(scheduler.yield_after_decode(queue_depth));
             }
         }
     }

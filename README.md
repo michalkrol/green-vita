@@ -5,7 +5,7 @@
 <h1 align="center">GreenVita</h1>
 
 <p align="center">
-  Xbox Cloud Gaming on PlayStation Vita.
+  Xbox Cloud Gaming and Xbox Remote Play (home console streaming) on PlayStation Vita.
   <br>
   A native Rust client with an egui/SDL2 interface and hardware H.264 decoding.
 </p>
@@ -16,10 +16,14 @@
   <img alt="Xbox Cloud Gaming" src="https://img.shields.io/badge/Xbox-Cloud%20Gaming-107c10?style=for-the-badge&logo=xbox&logoColor=white">
 </p>
 
-
 > [!NOTE]
-> Local console streaming has not been tested because I do not have a modern
-> Xbox console available for validation.
+> **About this fork:** this GreenVita fork focuses on **local console
+> streaming (xHome)** — streaming from your own Xbox over the local network.
+> The xHome path is hardware-validated end-to-end (sign-in, session
+> brokering, WebRTC, hardware H.264 decode, input and audio) and is under
+> active quality development: packet-loss recovery, Wi-Fi-burst absorption
+> and latency tooling. Xbox Cloud Gaming (xCloud) still builds and launches,
+> but it is not the focus of this fork and is not actively tested.
 
 ## Install
 
@@ -27,7 +31,7 @@ You need a homebrew-enabled PS Vita with VitaShell and an Xbox account that has
 access to Xbox Cloud Gaming.
 
 1. Download `green-vita.vpk` from the
-   [latest release](https://github.com/Day-OS/green-vita/releases/latest).
+   [latest release](https://github.com/michalkrol/green-vita/releases/latest).
 2. Transfer the VPK to the Vita.
 3. Install it with VitaShell.
 4. Launch GreenVita and complete the device-code sign-in.
@@ -35,6 +39,48 @@ access to Xbox Cloud Gaming.
 > [!IMPORTANT]
 > Enable **Unsafe Homebrew** in HENkaku Settings. GreenVita needs access to the
 > Vita hardware video-decoder module.
+
+## Recommended: Wi-Fi Turbo plugin
+
+For local streaming, install [Wi-Fi Turbo for PS Vita](https://github.com/juanjsebgarcia/vita-turbo-wifi) — a taiHEN plugin that
+fixes the Vita's 2011-era Wi-Fi defaults. 
+
+This directly addresses GreenVita's main remaining video issue: our captures
+show the console's over-the-air delivery can be lossless — damaged frames and
+micro-freezes come from the Vita's own 2.4 GHz radio behaviour (power-save
+stalls of 100–200 ms, 20 MHz airtime saturation). Wi-Fi Turbo removes exactly
+those.
+
+Recommended while streaming: **Max performance** power profile, **40 MHz on**
+if your access point offers a 40 MHz 2.4 GHz channel (**turn it off in congested
+areas** - 20MHz will perform better in WiFi-dense areas), Bluetooth off. 
+Configure your Access Point to least crowded channel (1, 6 or 11). 
+It is an independent project (firmware 3.60–3.74) with its own installer — see its README. 
+Unrelated to GreenVita; install it separately.
+
+## Streaming settings
+
+- **Latency profile — Fast / Smooth** (switchable mid-stream). *Fast*
+  (default) keeps the minimal glass-to-glass floor; *Smooth* uses a deeper
+  frame bank that silently absorbs Wi-Fi bursts and damage-repair stalls,
+  at the cost of ~100–200 ms extra latency.
+- **Damage policy — Low latency / Balanced / Quality.** What to do when a
+  frame arrives damaged: decode through it (default), wait for a clean
+  keyframe only on severe damage, or always request a clean keyframe
+  (artifact-free picture with a brief freeze per event).
+- **Bitrate cap advice.** Before sign-in the app probes the network and may
+  suggest a bitrate cap via an advisory banner. Applying it is one tap and
+  never automatic.
+- **Debug overlay — Off / FPS+Bitrate / Full.** Small on-screen diagnostics.
+
+## Diagnostics
+
+During a stream a HUD line shows fps, decode/drop counters and handshake
+state (see [docs/HUD-REFERENCE.md](docs/HUD-REFERENCE.md)). Each session
+appends one row/second to `ux0:data/xcloud-rust/metrics.csv`
+(100 columns — [docs/METRICS-CSV-REFERENCE.md](docs/METRICS-CSV-REFERENCE.md)).
+Streaming design notes: [docs/DESIGN-NOTES.md](docs/DESIGN-NOTES.md).
+
 
 ## Build
 
@@ -163,6 +209,7 @@ The destination directory must already exist. Install the VPK before using
 </details>
 ## Credits
 
+- [Day-OS/green-vita](https://github.com/day-os/green-vita), the founder of green-vita project this fork is based on.
 - [Greenlight](https://github.com/unknownskl/greenlight), an open-source xCloud
   and Xbox home-streaming client that served as a protocol and UX reference
 - [xbox-xcloud-player](https://github.com/unknownskl/xbox-xcloud-player), the

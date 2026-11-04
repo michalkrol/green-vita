@@ -31,6 +31,10 @@ const LAG_FLUSH_MIN_INTERVAL: Duration = Duration::from_secs(10);
 /// shed/skip event whose pacer slip never recovers; flush after this many new
 /// drops even if the (re-anchoring) lag reading hasn't caught up.
 const DROP_FLUSH_THRESHOLD: u64 = 25;
+/// Gates the lag half of the backlog flush trigger.  The metric is being
+/// validated observe-only first: with this false the HUD shows live lag/lagMax
+/// while flush behaviour is unchanged (the drop-count trigger still applies).
+const LAG_FLUSH_ENABLED: bool = false;
 const INITIAL_VIDEO_GRACE: Duration = Duration::from_millis(500);
 const INITIAL_VIDEO_KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
 /// When true, no keyframe requests are sent (initial watchdog, recovery PLI).
@@ -43,6 +47,7 @@ pub(crate) struct RtcSessionConfig {
     pub audio_sample_rate: u32,
     pub audio_payload_type: u8,
     pub video_fps: u32,
+    pub video_bitrate_kbps: u32,
     pub decoder: DecoderConfig,
     pub periodic_keyframe_enabled: bool,
 }
@@ -100,13 +105,20 @@ impl<B: RtcSessionBackend> RtcSession<B> {
     ) -> Result<Self> {
         let transport =
             RtcTransport::bind(&mut peer, config.stun_server, config.route_probe).await?;
-        let mut video = VideoReceiver::new(config.decoder, direct_output, config.video_fps)?;
+        let mut video = VideoReceiver::new(
+            config.decoder,
+            direct_output,
+            config.video_fps,
+            config.video_bitrate_kbps,
+        )?;
         // Fresh session: clear the per-session metrics and the slip anchor so the first
         // CSV rows cannot report the previous session's values.
         crate::streaming::video::metrics::reset_session_metrics();
         // Initialize the RAM-buffered metrics CSV log for this session.
         // It outlives the session so the flush at end sees all rows.
         crate::streaming::video::metrics::init_csv_log();
+        // Initialize the RAM-buffered RTP dump log for this session.
+        crate::streaming::video::rtp_dump_log::init_rtp_dump();
         video.reset_lag_anchor();
 
         Ok(Self {
@@ -186,6 +198,8 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         // stay smooth; every prior REMB test was confounded by NACK/loss loops.
         self.video.send_remb(&mut self.peer, now);
         self.video.send_twcc(&mut self.peer, now);
+        self.video.send_rr(&mut self.peer, now);
+        self.video.send_nack(&mut self.peer, now);
         self.maybe_flush_backlog(now);
         if let Some(status) = self.video.status(now) {
             let debug_state = self.backend.debug_state();
@@ -344,8 +358,13 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         let total_drops = self.video.total_drops();
         let drops_since_flush = total_drops.saturating_sub(self.drops_at_last_flush);
         let lag_us = METRICS.stream_lag_us.load(Ordering::Relaxed);
-        let eligible = lag_us >= LAG_FLUSH_THRESHOLD_US || drops_since_flush >= DROP_FLUSH_THRESHOLD;
+        let lag_eligible = LAG_FLUSH_ENABLED && lag_us >= LAG_FLUSH_THRESHOLD_US;
+        let eligible = lag_eligible || drops_since_flush >= DROP_FLUSH_THRESHOLD;
         if !eligible {
+            // Only an eligible stretch counts toward the sustain window; without
+            // this reset a single eligible instant would permanently satisfy
+            // LAG_FLUSH_SUSTAIN and flush on the next eligible tick.
+            self.lag_high_since = None;
             return;
         }
         let since = *self.lag_high_since.get_or_insert(now);

@@ -1,8 +1,9 @@
 mod decoder;
 mod memory;
 pub(crate) mod metrics;
-mod worker;
+pub(crate) mod worker;
 pub(crate) mod metrics_log;
+pub(crate) mod rtp_dump_log;
 
 pub const STREAM_WIDTH: u32 = 1280;
 pub const STREAM_HEIGHT: u32 = 720;
