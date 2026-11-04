@@ -134,3 +134,24 @@
     target-depth hold to the worker admission/drain, extend jb telemetry
     (target + held counts). Effort: small-medium — admission param,
     paced drain, and telemetry all already landed.
+16. **Error handling & robustness pass (2026-11-03, user report).**
+    (a) **Xbox closes the connection → app hangs or crashes.** Repro:
+    end/close the stream from the console side. Suspects: the teardown
+    path (poll loops, channel sends, worker Drop ordering) blocking or
+    unwrapping on an expected message. Fix: graceful connection-closed
+    handling (no unwrap/expect on teardown; bounded joins; clean exit to
+    pause/menu with a "Stream ended by console" message).
+    (b) **Wi-Fi off → crash on app turn-on.** ROOT CAUSE FOUND
+    (2026-11-03, fixed in the same commit): the Wi-Fi gate failed OPEN
+    on sceNetCtl syscall errors (Unknown ⇒ allow sign-in) — an
+    uninitialized network stack then crashed downstream. FIXED:
+    fail-CLOSED (Unknown ⇒ offline screen). VERIFY on-device with the
+    radio fully off.
+    (c) **Unintuitive error messages** (raw MS server/auth/HTTP errors
+    surfaced verbatim). Fix: an error-classification layer — map known
+    error classes (HTTP status/auth codes/XSTS errors/network failures)
+    to friendly localized messages per source (sign-in, auth,
+    console-list, stream), keep the raw detail in `details` for
+    diagnosis. TODO-13 i18n rules apply (ftl keys, en-US + fallback).
+    (d) After (a)+(b): a full robustness sweep of every `unwrap`/`expect`
+    on session/network paths.

@@ -10,7 +10,10 @@ pub(crate) enum NetworkState {
     Online,
     /// No connection — sign-in would fail; show the offline screen.
     Offline,
-    /// Syscall quirk — fail open (let sign-in proceed and fail on its own).
+    /// Syscall error — treated as Offline (fail-CLOSED: the user report
+    /// "crashes on turn on with Wi-Fi off" traced to this gate failing
+    /// OPEN on exactly this path, letting sign-in proceed into an
+    /// uninitialized network stack).
     Unknown,
 }
 
@@ -108,7 +111,7 @@ pub(crate) fn default_route() -> Option<String> {
 /// Pure decision: should the offline gate block sign-in? `Unknown` fails
 /// open — the check must never brick sign-in on an API quirk.
 pub(crate) fn blocks_sign_in(state: NetworkState) -> bool {
-    state == NetworkState::Offline
+    state != NetworkState::Online
 }
 
 #[cfg(test)]
@@ -116,9 +119,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_offline_blocks_sign_in() {
+    fn only_online_allows_sign_in() {
         assert!(blocks_sign_in(NetworkState::Offline));
+        assert!(blocks_sign_in(NetworkState::Unknown), "fail CLOSED: no crashes on turn-on with Wi-Fi off");
         assert!(!blocks_sign_in(NetworkState::Online));
-        assert!(!blocks_sign_in(NetworkState::Unknown), "fail open");
     }
 }
