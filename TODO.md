@@ -148,17 +148,38 @@
     unwrapping on an expected message. Fix: graceful connection-closed
     handling (no unwrap/expect on teardown; bounded joins; clean exit to
     pause/menu with a "Stream ended by console" message).
+    ✅ PARTIAL (0.3.2): Closed now shows a localized "Stream ended by the
+    console" screen (was a silent bounce to the list); teardown
+    breadcrumbs (eprintln + elapsed ms) at stop_stream_with_error /
+    exit_stream / backend DELETE / RtcWorker drop / worker-loop exits pin
+    the blocking stage on the next repro; send_important_event is bounded
+    (2 s try_send backoff, then drop) so a full events channel can no
+    longer wedge the worker thread during app-side teardown. The actual
+    hang needs the repro to pin — read the breadcrumbs from the next one.
     (b) **Wi-Fi off → crash on app turn-on.** ROOT CAUSE FOUND
     (2026-11-03): the Wi-Fi gate fails OPEN on sceNetCtl syscall errors
     (Unknown ⇒ allow sign-in) — an uninitialized network stack then
     crashes downstream. FIX DESIGNED (one line, intentionally deferred):
     fail-CLOSED (Unknown ⇒ offline screen) + update the gate's unit
     test. VERIFY on-device with the radio fully off after applying.
+    ✅ APPLIED (0.3.2): blocks_sign_in now `state != Online` (fail-closed,
+    Unknown ⇒ offline screen); test `only_online_allows_sign_in`.
+    **DEVICE VERIFY PENDING**: radio fully off → app start must show the
+    offline screen, not crash.
     (c) **Unintuitive error messages** (raw MS server/auth/HTTP errors
     surfaced verbatim). Fix: an error-classification layer — map known
     error classes (HTTP status/auth codes/XSTS errors/network failures)
     to friendly localized messages per source (sign-in, auth,
     console-list, stream), keep the raw detail in `details` for
     diagnosis. TODO-13 i18n rules apply (ftl keys, en-US + fallback).
+    ✅ IMPLEMENTED (0.3.2): `app/error_classify.rs` — substring classifier
+    (HTTP status lines, auth/XSTS, rate-limit, server, timeout, DNS,
+    network transport) wired into the ONE choke point `App::localized_error`
+    so every error screen benefits; raw text stays in `details`; digit-
+    boundary guard so session ids with 401/429 don't misclassify; unit
+    tests incl. "connection closed by the console" must NOT classify as
+    network. 7 new `error-class-*`/`error-stream-ended-by-console` keys
+    propagated to all 19 locales.
     (d) After (a)+(b): a full robustness sweep of every `unwrap`/`expect`
-    on session/network paths.
+    on session/network paths. — still open (deferred by design; census so
+    far: session paths are clean, SDP parsing holds most of the unwraps).

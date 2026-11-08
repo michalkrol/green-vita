@@ -84,3 +84,11 @@ error-technical-details = التفاصيل التقنية: { $error }
 
 error-no-wifi = لم يتم اكتشاف اتصال Wi-Fi
 error-no-wifi-details = قم بتوصيل PS Vita بشبكة Wi-Fi ثم أعد المحاولة.
+
+error-stream-ended-by-console = انتهى البث من قبل وحدة التحكم
+error-class-auth = انتهت صلاحية تسجيل الدخول أو تم رفضه — يرجى تسجيل الدخول مرة أخرى
+error-class-ratelimit = طلبات كثيرة جدًا — حاول مرة أخرى بعد بضع دقائق
+error-class-server = خدمة Xbox تواجه مشكلات — حاول مرة أخرى لاحقًا
+error-class-timeout = انتهت مهلة الطلب — تحقق من اتصال Wi-Fi
+error-class-dns = تعذر تحديد عنوان الخادم — تحقق من اتصال Wi-Fi
+error-class-network = فشل الاتصال بالشبكة — تحقق من اتصال Wi-Fi

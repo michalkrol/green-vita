@@ -84,3 +84,11 @@ error-technical-details = Technische details: { $error }
 
 error-no-wifi = Geen wifi-verbinding gedetecteerd
 error-no-wifi-details = Verbind de PS Vita met een wifi-netwerk en probeer het opnieuw.
+
+error-stream-ended-by-console = De stream is door de console beëindigd
+error-class-auth = Aanmelding verlopen of geweigerd — meld opnieuw aan
+error-class-ratelimit = Te veel verzoeken — probeer het over enkele minuten opnieuw
+error-class-server = De Xbox-service heeft problemen — probeer het later opnieuw
+error-class-timeout = Het verzoek duurde te lang — controleer de wifi-verbinding
+error-class-dns = Kon het serveradres niet oplossen — controleer de wifi-verbinding
+error-class-network = Netwerkverbinding mislukt — controleer de wifi-verbinding

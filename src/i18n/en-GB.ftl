@@ -92,3 +92,11 @@ net-cap-advice = Link check: { $mbps } Mbps, { $rtt } ms RTT — suggested cap: 
 net-cap-apply = Apply cap
 net-cap-dismiss = Dismiss
 
+
+error-stream-ended-by-console = Stream ended by the console
+error-class-auth = Sign-in expired or was rejected — please sign in again
+error-class-ratelimit = Too many requests — try again in a few minutes
+error-class-server = The Xbox service is having problems — try again later
+error-class-timeout = The request timed out — check the Wi-Fi connection
+error-class-dns = Could not resolve the server address — check the Wi-Fi connection
+error-class-network = Network connection failed — check the Wi-Fi connection

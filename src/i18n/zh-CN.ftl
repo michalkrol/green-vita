@@ -84,3 +84,11 @@ error-technical-details = 技术详情：{ $error }
 
 error-no-wifi = 未检测到 Wi-Fi 连接
 error-no-wifi-details = 请将 PS Vita 连接到 Wi-Fi 网络，然后重试。
+
+error-stream-ended-by-console = 串流已由主机端结束
+error-class-auth = 登录已过期或被拒绝 — 请重新登录
+error-class-ratelimit = 请求过于频繁 — 请几分钟后重试
+error-class-server = Xbox 服务出现问题 — 请稍后重试
+error-class-timeout = 请求超时 — 请检查 Wi-Fi 连接
+error-class-dns = 无法解析服务器地址 — 请检查 Wi-Fi 连接
+error-class-network = 网络连接失败 — 请检查 Wi-Fi 连接

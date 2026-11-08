@@ -159,6 +159,7 @@ impl RtcWorker {
 
 impl Drop for RtcWorker {
     fn drop(&mut self) {
+        eprintln!("rtc worker: handle dropped, sending Stop (TODO 16a breadcrumb)");
         // Flush the RAM-buffered metrics CSV log to ux0: at session end.
         // This is the ONLY ux0: write path; no filesystem I/O during the session.
         crate::streaming::video::metrics::flush_csv_log();
@@ -258,6 +259,7 @@ async fn run_session<B: super::session::RtcSessionBackend>(
 
     loop {
         if !drain_commands(&mut session, &commands_rx) {
+            eprintln!("rtc worker: Stop command or channel closed; closing session (TODO 16a breadcrumb)");
             let _ = session.close();
             return Ok(());
         }
@@ -362,6 +364,7 @@ async fn run_session<B: super::session::RtcSessionBackend>(
         }
 
         if session.connection_state == RTCPeerConnectionState::Closed {
+            eprintln!("rtc worker: connection state Closed, exiting pump loop (TODO 16a breadcrumb)");
             send_important_event(&events_tx, RtcWorkerEvent::Closed);
             return Ok(());
         }
@@ -426,6 +429,19 @@ fn send_lossy<T>(sender: &SyncSender<T>, value: T) {
     }
 }
 
-fn send_important_event(sender: &SyncSender<RtcWorkerEvent>, event: RtcWorkerEvent) {
-    let _ = sender.send(event);
+/// `Closed`/`Error` must reach the app, but an UNBOUNDED blocking send can
+/// wedge this whole worker thread when the app-side pump is suspended in
+/// teardown (TODO 16a hang suspect). Retry with backoff for a bounded
+/// window, then drop: a wedged-indefinitely worker is worse than a lost
+/// terminal event the app is clearly not reading.
+fn send_important_event(sender: &SyncSender<RtcWorkerEvent>, mut event: RtcWorkerEvent) {
+    for _ in 0..200 {
+        match sender.try_send(event) {
+            Ok(()) => return,
+            Err(TrySendError::Full(returned)) => event = returned,
+            Err(TrySendError::Disconnected(_)) => return,
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    eprintln!("rtc worker: events channel still full after 2s; dropping terminal event");
 }

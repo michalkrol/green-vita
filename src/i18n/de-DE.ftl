@@ -84,3 +84,11 @@ error-technical-details = Technische Details: { $error }
 
 error-no-wifi = Keine WLAN-Verbindung erkannt
 error-no-wifi-details = Verbinde die PS Vita mit einem WLAN und wähle dann „Wiederholen“.
+
+error-stream-ended-by-console = Die Konsole hat die Stream-Übertragung beendet
+error-class-auth = Anmeldung abgelaufen oder abgelehnt — bitte erneut anmelden
+error-class-ratelimit = Zu viele Anfragen — bitte in wenigen Minuten erneut versuchen
+error-class-server = Der Xbox-Dienst hat derzeit Probleme — bitte später erneut versuchen
+error-class-timeout = Die Anfrage hat das Zeitlimit überschritten — WLAN-Verbindung prüfen
+error-class-dns = Serveradresse konnte nicht aufgelöst werden — WLAN-Verbindung prüfen
+error-class-network = Netzwerkverbindung fehlgeschlagen — WLAN-Verbindung prüfen

@@ -1,5 +1,6 @@
 pub mod command;
 mod entry;
+pub(crate) mod error_classify;
 mod image;
 mod service;
 mod state;
@@ -142,8 +143,13 @@ impl App {
 
     fn localized_error(&self, reason_key: &'static str, error: impl Display) -> (String, String) {
         let i18n = I18n::new(self.settings.locale);
+        let raw = error.to_string();
+        // TODO 16c: a known failure class overrides the caller's generic
+        // reason with a friendlier localized message; the raw text always
+        // stays in `details` for diagnosis.
+        let reason_key = error_classify::classify_error(&raw).unwrap_or(reason_key);
         let mut args = FluentArgs::new();
-        args.set("error", arg_string(error.to_string()));
+        args.set("error", arg_string(raw));
         (
             i18n.text(reason_key),
             i18n.text_with("error-technical-details", args),

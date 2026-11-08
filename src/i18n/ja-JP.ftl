@@ -84,3 +84,11 @@ error-technical-details = 技術情報：{ $error }
 
 error-no-wifi = Wi-Fi接続が検出されません
 error-no-wifi-details = PS VitaをWi-Fiネットワークに接続してから、再試行してください。
+
+error-stream-ended-by-console = コンソール側でストリームが終了しました
+error-class-auth = サインインの有効期限が切れたか拒否されました — もう一度サインインしてください
+error-class-ratelimit = リクエストが多すぎます — 数分後に再試行してください
+error-class-server = Xbox サービスに問題が発生しています — 後でもう一度お試しください
+error-class-timeout = リクエストがタイムアウトしました — Wi-Fi 接続を確認してください
+error-class-dns = サーバーのアドレスを解決できませんでした — Wi-Fi 接続を確認してください
+error-class-network = ネットワーク接続に失敗しました — Wi-Fi 接続を確認してください

@@ -84,3 +84,11 @@ error-technical-details = Teknik ayrıntılar: { $error }
 
 error-no-wifi = Wi-Fi bağlantısı algılanmadı
 error-no-wifi-details = PS Vita'yı bir Wi-Fi ağına bağlayın ve yeniden deneyin.
+
+error-stream-ended-by-console = Yayın konsol tarafından sonlandırıldı
+error-class-auth = Oturum süresi doldu veya reddedildi — lütfen yeniden giriş yapın
+error-class-ratelimit = Çok fazla istek — birkaç dakika sonra tekrar deneyin
+error-class-server = Xbox hizmetinde sorun var — daha sonra tekrar deneyin
+error-class-timeout = İstek zaman aşımına uğradı — Wi-Fi bağlantısını kontrol edin
+error-class-dns = Sunucu adresi çözümlenemedi — Wi-Fi bağlantısını kontrol edin
+error-class-network = Ağ bağlantısı başarısız oldu — Wi-Fi bağlantısını kontrol edin

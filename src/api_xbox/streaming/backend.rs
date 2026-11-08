@@ -126,8 +126,25 @@ impl XboxStreamingBackend {
 
     pub(crate) async fn stop(self) -> Result<()> {
         let session_id = self.stream.session_id.clone();
-        let response = self.stream.stop().await?;
-        eprintln!("Stopped xCloud session {session_id}: {response}");
+        // Teardown breadcrumb (TODO 16a): the MS API DELETE is the only
+        // awaited network call in teardown (bounded 10 s by REQUEST_TIMEOUT);
+        // this pair proves it when reading a hang repro log.
+        let started = std::time::Instant::now();
+        eprintln!("stream teardown: DELETE session {session_id}...");
+        let response = match self.stream.stop().await {
+            Ok(response) => response,
+            Err(error) => {
+                eprintln!(
+                    "stream teardown: session DELETE failed after {} ms: {error:#}",
+                    started.elapsed().as_millis()
+                );
+                return Err(error);
+            }
+        };
+        eprintln!(
+            "stream teardown: session DELETE ok in {} ms: {response}",
+            started.elapsed().as_millis()
+        );
         Ok(())
     }
 
