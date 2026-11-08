@@ -269,6 +269,7 @@ impl App {
                     true, // always request 60: the console encodes ~60 regardless of a=framerate (54-session src_fps survey)
                     self.settings.video_bitrate_kbps,
                     self.settings.video_h264_profile,
+                    self.settings.color_profile,
                     self.settings.periodic_keyframe,
                 ) {
                     Ok(streaming) => Ok(AppState::Streaming(streaming)),

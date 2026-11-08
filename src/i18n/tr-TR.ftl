@@ -15,6 +15,7 @@ menu-logout = Microsoft oturumunu kapat
 settings-cloud = Bulut
 settings-home = Ev
 settings-locale = Dil/bölge
+settings-color-profile = Renk profili: { $mode }
 settings-game = Oyun ayarları
 settings-swap-shoulders-triggers = L1/L2 ve R1/R2 değiştir
 settings-front-touch-auxiliary-buttons = Ön dokunmatiği fare yerine L2/R2/L3/R3 için kullan

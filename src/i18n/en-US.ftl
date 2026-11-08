@@ -15,6 +15,7 @@ menu-logout = Log out of Microsoft
 settings-cloud = Cloud
 settings-home = Home
 settings-locale = Locale
+settings-color-profile = Color profile: { $mode }
 settings-game = Game settings
 settings-swap-shoulders-triggers = Swap L1/L2 and R1/R2
 settings-swap-shoulders-global = Swap L1/L2 and R1/R2 (all games)

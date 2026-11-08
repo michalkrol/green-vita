@@ -1,4 +1,5 @@
 use crate::app::StreamingSession;
+use crate::settings::ColorProfile;
 use crate::shell::egui_painter::SdlEguiPainter;
 use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget, NUM_TEXTURES};
 use anyhow::{Context, Result};
@@ -112,11 +113,20 @@ impl VitaSurface {
 
         self.detach_direct_video_output();
         let (width, height) = (output.width, output.height);
+        // Match the hardware decoder's output format (ColorProfile). SCE pixel-format
+        // naming puts the red channel in the lowest byte/bits (the working RGB565 path
+        // is the same convention: SCE "RGBA565" pairs with SDL BGR565), so SCE
+        // RGBA8888 = u32 0xAABBGGRR = memory bytes R,G,B,A = SDL ABGR8888. If colors
+        // come out swapped on device, flip this to PixelFormatEnum::RGBA8888.
+        let format = match output.color_profile {
+            ColorProfile::Rgb565 => PixelFormatEnum::BGR565,
+            ColorProfile::Rgba8888 => PixelFormatEnum::ABGR8888,
+        };
         let create_texture = || {
             self.canvas
-                .create_texture_streaming(PixelFormatEnum::BGR565, width, height)
+                .create_texture_streaming(format, width, height)
                 .map_err(anyhow::Error::msg)
-                .context("failed to create direct SDL BGR565 video texture")
+                .context("failed to create direct SDL video texture")
         };
         let mut textures: [_; NUM_TEXTURES] = [
             create_texture()?,

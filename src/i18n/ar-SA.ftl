@@ -15,6 +15,7 @@ menu-logout = تسجيل الخروج من Microsoft
 settings-cloud = السحابة
 settings-home = المنزل
 settings-locale = اللغة/المنطقة
+settings-color-profile = ملف تعريف الألوان: { $mode }
 settings-game = إعدادات اللعبة
 settings-swap-shoulders-triggers = تبديل L1/L2 و R1/R2
 settings-front-touch-auxiliary-buttons = استخدام اللمس الأمامي لـ L2/R2/L3/R3 بدلاً من الماوس

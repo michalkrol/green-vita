@@ -15,6 +15,7 @@ menu-logout = Terminar sessão da Microsoft
 settings-cloud = Nuvem
 settings-home = Casa
 settings-locale = Idioma/região
+settings-color-profile = Perfil de cor: { $mode }
 settings-game = Definições do jogo
 settings-swap-shoulders-triggers = Trocar L1/L2 e R1/R2
 settings-front-touch-auxiliary-buttons = Usar toque frontal para L2/R2/L3/R3 em vez do rato

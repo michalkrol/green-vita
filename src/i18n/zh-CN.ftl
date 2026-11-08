@@ -15,6 +15,7 @@ menu-logout = 退出 Microsoft
 settings-cloud = 云端
 settings-home = 家用主机
 settings-locale = 语言/区域
+settings-color-profile = 色彩配置: { $mode }
 settings-game = 游戏设置
 settings-swap-shoulders-triggers = 交换 L1/L2 和 R1/R2
 settings-front-touch-auxiliary-buttons = 将前触屏用于 L2/R2/L3/R3，而非鼠标

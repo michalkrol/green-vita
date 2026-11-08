@@ -15,6 +15,7 @@ menu-logout = Microsoft からサインアウト
 settings-cloud = クラウド
 settings-home = ホーム
 settings-locale = 言語/地域
+settings-color-profile = カラープロファイル: { $mode }
 settings-game = ゲーム設定
 settings-swap-shoulders-triggers = L1/L2 と R1/R2 を入れ替え
 settings-front-touch-auxiliary-buttons = 前面タッチをマウスではなくL2/R2/L3/R3に使用

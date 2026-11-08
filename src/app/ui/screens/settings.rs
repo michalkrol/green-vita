@@ -4,7 +4,7 @@ use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::smooth_scroll_area;
 use crate::i18n::{I18n, arg_string};
-use crate::settings::{H264Profile, StreamDebugMode};
+use crate::settings::{ColorProfile, H264Profile, StreamDebugMode};
 use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
@@ -28,6 +28,7 @@ pub enum Command {
     SetVideoH264Profile(H264Profile),
     SetDamagePolicy(crate::settings::DamagePolicy),
     SetLatencyProfile(crate::settings::LatencyProfile),
+    SetColorProfile(crate::settings::ColorProfile),
     SetPeriodicKeyframe(bool),
     SetLatencyTestMode(bool),
 }
@@ -45,6 +46,7 @@ enum SettingsRow {
     VideoH264Profile(H264Profile),
     DamagePolicy(crate::settings::DamagePolicy),
     LatencyProfile(crate::settings::LatencyProfile),
+    ColorProfile(crate::settings::ColorProfile),
     PeriodicKeyframe(bool),
     LatencyTest(bool),
     Back,
@@ -98,6 +100,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
     rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
     rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
+    rows.push(SettingsRow::ColorProfile(app.settings.color_profile));
     rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
     rows.push(SettingsRow::Back);
     rows
@@ -386,6 +389,31 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                {
+                    // Hardware decoder output profile (TODO item 3). Takes effect
+                    // on the next stream start — no live atomic: the decoder
+                    // output format is fixed at decoder construction.
+                    let mut args = FluentArgs::new();
+                    args.set(
+                        "mode",
+                        arg_string(match app.settings.color_profile {
+                            ColorProfile::Rgb565 => "RGB565",
+                            ColorProfile::Rgba8888 => "RGBA8888",
+                        }),
+                    );
+                    let label = i18n.text_with("settings-color-profile", args);
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = match app.settings.color_profile {
+                            ColorProfile::Rgb565 => ColorProfile::Rgba8888,
+                            ColorProfile::Rgba8888 => ColorProfile::Rgb565,
+                        };
+                        commands.push(Command::SetColorProfile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
@@ -634,6 +662,13 @@ impl App {
                 };
                 return self.handle_settings_command(Command::SetLatencyProfile(next));
             }
+            SettingsRow::ColorProfile(profile) => {
+                let next = match profile {
+                    ColorProfile::Rgb565 => ColorProfile::Rgba8888,
+                    ColorProfile::Rgba8888 => ColorProfile::Rgb565,
+                };
+                return self.handle_settings_command(Command::SetColorProfile(next));
+            }
             SettingsRow::PeriodicKeyframe(enabled) => {
                 return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
             }
@@ -765,6 +800,12 @@ impl App {
                     },
                     std::sync::atomic::Ordering::Relaxed,
                 );
+            }
+            Command::SetColorProfile(profile) => {
+                // No live store: the decoder output format is fixed at decoder
+                // construction, so this applies at the next stream start.
+                self.settings.color_profile = profile;
+                self.settings.save();
             }
             Command::SetPeriodicKeyframe(enabled) => {
                 self.settings.periodic_keyframe = enabled;

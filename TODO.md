@@ -17,6 +17,13 @@
    Caveat: hardware finding says +latency (32-bit decode output doubles
    per-frame memory bandwidth, LATENCY-FINDINGS 2026-10-23) → keep Rgb565
    default, device A/B before adopting.
+   ✅ IMPLEMENTED (0.3.2): Settings → "Color profile" row (RGB565 default /
+   RGBA8888, i18n'd), threads settings → DecoderConfig → sceAvcdec
+   pixelType + SDL texture format; applies at next stream start. Clarifies
+   the old worry: the H.264 bitstream (and thus Wi-Fi throughput demand) is
+   UNCHANGED — decode output format is purely local; the real cost is local
+   CDRAM bandwidth only. Device A/B still pending (compare `d/a`, `hwb`,
+   sheds vs a Rgb565 session in a dark-scene title).
 4. **RGB565 dark-color dither** — arch §6.7 owns it: ordered dither at the
    conversion point (S1 GPU shader; fallback "RGB565 decode + GPU dither").
    Feasible WITH S1; standalone post-hoc CPU dither is weak (cannot

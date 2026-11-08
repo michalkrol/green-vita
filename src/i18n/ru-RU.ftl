@@ -15,6 +15,7 @@ menu-logout = Выйти из Microsoft
 settings-cloud = Облако
 settings-home = Дом
 settings-locale = Язык/регион
+settings-color-profile = Цветовой профиль: { $mode }
 settings-game = Настройки игры
 settings-swap-shoulders-triggers = Поменять L1/L2 и R1/R2
 settings-front-touch-auxiliary-buttons = Использовать передний экран для L2/R2/L3/R3 вместо мыши

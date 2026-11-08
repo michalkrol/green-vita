@@ -69,8 +69,13 @@ impl RtcWorker {
         let worker_latest_gamepad = Arc::clone(&latest_gamepad);
         let gamepad_pulses = Arc::new(Mutex::new(VecDeque::new()));
         let worker_gamepad_pulses = Arc::clone(&gamepad_pulses);
-        let direct_video_output =
-            Arc::new(DirectVideoOutput::new(HW_OUTPUT_WIDTH, HW_OUTPUT_HEIGHT));
+        let direct_video_output = Arc::new(DirectVideoOutput::new(
+            HW_OUTPUT_WIDTH,
+            HW_OUTPUT_HEIGHT,
+            // Same source as run_worker_thread's RtcSessionConfig below — the
+            // SDL video textures must be created in the decoder's output format.
+            provider.session_config().decoder.color_profile,
+        ));
         let worker_direct_video_output = Arc::clone(&direct_video_output);
 
         std::thread::Builder::new()
