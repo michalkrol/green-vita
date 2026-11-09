@@ -92,3 +92,6 @@ error-class-server = خدمة Xbox تواجه مشكلات — حاول مرة �
 error-class-timeout = انتهت مهلة الطلب — تحقق من اتصال Wi-Fi
 error-class-dns = تعذر تحديد عنوان الخادم — تحقق من اتصال Wi-Fi
 error-class-network = فشل الاتصال بالشبكة — تحقق من اتصال Wi-Fi
+
+paused-reconnect = إعادة اتصال البث
+stalled-banner = توقف البث أثناء الخمول — توقفت وحدة التحكم عن إرسال الفيديو. قد يستعيده «استئناف»؛ وإلا فأعد الاتصال.

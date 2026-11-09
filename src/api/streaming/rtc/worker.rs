@@ -363,8 +363,14 @@ async fn run_session<B: super::session::RtcSessionBackend>(
             send_lossy(&events_tx, RtcWorkerEvent::VideoResolution(width, height));
         }
 
-        if session.connection_state == RTCPeerConnectionState::Closed {
-            eprintln!("rtc worker: connection state Closed, exiting pump loop (TODO 16a breadcrumb)");
+        if matches!(
+            session.connection_state,
+            RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed
+        ) {
+            eprintln!(
+                "rtc worker: connection state {:?}, exiting pump loop (idle/screensaver stale-stream handling)",
+                session.connection_state
+            );
             send_important_event(&events_tx, RtcWorkerEvent::Closed);
             return Ok(());
         }

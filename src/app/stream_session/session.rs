@@ -7,12 +7,37 @@ use crate::{Stream, StreamKind};
 use anyhow::Result;
 use bytes::Bytes;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy)]
 pub(super) enum StreamReturnTarget {
     Titles(usize),
     Consoles(usize),
+}
+
+/// Absolute frame-silence threshold before a stream is declared stalled
+/// (idle/screensaver goal): a healthy console sends frames even on static
+/// scenes (measured floors 72–122 kbps WITH frames, HUD `src` ≈ 60 fps), so
+/// 20 s of zero decoded frames means the media path is dead — typically the
+/// console's screensaver idle state, after which it never resumes sending.
+pub(crate) const STREAM_STALL_THRESHOLD: Duration = Duration::from_secs(20);
+
+/// Pure decision: is this much frame silence a stall?
+pub(crate) fn frame_silence_is_stall(silence: Duration) -> bool {
+    silence >= STREAM_STALL_THRESHOLD
+}
+
+/// Outcome of one stall-poll tick (`StreamingSession::poll_stall`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StallEvent {
+    /// No change.
+    None,
+    /// Frame silence crossed the threshold — caller should attempt a wake
+    /// (guide pulse) and surface the reconnect overlay.
+    Stalled,
+    /// Frames resumed after a stall — caller may close a stall-opened
+    /// overlay.
+    Recovered,
 }
 
 pub(crate) struct StreamingSession {
@@ -28,6 +53,15 @@ pub(crate) struct StreamingSession {
     stream_video_size: Option<(u32, u32)>,
     pending_audio_packets: Vec<Bytes>,
     ignore_confirm_until_release: bool,
+    /// Stall detection (idle/screensaver goal): last decoded-frame time,
+    /// whether the first frame ever arrived (no stall verdict before it —
+    /// handshake legitimately takes seconds), current stall flag, and
+    /// whether WE auto-opened the pause overlay for it (we close it again
+    /// on recovery).
+    last_frame_at: Instant,
+    received_first_frame: bool,
+    pub(in crate::app) stalled: bool,
+    stall_opened_overlay: bool,
 }
 
 impl StreamingSession {
@@ -58,6 +92,10 @@ impl StreamingSession {
             paused: false,
             status: "Starting streaming backend".to_owned(),
             hint_started_at: Instant::now(),
+            last_frame_at: Instant::now(),
+            received_first_frame: false,
+            stalled: false,
+            stall_opened_overlay: false,
             pause_selected: 0,
             title_id,
             return_target,
@@ -148,6 +186,11 @@ impl StreamingSession {
         }
 
         if let Some((frame_id, frame)) = self.backend.take_latest_frame() {
+            if self.latest_video_frame != Some(frame_id) {
+                // Fresh decode: feed the stall detector.
+                self.last_frame_at = Instant::now();
+                self.received_first_frame = true;
+            }
             self.latest_video_frame = Some(frame_id);
             self.current_video_frame = Some(frame);
         }
@@ -172,11 +215,60 @@ impl StreamingSession {
         self.backend.maintain().await
     }
 
+    /// Single decision point for the stall state machine (call once per pump
+    /// tick, after `drain_backend_events`). No verdict before the first
+    /// frame — the SDP/ICE handshake legitimately takes seconds.
+    pub(super) fn poll_stall(&mut self) -> StallEvent {
+        if !self.received_first_frame {
+            return StallEvent::None;
+        }
+        let silent = frame_silence_is_stall(self.last_frame_at.elapsed());
+        if self.stalled {
+            if !silent {
+                self.stalled = false;
+                let close_overlay = self.stall_opened_overlay;
+                self.stall_opened_overlay = false;
+                if close_overlay && self.paused {
+                    // We auto-opened the overlay for the stall; close it now
+                    // that media flows again. If the user opened it manually
+                    // in the meantime we leave it alone (flag was cleared).
+                    self.set_paused(false);
+                }
+                return StallEvent::Recovered;
+            }
+        } else if silent {
+            self.stalled = true;
+            return StallEvent::Stalled;
+        }
+        StallEvent::None
+    }
+
+    /// Marks the pause overlay as stall-opened, so recovery can close it.
+    pub(super) fn note_stall_opened_overlay(&mut self) {
+        self.stall_opened_overlay = true;
+    }
+
     pub(super) fn backend_description(&self) -> String {
         self.backend.description()
     }
 
     pub(super) async fn stop(self) -> Result<()> {
         self.backend.stop().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_silence_threshold_decides_stall() {
+        assert!(!frame_silence_is_stall(Duration::ZERO));
+        assert!(!frame_silence_is_stall(STREAM_STALL_THRESHOLD - Duration::from_millis(1)));
+        assert!(frame_silence_is_stall(STREAM_STALL_THRESHOLD));
+        // The user scenario is minutes of screensaver silence; the threshold
+        // must sit well below it but above any healthy-scene frame gap
+        // (floors are 72–122 kbps WITH frames).
+        assert!(frame_silence_is_stall(Duration::from_secs(300)));
     }
 }

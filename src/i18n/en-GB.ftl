@@ -100,3 +100,6 @@ error-class-server = The Xbox service is having problems — try again later
 error-class-timeout = The request timed out — check the Wi-Fi connection
 error-class-dns = Could not resolve the server address — check the Wi-Fi connection
 error-class-network = Network connection failed — check the Wi-Fi connection
+
+paused-reconnect = Reconnect stream
+stalled-banner = Stream stalled while idle — the console stopped sending video. Resume may recover it; otherwise reconnect.

@@ -8,22 +8,30 @@ use anyhow::Result;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Resume,
+    /// One-button reconnect for a stalled stream (idle/screensaver goal).
+    /// Index 1 — the stall detector opens this overlay focused here.
+    ReconnectStream,
     Settings,
     PressGuideButton,
     ExitGame,
 }
 
-pub const MENU_ITEMS: [Command; 4] = [
+pub const MENU_ITEMS: [Command; 5] = [
     Command::Resume,
+    Command::ReconnectStream,
     Command::Settings,
     Command::PressGuideButton,
     Command::ExitGame,
 ];
 
+/// Row the stall detector focuses when it auto-opens this overlay.
+pub(crate) const STALL_FOCUS_INDEX: usize = 1;
+
 impl Command {
     fn icon(self) -> &'static str {
         match self {
             Self::Resume => "\u{25b6}",
+            Self::ReconnectStream => "\u{27f3}",
             Self::Settings => "\u{2699}",
             Self::PressGuideButton => "\u{2302}",
             Self::ExitGame => "\u{2715}",
@@ -33,6 +41,7 @@ impl Command {
     fn label_key(self) -> &'static str {
         match self {
             Self::Resume => "paused-resume",
+            Self::ReconnectStream => "paused-reconnect",
             Self::Settings => "menu-settings",
             Self::PressGuideButton => "paused-xbox-button",
             Self::ExitGame => "paused-exit-game",
@@ -58,6 +67,19 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 None => {
                     ui.heading(egui::RichText::new(i18n.text("screen-paused")).color(theme.accent));
                 }
+            }
+            // Stall banner: the connection went silent (console idle/screensaver);
+            // ReconnectStream below is the recommended recovery.
+            let stalled = matches!(&app.state, AppState::Streaming(streaming) if streaming.stalled);
+            if stalled {
+                ui.add_space(8.0);
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(i18n.text("stalled-banner"))
+                            .color(egui::Color32::from_rgb(0xff, 0xb4, 0x5c)),
+                    );
+                });
+                ui.add_space(8.0);
             }
             ui.add_space(12.0);
             ui.set_max_width(240.0);
@@ -126,6 +148,9 @@ impl App {
                     streaming.set_paused(false);
                 }
                 self.menu.open = false;
+            }
+            Command::ReconnectStream => {
+                self.reconnect_stream().await;
             }
             Command::Settings => {
                 self.open_settings();

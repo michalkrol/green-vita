@@ -92,3 +92,6 @@ error-class-server = Usługa Xbox ma problemy — spróbuj ponownie później
 error-class-timeout = Żądanie przekroczyło limit czasu — sprawdź połączenie Wi-Fi
 error-class-dns = Nie można rozwiązać adresu serwera — sprawdź połączenie Wi-Fi
 error-class-network = Połączenie sieciowe nie powiodło się — sprawdź połączenie Wi-Fi
+
+paused-reconnect = Połącz strumień ponownie
+stalled-banner = Strumień zatrzymany po bezczynności — konsola przestała wysyłać obraz. „Wznów“ może go przywrócić; w przeciwnym razie połącz ponownie.

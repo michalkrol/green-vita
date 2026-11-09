@@ -92,3 +92,6 @@ error-class-server = Der Xbox-Dienst hat derzeit Probleme — bitte später erne
 error-class-timeout = Die Anfrage hat das Zeitlimit überschritten — WLAN-Verbindung prüfen
 error-class-dns = Serveradresse konnte nicht aufgelöst werden — WLAN-Verbindung prüfen
 error-class-network = Netzwerkverbindung fehlgeschlagen — WLAN-Verbindung prüfen
+
+paused-reconnect = Stream neu verbinden
+stalled-banner = Stream nach Inaktivität unterbrochen — die Konsole sendet kein Video mehr. „Fortsetzen“ kann ihn wiederbeleben, andernfalls neu verbinden.
