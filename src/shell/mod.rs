@@ -63,6 +63,8 @@ pub async fn run(mut app: App) -> Result<()> {
 
     loop {
         let loop_started_at = Instant::now();
+        // Main-thread liveness for the PS-button watchdog (brainstorm §6), even in menus.
+        crate::ps_button::bump_heartbeat();
         let mut egui_events = Vec::new();
         let mut direct_commands = Vec::new();
         if app.title_search_requested && !vita_ime_active {
@@ -170,11 +172,17 @@ pub async fn run(mut app: App) -> Result<()> {
 
         // Drives the top-left hold-progress ring in `build_ui`.
         let mut hold_progress: Option<f32> = None;
-        // Back doubles as game input (View) and as the hold-to-pause gesture: withheld while
-        // held.  On short release, we replay the hold for exactly its duration
-        // so the game sees a proper press→release sequence.
+        // Back doubles as game input (View) and as the hold-to-pause gesture:
+        // withheld while held.  On short release, we replay the hold for
+        // exactly its duration so the game sees a proper press→release
+        // sequence.
         let mut relay_back_as_view = false;
-        if matches!(&app.state, AppState::Streaming(streaming) if !streaming.paused) {
+        // PS-button lock/gesture predicate: on only while actively streaming unpaused —
+        // off in menus/lists, the pause overlay and Settings-over-stream (brainstorm §5),
+        // where PS works natively.
+        let streaming_unpaused =
+            matches!(&app.state, AppState::Streaming(streaming) if !streaming.paused);
+        if streaming_unpaused {
             // Check if we're still replaying a previous short press
             if let Some(until) = relay_view_until {
                 if Instant::now() < until {
@@ -185,6 +193,9 @@ pub async fn run(mut app: App) -> Result<()> {
             }
             if back_button_held(controller.as_ref()) {
                 let held_since = *back_hold_since.get_or_insert_with(Instant::now);
+                // The Select long-press is the sole Select-based menu gesture
+                // (hold 1.5 s); a short press is replayed to the game as View
+                // on release below.
                 let elapsed = held_since.elapsed();
                 hold_progress = Some(
                     (elapsed.as_secs_f32() / PAUSE_HOLD_DURATION.as_secs_f32()).clamp(0.0, 1.0),
@@ -205,6 +216,24 @@ pub async fn run(mut app: App) -> Result<()> {
         } else {
             back_hold_since = None;
         }
+
+        // PS-button gesture machine (brainstorm §5 phase 2): tap = Xbox guide
+        // (same nexus pulse as the overlay row; session live is guaranteed since
+        // GuidePressed only fires unpaused), hold >= 600 ms = unlock — the
+        // shell minimizes on the released press, so the arm event carries no
+        // UI state of its own.
+        match crate::ps_button::tick(app.settings.ps_button_capture, streaming_unpaused) {
+            crate::ps_button::PsButtonTick::GuidePressed => {
+                if let Some(streaming) = app.state.streaming_mut() {
+                    streaming.press_guide_button();
+                }
+            }
+            crate::ps_button::PsButtonTick::PassthroughArmed { .. } => {}
+            crate::ps_button::PsButtonTick::Idle => {}
+        }
+        // Watchdog guards the main thread while the lock may be held; arming
+        // follows session liveness (Settings-over-stream keeps the session alive).
+        crate::ps_button::set_watchdog_armed(app.state.streaming().is_some());
 
         for command in direct_commands {
             app.handle_command(command).await?;
@@ -244,9 +273,14 @@ pub async fn run(mut app: App) -> Result<()> {
             ..Default::default()
         };
 
+        // HUD hint for as long as the PS button is physically held (capture
+        // on, stream live): reflects the last 4 ms poll sample from
+        // `ps_button::tick`.
+        let ps_hold_hint =
+            app.settings.ps_button_capture && streaming_unpaused && crate::ps_button::is_pressed();
         let mut ui_commands = Vec::new();
         let full_output = egui_ctx.run(raw_input, |ctx| {
-            ui_commands = build_ui(ctx, &app, hold_progress);
+            ui_commands = build_ui(ctx, &app, hold_progress, ps_hold_hint);
         });
 
         for command in ui_commands {

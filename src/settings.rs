@@ -207,6 +207,9 @@ pub struct Settings {
     /// When true, latency test mode is active - shows a blinking square and stopwatch
     /// on button press to measure glass-to-glass latency with a phone camera.
     pub latency_test_mode: bool,
+    /// Capture the PS button while streaming (tap = Xbox guide, hold =
+    /// Vita menu passthrough); experimental.
+    pub ps_button_capture: bool,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -245,6 +248,7 @@ impl Default for Settings {
             periodic_keyframe: true,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,
+            ps_button_capture: false,
             game_profiles: HashMap::new(),
         }
     }

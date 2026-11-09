@@ -11,6 +11,7 @@ mod jobs;
 mod latency_test;  // <-- added
 #[allow(dead_code)]
 mod pipeline; // pipeline core (stages land incrementally)
+mod ps_button;
 mod safe_memory;
 mod settings;
 mod shell;
@@ -62,6 +63,10 @@ fn main() -> anyhow::Result<()> {
     }
     // Raise clocks / enable wireless mode for the whole app lifetime; restored on exit.
     let _streaming_power = shell::power::engage();
+    // PS-button watchdog thread only — shell-util init is lazy (first
+    // capture-enabled tick), so with capture off this build makes zero new
+    // syscalls vs the pre-capture binary (bisect after C1-9654-4, §11).
+    ps_button::spawn_watchdog();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

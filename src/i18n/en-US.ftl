@@ -29,6 +29,9 @@ settings-video-bitrate-cap = Bitrate cap: { $kbps } kbps
 settings-video-bitrate-nocap = Bitrate cap: none (unlimited)
 settings-video-h264-profile = H264 profile: { $profile }
 settings-periodic-keyframe = Periodic keyframe (clear artifacts)
+settings-instream-controls = In-stream controls
+settings-ps-button-capture = Capture PS button
+settings-ps-button-capture-sub = Tap = Xbox guide · Hold = Vita menu (experimental)
 action-back = Back
 
 mode-select-cloud-subtitle = Stream Xbox Cloud Gaming titles
@@ -37,8 +40,15 @@ mode-select-home-subtitle = Stream your local Xbox console — Remote Play
 paused-resume = Return to game
 paused-xbox-button = Xbox button
 paused-exit-game = Exit game
+paused-xbox-guide = Xbox guide
+paused-exit-stream = Exit stream
+paused-quit-app = Quit app (LiveArea)
+paused-next-stream = next stream
+paused-hint-view = View hold = menu
+paused-hint-ps = PS tap = guide · PS hold = Vita menu
 
 streaming-hold-back = Hold Back to open the quick menu
+streaming-ps-hold-hint = Hold for PS Home
 connecting-cancel = Press Circle to cancel
 token-starting-sign-in = Starting Microsoft sign-in...
 token-at-uri = at { $uri }
