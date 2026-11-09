@@ -15,6 +15,7 @@ menu-logout = 退出 Microsoft
 settings-cloud = 云端
 settings-home = 家用主机
 settings-locale = 语言/区域
+settings-color-profile = 色彩配置: { $mode }
 settings-game = 游戏设置
 settings-swap-shoulders-triggers = 交换 L1/L2 和 R1/R2
 settings-front-touch-auxiliary-buttons = 将前触屏用于 L2/R2/L3/R3，而非鼠标
@@ -83,3 +84,11 @@ error-technical-details = 技术详情：{ $error }
 
 error-no-wifi = 未检测到 Wi-Fi 连接
 error-no-wifi-details = 请将 PS Vita 连接到 Wi-Fi 网络，然后重试。
+
+error-stream-ended-by-console = 串流已由主机端结束
+error-class-auth = 登录已过期或被拒绝 — 请重新登录
+error-class-ratelimit = 请求过于频繁 — 请几分钟后重试
+error-class-server = Xbox 服务出现问题 — 请稍后重试
+error-class-timeout = 请求超时 — 请检查 Wi-Fi 连接
+error-class-dns = 无法解析服务器地址 — 请检查 Wi-Fi 连接
+error-class-network = 网络连接失败 — 请检查 Wi-Fi 连接

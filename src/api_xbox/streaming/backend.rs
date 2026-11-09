@@ -3,7 +3,7 @@ use crate::api::streaming::PlaybackBackendEvent;
 use crate::api::streaming::rtc::worker::{RtcWorker, RtcWorkerEvent};
 use crate::api_xbox::streaming::rtc::worker;
 use crate::jobs::{PollJob, poll_job};
-use crate::settings::H264Profile;
+use crate::settings::{ColorProfile, H264Profile};
 use crate::streaming::input::{GamepadFrame, PointerEvent};
 use crate::streaming::video::{DecodedFrame, DirectVideoOutput};
 use anyhow::Result;
@@ -34,6 +34,7 @@ impl XboxStreamingBackend {
         request_60fps: bool,
         video_bitrate_kbps: u32,
         video_h264_profile: H264Profile,
+        color_profile: ColorProfile,
         periodic_keyframe: bool,
     ) -> Result<Self> {
         let worker = worker::spawn(
@@ -41,6 +42,7 @@ impl XboxStreamingBackend {
             request_60fps,
             video_bitrate_kbps,
             video_h264_profile,
+            color_profile,
             periodic_keyframe,
         )?;
         Ok(Self {
@@ -124,8 +126,25 @@ impl XboxStreamingBackend {
 
     pub(crate) async fn stop(self) -> Result<()> {
         let session_id = self.stream.session_id.clone();
-        let response = self.stream.stop().await?;
-        eprintln!("Stopped xCloud session {session_id}: {response}");
+        // Teardown breadcrumb (TODO 16a): the MS API DELETE is the only
+        // awaited network call in teardown (bounded 10 s by REQUEST_TIMEOUT);
+        // this pair proves it when reading a hang repro log.
+        let started = std::time::Instant::now();
+        eprintln!("stream teardown: DELETE session {session_id}...");
+        let response = match self.stream.stop().await {
+            Ok(response) => response,
+            Err(error) => {
+                eprintln!(
+                    "stream teardown: session DELETE failed after {} ms: {error:#}",
+                    started.elapsed().as_millis()
+                );
+                return Err(error);
+            }
+        };
+        eprintln!(
+            "stream teardown: session DELETE ok in {} ms: {response}",
+            started.elapsed().as_millis()
+        );
         Ok(())
     }
 

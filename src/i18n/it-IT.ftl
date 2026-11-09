@@ -15,6 +15,7 @@ menu-logout = Esci da Microsoft
 settings-cloud = Cloud
 settings-home = Casa
 settings-locale = Lingua/regione
+settings-color-profile = Profilo colore: { $mode }
 settings-game = Impostazioni gioco
 settings-swap-shoulders-triggers = Scambia L1/L2 e R1/R2
 settings-front-touch-auxiliary-buttons = Usa il touch anteriore per L2/R2/L3/R3 invece del mouse
@@ -83,3 +84,11 @@ error-technical-details = Dettagli tecnici: { $error }
 
 error-no-wifi = Nessuna connessione Wi-Fi rilevata
 error-no-wifi-details = Collega la PS Vita a una rete Wi-Fi e riprova.
+
+error-stream-ended-by-console = Stream terminato dalla console
+error-class-auth = Accesso scaduto o rifiutato — effettua di nuovo l'accesso
+error-class-ratelimit = Troppe richieste — riprova tra qualche minuto
+error-class-server = Il servizio Xbox sta avendo problemi — riprova più tardi
+error-class-timeout = La richiesta è andata in timeout — controlla la connessione Wi-Fi
+error-class-dns = Impossibile risolvere l'indirizzo del server — controlla la connessione Wi-Fi
+error-class-network = Connessione di rete non riuscita — controlla la connessione Wi-Fi

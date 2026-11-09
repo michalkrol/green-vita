@@ -15,6 +15,7 @@ menu-logout = Terminar sessão da Microsoft
 settings-cloud = Nuvem
 settings-home = Casa
 settings-locale = Idioma/região
+settings-color-profile = Perfil de cor: { $mode }
 settings-game = Definições do jogo
 settings-swap-shoulders-triggers = Trocar L1/L2 e R1/R2
 settings-front-touch-auxiliary-buttons = Usar toque frontal para L2/R2/L3/R3 em vez do rato
@@ -83,3 +84,11 @@ error-technical-details = Detalhes técnicos: { $error }
 
 error-no-wifi = Nenhuma ligação Wi-Fi detetada
 error-no-wifi-details = Liga a PS Vita a uma rede Wi-Fi e tenta de novo.
+
+error-stream-ended-by-console = A transmissão foi terminada pela consola
+error-class-auth = Sessão expirada ou recusada — inicie sessão novamente
+error-class-ratelimit = Demasiados pedidos — tente novamente dentro de alguns minutos
+error-class-server = O serviço Xbox está com problemas — tente novamente mais tarde
+error-class-timeout = O pedido expirou — verifique a ligação Wi-Fi
+error-class-dns = Não foi possível resolver o endereço do servidor — verifique a ligação Wi-Fi
+error-class-network = Falha na ligação de rede — verifique a ligação Wi-Fi

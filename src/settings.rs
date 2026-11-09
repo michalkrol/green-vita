@@ -133,6 +133,35 @@ pub enum DamagePolicy {
     Quality,
 }
 
+/// Hardware decoder output color profile. RGB565 (default) halves the
+/// decoder-to-texture CDRAM traffic vs RGBA8888; RGBA8888 (TODO item 3) is the
+/// optional quality mode that eliminates RGB565 dark-scene banding ("reads as
+/// blockiness") at the cost of doubled per-frame decode output bandwidth
+/// (LATENCY-FINDINGS-2026-10-23). Applies at the next stream start — the
+/// decoder output format is fixed at decoder construction. NOTE: this changes
+/// nothing on the wire — the H.264 bitstream (and thus Wi-Fi throughput) is
+/// identical; only local memory traffic differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ColorProfile {
+    /// Hardware RGB565 direct decode (default; lowest memory bandwidth).
+    #[default]
+    Rgb565,
+    /// Hardware RGBA8888 direct decode — true 8-bit channels, no banding.
+    Rgba8888,
+}
+
+/// Decode-bank depth profile (item 15): Fast = shallow bank (minimal floor);
+/// Smooth = deep bank (bursts + shed stalls absorbed invisibly — the 0.3.1
+/// quality recreation, accumulation-safe by construction).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LatencyProfile {
+    /// Bank target 0, boost ≤2 (+33 ms worst case). Default.
+    #[default]
+    Fast,
+    /// Bank target 6, admission limit 12 (≈ +100–200 ms floor).
+    Smooth,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -158,10 +187,20 @@ pub struct Settings {
     /// IDR on severe damage; Quality sheds on every damaged frame
     /// (artefact-free, micro-freeze per event). See DamagePolicy.
     pub damage_policy: DamagePolicy,
+    /// Decode-bank depth profile (item 15): Fast = shallow bank (target 0,
+    /// bursts shed or conceal — minimal floor); Smooth = deep bank (target 6,
+    /// hard cap 12 ≈ +100–200 ms floor) — bursts and damage-shed stalls
+    /// absorbed invisibly (the 0.3.1 quality recreation, accumulation-safe:
+    /// the bank is hard-capped in admission and TWCC stamps pre-bank).
+    pub latency_profile: LatencyProfile,
     /// When true, a keyframe (IDR) is requested from the console every 200 ms via
     /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
     /// cost of slightly larger periodic frames and a small bandwidth overhead.
     pub periodic_keyframe: bool,
+    /// Hardware decoder output color profile (ColorProfile). Rgb565 default;
+    /// Rgba8888 kills 565 dark-scene banding at +memory-bandwidth cost
+    /// (TODO item 3). Takes effect on the next stream start.
+    pub color_profile: ColorProfile,
     /// Swap L1/L2 with R1/R2 (shoulders and triggers) for every title, not just
     /// titles with the per-game toggle enabled.
     pub swap_shoulders_and_triggers: bool,
@@ -201,6 +240,8 @@ impl Default for Settings {
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
             damage_policy: DamagePolicy::default(),
+            latency_profile: LatencyProfile::default(),
+            color_profile: ColorProfile::default(),
             periodic_keyframe: true,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,

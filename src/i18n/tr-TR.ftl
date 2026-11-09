@@ -15,6 +15,7 @@ menu-logout = Microsoft oturumunu kapat
 settings-cloud = Bulut
 settings-home = Ev
 settings-locale = Dil/bölge
+settings-color-profile = Renk profili: { $mode }
 settings-game = Oyun ayarları
 settings-swap-shoulders-triggers = L1/L2 ve R1/R2 değiştir
 settings-front-touch-auxiliary-buttons = Ön dokunmatiği fare yerine L2/R2/L3/R3 için kullan
@@ -83,3 +84,11 @@ error-technical-details = Teknik ayrıntılar: { $error }
 
 error-no-wifi = Wi-Fi bağlantısı algılanmadı
 error-no-wifi-details = PS Vita'yı bir Wi-Fi ağına bağlayın ve yeniden deneyin.
+
+error-stream-ended-by-console = Yayın konsol tarafından sonlandırıldı
+error-class-auth = Oturum süresi doldu veya reddedildi — lütfen yeniden giriş yapın
+error-class-ratelimit = Çok fazla istek — birkaç dakika sonra tekrar deneyin
+error-class-server = Xbox hizmetinde sorun var — daha sonra tekrar deneyin
+error-class-timeout = İstek zaman aşımına uğradı — Wi-Fi bağlantısını kontrol edin
+error-class-dns = Sunucu adresi çözümlenemedi — Wi-Fi bağlantısını kontrol edin
+error-class-network = Ağ bağlantısı başarısız oldu — Wi-Fi bağlantısını kontrol edin

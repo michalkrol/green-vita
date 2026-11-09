@@ -15,7 +15,15 @@ impl App {
             return Ok(());
         }
         if closed {
-            self.exit_stream().await;
+            // Console-side close (TODO 16a): an expected event, but the user
+            // must see WHY the stream ended — a silent bounce back to the
+            // list reads as a crash. Same teardown as an error, friendlier
+            // message; raw detail stays in `details`.
+            self.stop_stream_with_error(
+                "error-stream-ended-by-console",
+                "connection closed by the console".to_owned(),
+            )
+            .await;
             return Ok(());
         }
 
@@ -35,7 +43,12 @@ impl App {
         crate::streaming::video::rtp_dump_log::flush_rtp_dump();
         let state = std::mem::replace(&mut self.state, AppState::ModeSelect { selected: 0 });
         if let Some(streaming) = state.into_streaming() {
+            // Teardown breadcrumb (TODO 16a): if the console-close repro ever
+            // hangs, this pair pins whether `stop()` is the blocking stage.
+            let started = std::time::Instant::now();
+            eprintln!("stream teardown: stopping backend...");
             let _ = streaming.stop().await;
+            eprintln!("stream teardown: backend stopped in {} ms", started.elapsed().as_millis());
         }
         self.set_localized_error_screen(reason_key, error);
     }
@@ -49,9 +62,16 @@ impl App {
             let return_target = streaming.return_target;
             let description = streaming.backend_description();
             eprintln!("Exiting stream: stopping {description}...");
+            let started = std::time::Instant::now();
             match streaming.stop().await {
-                Ok(()) => {}
-                Err(error) => eprintln!("Failed to stop {description}: {error:#}"),
+                Ok(()) => eprintln!(
+                    "stream teardown: backend stopped in {} ms",
+                    started.elapsed().as_millis()
+                ),
+                Err(error) => eprintln!(
+                    "Failed to stop {description} after {} ms: {error:#}",
+                    started.elapsed().as_millis()
+                ),
             }
             return_target
         } else {

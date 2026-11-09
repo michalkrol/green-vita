@@ -115,6 +115,15 @@ impl App {
             },
             std::sync::atomic::Ordering::Relaxed,
         );
+        // Latency profile (item 15): settings → stream start → the decode
+        // bank admission limit (Fast = shallow, Smooth = deep).
+        crate::streaming::video::worker::LATENCY_PROFILE.store(
+            match self.settings.latency_profile {
+                crate::settings::LatencyProfile::Fast => 0,
+                crate::settings::LatencyProfile::Smooth => 1,
+            },
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let api = self.service.api.clone();
         let kind = target.kind;
         let target_id = target.target_id.clone();
@@ -260,6 +269,7 @@ impl App {
                     true, // always request 60: the console encodes ~60 regardless of a=framerate (54-session src_fps survey)
                     self.settings.video_bitrate_kbps,
                     self.settings.video_h264_profile,
+                    self.settings.color_profile,
                     self.settings.periodic_keyframe,
                 ) {
                     Ok(streaming) => Ok(AppState::Streaming(streaming)),

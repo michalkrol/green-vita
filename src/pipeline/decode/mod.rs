@@ -89,15 +89,15 @@ mod tests {
     }
 
     #[test]
-    fn admit_boost_raises_limit_bounded() {
+    fn admit_extra_limit_raises_limit() {
         let sched = DecodeScheduler::new(SchedulerMode::DisplayClocked);
-        // 60 fps limit 6; boost 2 → limit 8 (bounded by JB_BOOST_MAX).
+        // 60 fps limit 6; extra_limit 2 → limit 8. The CALLER owns the
+        // profile bound (Fast ≤2 / Smooth ≤6) — admit applies it as given.
         assert_eq!(sched.admit(6, Some(16667), 2), Admission::Accept);
         assert_eq!(sched.admit(7, Some(16667), 2), Admission::Accept);
         assert_eq!(sched.admit(8, Some(16667), 2), Admission::RejectQueueFull);
-        // Boost above the ceiling is clamped.
-        assert_eq!(sched.admit(8, Some(16667), 9), Admission::RejectQueueFull);
-        assert_eq!(sched.admit(7, Some(16667), 9), Admission::Accept);
+        assert_eq!(sched.admit(11, Some(16667), 6), Admission::Accept);
+        assert_eq!(sched.admit(12, Some(16667), 6), Admission::RejectQueueFull);
     }
 
     #[test]

@@ -4,7 +4,7 @@ use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::smooth_scroll_area;
 use crate::i18n::{I18n, arg_string};
-use crate::settings::{H264Profile, StreamDebugMode};
+use crate::settings::{ColorProfile, H264Profile, StreamDebugMode};
 use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
@@ -27,6 +27,8 @@ pub enum Command {
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
     SetDamagePolicy(crate::settings::DamagePolicy),
+    SetLatencyProfile(crate::settings::LatencyProfile),
+    SetColorProfile(crate::settings::ColorProfile),
     SetPeriodicKeyframe(bool),
     SetLatencyTestMode(bool),
 }
@@ -43,6 +45,8 @@ enum SettingsRow {
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
     DamagePolicy(crate::settings::DamagePolicy),
+    LatencyProfile(crate::settings::LatencyProfile),
+    ColorProfile(crate::settings::ColorProfile),
     PeriodicKeyframe(bool),
     LatencyTest(bool),
     Back,
@@ -95,6 +99,8 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
     rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
+    rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
+    rows.push(SettingsRow::ColorProfile(app.settings.color_profile));
     rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
     rows.push(SettingsRow::Back);
     rows
@@ -359,6 +365,55 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                {
+                    let label = format!(
+                        "Latency profile: {}",
+                        match app.settings.latency_profile {
+                            crate::settings::LatencyProfile::Fast => "Fast",
+                            crate::settings::LatencyProfile::Smooth => "Smooth",
+                        }
+                    );
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = match app.settings.latency_profile {
+                            crate::settings::LatencyProfile::Fast => {
+                                crate::settings::LatencyProfile::Smooth
+                            }
+                            crate::settings::LatencyProfile::Smooth => {
+                                crate::settings::LatencyProfile::Fast
+                            }
+                        };
+                        commands.push(Command::SetLatencyProfile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                {
+                    // Hardware decoder output profile (TODO item 3). Takes effect
+                    // on the next stream start — no live atomic: the decoder
+                    // output format is fixed at decoder construction.
+                    let mut args = FluentArgs::new();
+                    args.set(
+                        "mode",
+                        arg_string(match app.settings.color_profile {
+                            ColorProfile::Rgb565 => "RGB565",
+                            ColorProfile::Rgba8888 => "RGBA8888",
+                        }),
+                    );
+                    let label = i18n.text_with("settings-color-profile", args);
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = match app.settings.color_profile {
+                            ColorProfile::Rgb565 => ColorProfile::Rgba8888,
+                            ColorProfile::Rgba8888 => ColorProfile::Rgb565,
+                        };
+                        commands.push(Command::SetColorProfile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
@@ -596,6 +651,24 @@ impl App {
                 };
                 return self.handle_settings_command(Command::SetDamagePolicy(next));
             }
+            SettingsRow::LatencyProfile(profile) => {
+                let next = match profile {
+                    crate::settings::LatencyProfile::Fast => {
+                        crate::settings::LatencyProfile::Smooth
+                    }
+                    crate::settings::LatencyProfile::Smooth => {
+                        crate::settings::LatencyProfile::Fast
+                    }
+                };
+                return self.handle_settings_command(Command::SetLatencyProfile(next));
+            }
+            SettingsRow::ColorProfile(profile) => {
+                let next = match profile {
+                    ColorProfile::Rgb565 => ColorProfile::Rgba8888,
+                    ColorProfile::Rgba8888 => ColorProfile::Rgb565,
+                };
+                return self.handle_settings_command(Command::SetColorProfile(next));
+            }
             SettingsRow::PeriodicKeyframe(enabled) => {
                 return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
             }
@@ -703,6 +776,35 @@ impl App {
             }
             Command::SetDamagePolicy(policy) => {
                 self.settings.damage_policy = policy;
+                self.settings.save();
+                // Live: the RTP Damaged arm reads this per event — applies
+                // mid-stream without reconnecting (item 11).
+                crate::api::streaming::rtc::rtp::DAMAGE_POLICY.store(
+                    match policy {
+                        crate::settings::DamagePolicy::LowLatency => 0,
+                        crate::settings::DamagePolicy::Balanced => 1,
+                        crate::settings::DamagePolicy::Quality => 2,
+                    },
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+            Command::SetLatencyProfile(profile) => {
+                self.settings.latency_profile = profile;
+                self.settings.save();
+                // Live: the decode-bank admission limit reads this per submit
+                // (item 15) — applies mid-stream without reconnecting.
+                crate::streaming::video::worker::LATENCY_PROFILE.store(
+                    match profile {
+                        crate::settings::LatencyProfile::Fast => 0,
+                        crate::settings::LatencyProfile::Smooth => 1,
+                    },
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+            Command::SetColorProfile(profile) => {
+                // No live store: the decoder output format is fixed at decoder
+                // construction, so this applies at the next stream start.
+                self.settings.color_profile = profile;
                 self.settings.save();
             }
             Command::SetPeriodicKeyframe(enabled) => {

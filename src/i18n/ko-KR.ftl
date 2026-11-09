@@ -15,6 +15,7 @@ menu-logout = Microsoft에서 로그아웃
 settings-cloud = 클라우드
 settings-home = 홈
 settings-locale = 언어/지역
+settings-color-profile = 색상 프로파일: { $mode }
 settings-game = 게임 설정
 settings-swap-shoulders-triggers = L1/L2 및 R1/R2 바꾸기
 settings-front-touch-auxiliary-buttons = 전면 터치를 마우스 대신 L2/R2/L3/R3로 사용
@@ -83,3 +84,11 @@ error-technical-details = 기술 세부 정보: { $error }
 
 error-no-wifi = Wi-Fi 연결이 감지되지 않았습니다
 error-no-wifi-details = PS Vita를 Wi-Fi 네트워크에 연결한 후 다시 시도하세요.
+
+error-stream-ended-by-console = 콘솔에서 스트림이 종료되었습니다
+error-class-auth = 로그인이 만료되었거나 거부되었습니다 — 다시 로그인해 주세요
+error-class-ratelimit = 요청이 너무 많습니다 — 몇 분 후 다시 시도해 주세요
+error-class-server = Xbox 서비스에 문제가 있습니다 — 나중에 다시 시도해 주세요
+error-class-timeout = 요청 시간이 초과되었습니다 — Wi-Fi 연결을 확인해 주세요
+error-class-dns = 서버 주소를 확인할 수 없습니다 — Wi-Fi 연결을 확인해 주세요
+error-class-network = 네트워크 연결에 실패했습니다 — Wi-Fi 연결을 확인해 주세요

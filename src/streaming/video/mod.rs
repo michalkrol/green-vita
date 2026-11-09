@@ -17,6 +17,7 @@ pub use memory::reserve_decoder_cdram;
 pub use metrics::video_performance_summary;
 pub use worker::VideoDecodeWorker;
 
+use crate::settings::ColorProfile;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -50,10 +51,13 @@ pub(crate) struct DirectVideoOutput {
     pub(crate) decoder_ready: AtomicBool,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    /// Hardware decoder output profile; the SDL renderer creates the direct
+    /// video textures in the matching pixel format (shell/surface.rs).
+    pub(crate) color_profile: ColorProfile,
 }
 
 impl DirectVideoOutput {
-    pub(crate) fn new(width: u32, height: u32) -> Self {
+    pub(crate) fn new(width: u32, height: u32, color_profile: ColorProfile) -> Self {
         Self {
             state: Mutex::new(DirectVideoOutputState {
                 targets: None,
@@ -66,6 +70,7 @@ impl DirectVideoOutput {
             decoder_ready: AtomicBool::new(false),
             width,
             height,
+            color_profile,
         }
     }
 
@@ -185,4 +190,6 @@ pub struct DecoderConfig {
     pub decode_height: u32,
     pub output_width: u32,
     pub output_height: u32,
+    /// Hardware decoder output color profile (see `ColorProfile`).
+    pub color_profile: ColorProfile,
 }

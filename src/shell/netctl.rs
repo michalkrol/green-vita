@@ -1,7 +1,8 @@
 //! Network state via sceNetCtl — Phase 1 of network validation (TODO 7a).
 //! Vita-only syscall; host builds report Online so UI flow and tests are
-//! unchanged. Fail-open on unexpected syscall errors: this check is a UX
-//! guard before the automatic sign-in, not a hard gate.
+//! unchanged. Fail-CLOSED on unexpected syscall errors (TODO 16b): an
+//! uninitialized network stack crashes downstream of sign-in, so Unknown
+//! shows the offline screen instead of letting sign-in proceed.
 
 /// Result of the pre-sign-in connectivity check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,7 +11,10 @@ pub(crate) enum NetworkState {
     Online,
     /// No connection — sign-in would fail; show the offline screen.
     Offline,
-    /// Syscall quirk — fail open (let sign-in proceed and fail on its own).
+    /// Syscall error — treated as Offline (fail-CLOSED: the user report
+    /// "crashes on turn on with Wi-Fi off" traced to this gate failing
+    /// OPEN on exactly this path, letting sign-in proceed into an
+    /// uninitialized network stack).
     Unknown,
 }
 
@@ -106,9 +110,10 @@ pub(crate) fn default_route() -> Option<String> {
 }
 
 /// Pure decision: should the offline gate block sign-in? `Unknown` fails
-/// open — the check must never brick sign-in on an API quirk.
+/// CLOSED (TODO 16b): a syscall error means we cannot prove the network
+/// stack is up, and sign-in into an uninitialized stack crashes.
 pub(crate) fn blocks_sign_in(state: NetworkState) -> bool {
-    state == NetworkState::Offline
+    state != NetworkState::Online
 }
 
 #[cfg(test)]
@@ -116,9 +121,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_offline_blocks_sign_in() {
+    fn only_online_allows_sign_in() {
         assert!(blocks_sign_in(NetworkState::Offline));
+        assert!(
+            blocks_sign_in(NetworkState::Unknown),
+            "fail CLOSED: no crashes on turn-on with Wi-Fi off"
+        );
         assert!(!blocks_sign_in(NetworkState::Online));
-        assert!(!blocks_sign_in(NetworkState::Unknown), "fail open");
     }
 }

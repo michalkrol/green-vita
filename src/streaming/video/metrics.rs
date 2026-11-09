@@ -101,6 +101,7 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) jb_boost: u64,
     pub(crate) jb_depth: u64,
     pub(crate) jb_absorbed: u64,
+    pub(crate) jb_target: u64,
     // Damaged AUs shed-to-IDR under the Quality/Balanced damage policies.
     pub(crate) damaged_dropped: u64,
     // PLI→IDR latency metrics (Task D): last-value and max-over-session.
@@ -209,6 +210,7 @@ pub(crate) struct VideoMetrics {
     pub(crate) jb_boost: AtomicU64,
     pub(crate) jb_depth: AtomicU64,
     pub(crate) jb_absorbed: AtomicU64,
+    pub(crate) jb_target: AtomicU64,
     // PLI→IDR latency metrics (Task D): last-value and max-over-session.
     pub(crate) pli_idr_ms_last: AtomicU64,
     pub(crate) pli_idr_ms_max: AtomicU64,
@@ -307,6 +309,7 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     jb_boost: AtomicU64::new(0),
     jb_depth: AtomicU64::new(0),
     jb_absorbed: AtomicU64::new(0),
+    jb_target: AtomicU64::new(0),
     // PLI→IDR latency metrics (Task D).
     pli_idr_ms_last: AtomicU64::new(0),
     pli_idr_ms_max: AtomicU64::new(0),
@@ -455,6 +458,7 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         jb_boost: METRICS.jb_boost.load(Ordering::Relaxed),
         jb_depth: METRICS.jb_depth.load(Ordering::Relaxed),
         jb_absorbed: METRICS.jb_absorbed.swap(0, Ordering::Relaxed),
+        jb_target: METRICS.jb_target.load(Ordering::Relaxed),
         damaged_dropped: METRICS.damaged_dropped.swap(0, Ordering::Relaxed),
         rtp_abandons: METRICS.rtp_abandons.swap(0, Ordering::Relaxed),
         rtp_wait_drops: METRICS.rtp_wait_drops.swap(0, Ordering::Relaxed),
@@ -517,6 +521,7 @@ pub(crate) fn reset_session_metrics() {
     METRICS.rtp_assembly_count.store(0, Ordering::Relaxed);
     METRICS.rtp_assembly_max_us.store(0, Ordering::Relaxed);
     METRICS.jb_absorbed.store(0, Ordering::Relaxed);
+    METRICS.jb_target.store(0, Ordering::Relaxed);
     METRICS.damaged_dropped.store(0, Ordering::Relaxed);
     METRICS.decode_us.store(0, Ordering::Relaxed);
     METRICS.pipeline_age_us.store(0, Ordering::Relaxed);

@@ -15,6 +15,7 @@ menu-logout = Выйти из Microsoft
 settings-cloud = Облако
 settings-home = Дом
 settings-locale = Язык/регион
+settings-color-profile = Цветовой профиль: { $mode }
 settings-game = Настройки игры
 settings-swap-shoulders-triggers = Поменять L1/L2 и R1/R2
 settings-front-touch-auxiliary-buttons = Использовать передний экран для L2/R2/L3/R3 вместо мыши
@@ -83,3 +84,11 @@ error-technical-details = Технические сведения: { $error }
 
 error-no-wifi = Соединение Wi-Fi не обнаружено
 error-no-wifi-details = Подключите PS Vita к сети Wi-Fi и повторите попытку.
+
+error-stream-ended-by-console = Поток завершён консолью
+error-class-auth = Вход истёк или отклонён — войдите снова
+error-class-ratelimit = Слишком много запросов — повторите через несколько минут
+error-class-server = В службе Xbox возникли проблемы — попробуйте позже
+error-class-timeout = Истекло время ожидания запроса — проверьте соединение Wi-Fi
+error-class-dns = Не удалось определить адрес сервера — проверьте соединение Wi-Fi
+error-class-network = Сбой сетевого подключения — проверьте соединение Wi-Fi

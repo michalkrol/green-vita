@@ -15,6 +15,7 @@ menu-logout = Logga ut från Microsoft
 settings-cloud = Moln
 settings-home = Hem
 settings-locale = Språk/region
+settings-color-profile = Färgprofil: { $mode }
 settings-game = Spelinställningar
 settings-swap-shoulders-triggers = Byt L1/L2 och R1/R2
 settings-front-touch-auxiliary-buttons = Använd främre pekskärmen för L2/R2/L3/R3 i stället för mus
@@ -83,3 +84,11 @@ error-technical-details = Tekniska detaljer: { $error }
 
 error-no-wifi = Ingen Wi-Fi-anslutning upptäcktes
 error-no-wifi-details = Anslut PS Vita till ett Wi-Fi-nätverk och försök igen.
+
+error-stream-ended-by-console = Strömmen avslutades av konsolen
+error-class-auth = Inloggningen har upphört eller avvisades — logga in igen
+error-class-ratelimit = För många förfrågningar — försök igen om några minuter
+error-class-server = Xbox-tjänsten har problem — försök igen senare
+error-class-timeout = Förfrågan fick timeout — kontrollera Wi-Fi-anslutningen
+error-class-dns = Kunde inte hitta serveradressen — kontrollera Wi-Fi-anslutningen
+error-class-network = Nätverksanslutningen misslyckades — kontrollera Wi-Fi-anslutningen
