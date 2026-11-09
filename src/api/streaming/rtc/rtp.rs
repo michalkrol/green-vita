@@ -47,7 +47,7 @@ const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
 /// console's delay control clamps this 2.4 GHz link). Revisit only with
 /// Chrome's cadence numbers (pcap: ~60 ms — matched 2026-11-01) and a reason.
 /// 2026-11-01: interval 100→60 ms to match Chrome's measured 14.4 TWCC/s cadence (chrome-dumps/README); enabled for the bad-link A/B.
-pub(crate) const MANUAL_TWCC: bool = true;
+pub(crate) const MANUAL_TWCC: bool = false;
 
 #[derive(Default)]
 pub(crate) struct VideoSampleStats {
