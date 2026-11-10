@@ -25,7 +25,7 @@ tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 unic-langid = "0.9"
 uuid = { version = "1", features = ["v4", "serde"] }
 vita-newlib-shims = "0.3"
-vitasdk-sys = { version = "0.3", features = ["SceAppUtil_stub", "SceKernelDmacMgr_stub", "SceKernelThreadMgr_stub", "SceLibKernel_stub", "SceNetCtl_stub", "ScePower_stub", "SceProcessmgr_stub", "SceVideodec_stub", "SceSysmem_stub", "SceSysmodule_stub"] }
+vitasdk-sys = { version = "0.3", features = ["SceAppUtil_stub", "SceCtrl_stub", "SceKernelDmacMgr_stub", "SceKernelThreadMgr_stub", "SceLibKernel_stub", "SceNetCtl_stub", "ScePower_stub", "SceProcessmgr_stub", "SceShellSvc_stub", "SceVideodec_stub", "SceSysmem_stub", "SceSysmodule_stub"] }
 
 [patch.crates-io]
 ring = { git = "https://github.com/vita-rust/ring.git", branch = "v0.17.14-vita" }
@@ -35,3 +35,11 @@ rtc-shared = { git = "https://github.com/Day-OS/rtc.git", branch = "vita" }
 title_id = "GREENVITA"
 title_name = "GreenVita"
 assets = "static"
+# PS-button capture flags — FULL moonlight pair required (device-proven
+# 2026-11-09): with only "-at 0x0E" the PS bit is invisible to ctrl peeks and
+# sceShellUtilLock does not suppress the shell's Quick Menu path, so capture
+# is dead. The AuthID (-a 0x2800000000000001 = SceShell) is required — and it
+# breaks SceAppUtil SafeMemory persistence, so the token-encryption key has a
+# file fallback (src/api_xbox/auth.rs). Key REPLACES cargo-vita's default
+# ["-s"] — never combine with "-s".
+vita_make_fself_flags = ["-a", "0x2800000000000001", "-at", "0x0E"]

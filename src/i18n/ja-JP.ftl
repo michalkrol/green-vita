@@ -92,3 +92,6 @@ error-class-server = Xbox サービスに問題が発生しています — 後�
 error-class-timeout = リクエストがタイムアウトしました — Wi-Fi 接続を確認してください
 error-class-dns = サーバーのアドレスを解決できませんでした — Wi-Fi 接続を確認してください
 error-class-network = ネットワーク接続に失敗しました — Wi-Fi 接続を確認してください
+
+paused-reconnect = ストリームを再接続
+stalled-banner = アイドル中にストリームが停止しました — 本体が映像を送信していません。「再開」で復帰する場合もあります。しなければ再接続してください。

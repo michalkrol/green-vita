@@ -9,9 +9,15 @@ const CLIENT_ID: &str = "1f907974-e22b-4810-a9de-d9647380c97e";
 const OAUTH_SCOPE: &str = "xboxlive.signin openid profile offline_access";
 const TOKEN_STORE_DIR: &str = "ux0:data/xcloud-rust";
 const TOKEN_STORE_PATH: &str = "ux0:data/xcloud-rust/xcloud-tokens.json";
+// File fallback for the token key: the SceShell fself authid (PS-button capture,
+// Cargo.toml vita_make_fself_flags) breaks SafeMemory persistence across process
+// restarts, so the key also lives on the memory card - a conscious at-rest
+// security tradeoff (documented in HOME-BUTTON-BRAINSTORM.md §11).
+const TOKEN_KEY_PATH: &str = "ux0:data/xcloud-rust/token-key.json";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TOKEN_STORE_VERSION: u8 = 1;
 const TOKEN_KEY_MAGIC: &[u8; 8] = b"GVTKEY01";
+const TOKEN_KEY_FILE_MAGIC: &[u8; 8] = b"GVTKEYF1";
 const TOKEN_KEY_SIZE: usize = 32;
 const TOKEN_KEY_RECORD_SIZE: usize = TOKEN_KEY_MAGIC.len() + TOKEN_KEY_SIZE;
 const TOKEN_KEY_OFFSET: i64 = 0;
@@ -98,6 +104,15 @@ struct LegacyTokenStoreData {
 enum StoredTokenData {
     Encrypted(TokenStoreData),
     Legacy(LegacyTokenStoreData),
+}
+
+/// On-disk fallback record for the token key (`token-key.json`), so decryption
+/// still works when Safe Memory lost the key (SceShell fself identity).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct TokenKeyFileData {
+    magic: String,
+    version: u32,
+    key: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -235,7 +250,7 @@ impl MsalAuth {
         self.refresh_token = None;
         let _ = std::fs::remove_file(TOKEN_STORE_PATH);
         if let Err(error) = clear_token_key() {
-            eprintln!("Could not clear xCloud login key from Safe Memory: {error:#}");
+            eprintln!("Could not clear xCloud login key: {error:#}");
         }
     }
 
@@ -658,16 +673,25 @@ fn decrypt_refresh_token(data: &TokenStoreData) -> Result<String> {
         .try_into()
         .map_err(|_| anyhow::anyhow!("invalid xCloud token nonce length"))?;
     let mut ciphertext = decode_hex(&data.ciphertext).context("invalid xCloud ciphertext")?;
-    let key = load_token_key()?;
-    let cipher = token_cipher(&key)?;
-    let plaintext = cipher
-        .open_in_place(
+    // Safe Memory first, then the key file; the AEAD tag cleanly rejects a wrong
+    // candidate, so the first key that authenticates wins.
+    let candidates = token_key_candidates();
+    if candidates.is_empty() {
+        bail!("no xCloud token key available in Safe Memory or key file");
+    }
+    for key in &candidates {
+        let cipher = token_cipher(key)?;
+        let mut buffer = ciphertext.clone();
+        if let Ok(plaintext) = cipher.open_in_place(
             Nonce::assume_unique_for_key(nonce),
             Aad::from(TOKEN_AAD),
-            &mut ciphertext,
-        )
-        .map_err(|_| anyhow::anyhow!("xCloud token authentication failed"))?;
-    String::from_utf8(plaintext.to_vec()).context("decrypted xCloud token is not UTF-8")
+            &mut buffer,
+        ) {
+            return String::from_utf8(plaintext.to_vec())
+                .context("decrypted xCloud token is not UTF-8");
+        }
+    }
+    bail!("xCloud token authentication failed")
 }
 
 fn token_cipher(key: &[u8; TOKEN_KEY_SIZE]) -> Result<LessSafeKey> {
@@ -687,7 +711,13 @@ fn load_token_key() -> Result<[u8; TOKEN_KEY_SIZE]> {
 }
 
 fn load_or_create_token_key() -> Result<[u8; TOKEN_KEY_SIZE]> {
+    // Safe Memory is authoritative while it works: even when the fallback file
+    // holds a different key, new encryptions follow Safe Memory (the decrypt
+    // candidate order still accepts tokens sealed with the file key).
     if let Ok(key) = load_token_key() {
+        return Ok(key);
+    }
+    if let Some(key) = load_file_token_key() {
         return Ok(key);
     }
     let mut key = [0u8; TOKEN_KEY_SIZE];
@@ -697,12 +727,60 @@ fn load_or_create_token_key() -> Result<[u8; TOKEN_KEY_SIZE]> {
     let mut record = [0u8; TOKEN_KEY_RECORD_SIZE];
     record[..TOKEN_KEY_MAGIC.len()].copy_from_slice(TOKEN_KEY_MAGIC);
     record[TOKEN_KEY_MAGIC.len()..].copy_from_slice(&key);
-    crate::safe_memory::save(TOKEN_KEY_OFFSET, &record)?;
+    // Best-effort: saving may fail under the SceShell fself identity.
+    let _ = crate::safe_memory::save(TOKEN_KEY_OFFSET, &record);
+    // The file is the reliable store; a new key that cannot be persisted there
+    // would be lost on restart, so bail instead of silently degrading.
+    persist_token_key_file(&key)?;
     Ok(key)
 }
 
 fn clear_token_key() -> Result<()> {
-    crate::safe_memory::save(TOKEN_KEY_OFFSET, &[0u8; TOKEN_KEY_RECORD_SIZE])
+    let _ = crate::safe_memory::save(TOKEN_KEY_OFFSET, &[0u8; TOKEN_KEY_RECORD_SIZE]);
+    match std::fs::remove_file(TOKEN_KEY_PATH) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(error).context("failed to remove xCloud token key file")
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Reads the fallback key file, `None` when missing, corrupt, or mistyped.
+fn load_file_token_key() -> Option<[u8; TOKEN_KEY_SIZE]> {
+    let file = std::fs::File::open(TOKEN_KEY_PATH).ok()?;
+    let data: TokenKeyFileData = serde_json::from_reader(file).ok()?;
+    if data.magic.as_bytes() != TOKEN_KEY_FILE_MAGIC
+        || data.version != u32::from(TOKEN_STORE_VERSION)
+    {
+        return None;
+    }
+    let key = decode_hex(&data.key).ok()?;
+    key.try_into().ok()
+}
+
+fn persist_token_key_file(key: &[u8; TOKEN_KEY_SIZE]) -> Result<()> {
+    let data = TokenKeyFileData {
+        magic: String::from_utf8_lossy(TOKEN_KEY_FILE_MAGIC).into_owned(),
+        version: u32::from(TOKEN_STORE_VERSION),
+        key: encode_hex(key),
+    };
+    ensure_token_store_dir()?;
+    crate::fs_utils::write_file_truncating(TOKEN_KEY_PATH, serde_json::to_string_pretty(&data)?)
+        .context("failed to persist xCloud token key file")
+}
+
+/// Every key store that currently holds a plausible token key, in decrypt order.
+fn token_key_candidates() -> Vec<[u8; TOKEN_KEY_SIZE]> {
+    let mut candidates = Vec::with_capacity(2);
+    if let Ok(key) = load_token_key() {
+        candidates.push(key);
+    }
+    if let Some(key) = load_file_token_key() {
+        if !candidates.contains(&key) {
+            candidates.push(key);
+        }
+    }
+    candidates
 }
 
 fn encode_hex(bytes: &[u8]) -> String {

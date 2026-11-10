@@ -92,3 +92,6 @@ error-class-server = Xbox hizmetinde sorun var — daha sonra tekrar deneyin
 error-class-timeout = İstek zaman aşımına uğradı — Wi-Fi bağlantısını kontrol edin
 error-class-dns = Sunucu adresi çözümlenemedi — Wi-Fi bağlantısını kontrol edin
 error-class-network = Ağ bağlantısı başarısız oldu — Wi-Fi bağlantısını kontrol edin
+
+paused-reconnect = Yayını yeniden bağla
+stalled-banner = Etkinlik yokluğunda yayın durdu — konsol video göndermeyi bıraktı. Devam etmek kurtarabilir; olmazsa yeniden bağlanın.

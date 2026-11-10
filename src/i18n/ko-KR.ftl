@@ -92,3 +92,6 @@ error-class-server = Xbox 서비스에 문제가 있습니다 — 나중에 다�
 error-class-timeout = 요청 시간이 초과되었습니다 — Wi-Fi 연결을 확인해 주세요
 error-class-dns = 서버 주소를 확인할 수 없습니다 — Wi-Fi 연결을 확인해 주세요
 error-class-network = 네트워크 연결에 실패했습니다 — Wi-Fi 연결을 확인해 주세요
+
+paused-reconnect = 스트림 다시 연결
+stalled-banner = 대기 중 스트림이 중단되었습니다 — 콘솔이 영상 전송을 중지했습니다. 다시 시작으로 복구될 수 있으며, 안 되면 다시 연결하세요.

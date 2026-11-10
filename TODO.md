@@ -183,3 +183,31 @@
     (d) After (a)+(b): a full robustness sweep of every `unwrap`/`expect`
     on session/network paths. — still open (deferred by design; census so
     far: session paths are clean, SDP parsing holds most of the unwraps).
+17. **Idle/screensaver stale-stream handling (2026-11-09, user report).**
+    Symptom: leave the Vita idle mid-stream (game paused, console enters its
+    screensaver/clock after a few minutes) → the stream goes stale and never
+    recovers; the only way out was Exit + manual reconnect.
+    INVESTIGATION (why preservation is not possible client-side): neutral
+    gamepad frames ALREADY flow every 50 ms while idle
+    (GAMEPAD_REFRESH_INTERVAL, worker.rs send_sampled_gamepad_frame) and the
+    HTTP keepalive runs every 30 s — the console's idle/screensaver state
+    ignores both. Once dark, it stops sending video and (observed) never
+    resumes; there is no wake/remote-control API for the screensaver state.
+    Faking input to prevent idling was rejected (unwanted game input).
+    MECHANISM IMPLEMENTED (0.3.2):
+    - Stall detection: no decoded frame for 20 s (STREAM_STALL_THRESHOLD;
+      healthy floors send frames even on static scenes) → one guide-button
+      wake pulse (press_guide_button) as the preservation attempt.
+    - If media resumes: stall clears, auto-opened overlay closes itself.
+    - If not: the pause overlay auto-opens focused on a new "Reconnect
+      stream" entry (index 1) with a localized amber banner explaining the
+      stall — one Confirm press tears down the dead session and restarts
+      the SAME console/title through the normal StartingStream flow
+      (App::reconnect_stream; target rebuilt from return_target + service
+      lists; cleanup_active_sessions makes the server-side stop
+      idempotent).
+    - rtc worker: RTCPeerConnectionState::Failed now exits the pump loop
+      as terminal (Closed already did); Disconnected stays recoverable.
+    DEVICE VERIFY PENDING: idle → screensaver → pick up Vita → expect the
+    banner + one-button reconnect; also confirm the wake pulse alone
+    sometimes recovers (Resume then works).

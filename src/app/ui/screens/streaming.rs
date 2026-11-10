@@ -103,7 +103,12 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
 }
 
 /// Fullscreen video view with debug overlays.
-pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
+pub(crate) fn show(
+    ctx: &egui::Context,
+    app: &App,
+    hold_progress: Option<f32>,
+    ps_hold_hint: bool,
+) {
     const HINT_VISIBLE: std::time::Duration = std::time::Duration::from_secs(2);
     const HINT_FADE: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -379,6 +384,35 @@ match app.settings.stream_debug_mode {
             .anchor(egui::Align2::LEFT_TOP, egui::vec2(16.0, 16.0))
             .show(ctx, |ui| {
                 draw_hold_progress_ring(ui, progress);
+            });
+    }
+
+    // PS button held (capture on, stream live): show a small hint for as
+    // long as the button is down — once the hold-arm has unlocked the shell
+    // (>= 600 ms), releasing the button alone reaches the Vita home screen.
+    if ps_hold_hint {
+        egui::Area::new(egui::Id::new("ps_hold_hint"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
+            .show(ctx, |ui| {
+                let painter = ui.painter();
+                let text = i18n.text("streaming-ps-hold-hint");
+                let font_id = FontId::proportional(14.0);
+                let text_size = painter
+                    .layout_no_wrap(text.clone(), font_id.clone(), egui::Color32::WHITE)
+                    .size();
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    text_size + egui::vec2(16.0, 10.0),
+                );
+                painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(128));
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    text,
+                    font_id,
+                    egui::Color32::WHITE,
+                );
             });
     }
     });

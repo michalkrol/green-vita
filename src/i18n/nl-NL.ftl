@@ -92,3 +92,6 @@ error-class-server = De Xbox-service heeft problemen — probeer het later opnie
 error-class-timeout = Het verzoek duurde te lang — controleer de wifi-verbinding
 error-class-dns = Kon het serveradres niet oplossen — controleer de wifi-verbinding
 error-class-network = Netwerkverbinding mislukt — controleer de wifi-verbinding
+
+paused-reconnect = Stream opnieuw verbinden
+stalled-banner = Stream vastgelopen door inactiviteit — de console stuurt geen video meer. Hervatten kan herstellen; anders opnieuw verbinden.

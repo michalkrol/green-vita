@@ -92,3 +92,6 @@ error-class-server = Xbox-tjänsten har problem — försök igen senare
 error-class-timeout = Förfrågan fick timeout — kontrollera Wi-Fi-anslutningen
 error-class-dns = Kunde inte hitta serveradressen — kontrollera Wi-Fi-anslutningen
 error-class-network = Nätverksanslutningen misslyckades — kontrollera Wi-Fi-anslutningen
+
+paused-reconnect = Återanslut strömmen
+stalled-banner = Strömmen stannade vid inaktivitet — konsolen slutade skicka video. Återuppta kan återställa den; annars återanslut.

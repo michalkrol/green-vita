@@ -92,3 +92,6 @@ error-class-server = Xbox 服務出現問題 — 請稍後重試
 error-class-timeout = 請求逾時 — 請檢查 Wi-Fi 連線
 error-class-dns = 無法解析伺服器位址 — 請檢查 Wi-Fi 連線
 error-class-network = 網路連線失敗 — 請檢查 Wi-Fi 連線
+
+paused-reconnect = 重新連接串流
+stalled-banner = 串流因閒置而中斷 — 主機已停止傳送畫面。「繼續」可能復原；否則請重新連線。

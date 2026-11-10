@@ -187,6 +187,10 @@ pub struct Settings {
     /// IDR on severe damage; Quality sheds on every damaged frame
     /// (artefact-free, micro-freeze per event). See DamagePolicy.
     pub damage_policy: DamagePolicy,
+    /// Manual 60ms TWCC feedback cadence (per-packet transport-wide congestion
+    /// reports to the console); helps lossy links, can regress good ones.
+    /// Applies live — the per-packet gate reads the atomic every packet.
+    pub manual_twcc_60ms: bool,
     /// Decode-bank depth profile (item 15): Fast = shallow bank (target 0,
     /// bursts shed or conceal — minimal floor); Smooth = deep bank (target 6,
     /// hard cap 12 ≈ +100–200 ms floor) — bursts and damage-shed stalls
@@ -207,6 +211,9 @@ pub struct Settings {
     /// When true, latency test mode is active - shows a blinking square and stopwatch
     /// on button press to measure glass-to-glass latency with a phone camera.
     pub latency_test_mode: bool,
+    /// Capture the PS button while streaming (tap = Xbox guide, hold =
+    /// Vita menu passthrough); experimental.
+    pub ps_button_capture: bool,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -240,11 +247,13 @@ impl Default for Settings {
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
             damage_policy: DamagePolicy::default(),
+            manual_twcc_60ms: false,
             latency_profile: LatencyProfile::default(),
             color_profile: ColorProfile::default(),
             periodic_keyframe: true,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,
+            ps_button_capture: false,
             game_profiles: HashMap::new(),
         }
     }

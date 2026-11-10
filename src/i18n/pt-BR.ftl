@@ -92,3 +92,6 @@ error-class-server = O serviço Xbox está com problemas — tente novamente mai
 error-class-timeout = A solicitação expirou — verifique a conexão Wi-Fi
 error-class-dns = Não foi possível resolver o endereço do servidor — verifique a conexão Wi-Fi
 error-class-network = Falha na conexão de rede — verifique a conexão Wi-Fi
+
+paused-reconnect = Reconectar a transmissão
+stalled-banner = Transmissão interrompida por inatividade — o console parou de enviar vídeo. Retomar pode recuperá-la; caso contrário, reconecte.

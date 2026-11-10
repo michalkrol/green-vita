@@ -115,6 +115,9 @@ impl App {
             },
             std::sync::atomic::Ordering::Relaxed,
         );
+        // Manual TWCC (2c): settings → stream start → the per-packet gate in
+        // rtp::receive + media::send_twcc.
+        crate::api::streaming::rtc::rtp::set_manual_twcc(self.settings.manual_twcc_60ms);
         // Latency profile (item 15): settings → stream start → the decode
         // bank admission limit (Fast = shallow, Smooth = deep).
         crate::streaming::video::worker::LATENCY_PROFILE.store(
