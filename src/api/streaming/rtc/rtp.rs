@@ -23,7 +23,7 @@ use rtc::rtp::codec::opus::OpusPacket;
 #[cfg(test)]
 use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 #[cfg(test)]
 use std::time::Duration;
@@ -46,8 +46,15 @@ const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
 /// bw med 1195 vs 8385cbc's 1 / 5094; encoding proven valid 2544980 — the
 /// console's delay control clamps this 2.4 GHz link). Revisit only with
 /// Chrome's cadence numbers (pcap: ~60 ms — matched 2026-11-01) and a reason.
-/// 2026-11-01: interval 100→60 ms to match Chrome's measured 14.4 TWCC/s cadence (chrome-dumps/README); enabled for the bad-link A/B.
-pub(crate) const MANUAL_TWCC: bool = false;
+/// 2026-11-01: interval 100→60 ms to match Chrome's measured 14.4 TWCC/s cadence (chrome-dumps/README); bad-link A/B (metrics-b4f27d5-twcc60-*): 3.2× less frame damage, but regressions on good links — default off.
+/// Runtime-switchable (settings manual_twcc_60ms → set_manual_twcc): read
+/// per packet with Relaxed, applies live mid-stream without reconnecting.
+pub(crate) static MANUAL_TWCC: AtomicBool = AtomicBool::new(false);
+
+/// Store the manual-TWCC master switch (settings checkbox / stream start).
+pub(crate) fn set_manual_twcc(enabled: bool) {
+    MANUAL_TWCC.store(enabled, Ordering::Relaxed);
+}
 
 #[derive(Default)]
 pub(crate) struct VideoSampleStats {
@@ -340,8 +347,9 @@ impl VideoRtp {
             // verified against rtc-rtp's TransportCcExtension::unmarshal)
             // and feed the vendored Recorder — flag-gated so record+send
             // flip together (false = 8385cbc: annotation observed, nothing
-            // sent). Arrival on the SHADOW_CLOCK timeline the CSV uses.
-            if MANUAL_TWCC
+            // sent). Runtime-switchable: per-packet Relaxed read, applies
+            // live mid-stream. Arrival on the SHADOW_CLOCK timeline the CSV uses.
+            if MANUAL_TWCC.load(Ordering::Relaxed)
                 && let Some(twcc_seq) = parse_transport_wide_seq(&ext.payload[..])
             {
                 // Stamp with TRUE socket arrival (seq-tagged FIFO fed by the

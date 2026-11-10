@@ -23,6 +23,8 @@ settings-rear-touch-enabled = Enable rear touch controls
 settings-cloud-host = Cloud host: { $host }
 settings-home-host = Home host: { $host }
 settings-stream-debug-info = Show streaming debug info
+settings-manual-twcc = Manual TWCC feedback
+settings-manual-twcc-sub = 60ms cadence — helps lossy links, can regress good ones (applies at next stream start; experimental)
 settings-ps-button-capture-sub = Tap = Xbox guide · Hold = Vita menu (experimental)
 action-back = Back
 

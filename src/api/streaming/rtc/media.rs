@@ -469,7 +469,7 @@ impl VideoReceiver {
     /// the offer carried no extmaps at all).
     /// 2026-11-01: 60 ms = Chrome pcap cadence (chrome-dumps/README), was 100 ms.
     pub(crate) fn send_twcc(&mut self, peer: &mut RTCPeerConnection, now: Instant) {
-        if !rtp::MANUAL_TWCC {
+        if !rtp::MANUAL_TWCC.load(Ordering::Relaxed) {
             return;
         }
         let (Some(receiver_id), Some(_ssrc)) = (self.receiver_id, self.ssrc) else {

@@ -29,6 +29,8 @@ settings-video-bitrate-cap = Bitrate cap: { $kbps } kbps
 settings-video-bitrate-nocap = Bitrate cap: none (unlimited)
 settings-video-h264-profile = H264 profile: { $profile }
 settings-periodic-keyframe = Periodic keyframe (clear artifacts)
+settings-manual-twcc = Manual TWCC feedback
+settings-manual-twcc-sub = 60ms cadence — helps lossy links, can regress good ones (applies at next stream start; experimental)
 settings-instream-controls = In-stream controls
 settings-ps-button-capture = Capture PS button
 settings-ps-button-capture-sub = Tap = Xbox guide · Hold = Vita menu (experimental)

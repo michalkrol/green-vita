@@ -27,6 +27,7 @@ pub enum Command {
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
     SetDamagePolicy(crate::settings::DamagePolicy),
+    SetManualTwcc(bool),
     SetLatencyProfile(crate::settings::LatencyProfile),
     SetColorProfile(crate::settings::ColorProfile),
     SetPeriodicKeyframe(bool),
@@ -46,6 +47,7 @@ enum SettingsRow {
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
     DamagePolicy(crate::settings::DamagePolicy),
+    ManualTwcc(bool),
     LatencyProfile(crate::settings::LatencyProfile),
     ColorProfile(crate::settings::ColorProfile),
     PeriodicKeyframe(bool),
@@ -101,6 +103,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
     rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
+    rows.push(SettingsRow::ManualTwcc(app.settings.manual_twcc_60ms));
     rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
     rows.push(SettingsRow::ColorProfile(app.settings.color_profile));
     rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
@@ -365,6 +368,22 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     }
                 }
                 row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.manual_twcc_60ms,
+                    i18n.text("settings-manual-twcc"),
+                ) {
+                    commands.push(Command::SetManualTwcc(!app.settings.manual_twcc_60ms).into());
+                }
+                row_index += 1;
+                ui.colored_label(
+                    theme.text,
+                    egui::RichText::new(i18n.text("settings-manual-twcc-sub")).size(14.0),
+                );
 
                 ui.add_space(14.0);
                 ui.separator();
@@ -676,6 +695,9 @@ impl App {
                 };
                 return self.handle_settings_command(Command::SetDamagePolicy(next));
             }
+            SettingsRow::ManualTwcc(enabled) => {
+                return self.handle_settings_command(Command::SetManualTwcc(!enabled));
+            }
             SettingsRow::LatencyProfile(profile) => {
                 let next = match profile {
                     crate::settings::LatencyProfile::Fast => {
@@ -815,6 +837,15 @@ impl App {
                     },
                     std::sync::atomic::Ordering::Relaxed,
                 );
+            }
+            Command::SetManualTwcc(enabled) => {
+                self.settings.manual_twcc_60ms = enabled;
+                self.settings.save();
+                // NOT live — applies at next stream start (connection.rs
+                // re-stores the atomic per session). Toggling mid-stream
+                // punches a hole in the console's transport-wide sequence
+                // view: it reads the gap as catastrophic loss and clamps to
+                // a few fps until reconnect (device-observed 2026-11-10).
             }
             Command::SetLatencyProfile(profile) => {
                 self.settings.latency_profile = profile;
