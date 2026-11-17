@@ -133,6 +133,19 @@ pub enum DamagePolicy {
     Quality,
 }
 
+/// number of remmebered bypass IPs
+pub const REGION_BYPASS_HISTORY_LIMIT: usize = 5;
+
+/// returns `None` for anything that is not a valid IPv4/IPv6 address.
+pub fn parse_region_bypass_ip(input: &str) -> Option<String> {
+    input
+        .trim()
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .filter(|ip| !ip.is_unspecified() && !ip.is_loopback())
+        .map(|ip| ip.to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -168,6 +181,14 @@ pub struct Settings {
     /// When true, latency test mode is active - shows a blinking square and stopwatch
     /// on button press to measure glass-to-glass latency with a phone camera.
     pub latency_test_mode: bool,
+    /// xCloud region-restriction bypass: when set,
+    /// the GSSV cloud login carries this public IP as `X-Forwarded-For`, so xCloud
+    /// treats the account as if it were in that IP's country. `None` = off (default);
+    /// opt-in only, because it spoofs the account's location.
+    pub region_bypass_ip: Option<String>,
+    /// Bypass IPs that produced a working xCloud sign-in, most recent first,
+    /// capped at [`REGION_BYPASS_HISTORY_LIMIT`].
+    pub region_bypass_history: Vec<String>,
     pub game_profiles: HashMap<String, GameProfile>,
 }
 
@@ -204,12 +225,46 @@ impl Default for Settings {
             periodic_keyframe: true,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,
+            region_bypass_ip: None,
+            region_bypass_history: Vec::new(),
             game_profiles: HashMap::new(),
         }
     }
 }
 
 impl Settings {
+    pub fn active_region_bypass_ip(&self) -> Option<String> {
+        self.region_bypass_ip
+            .as_deref()
+            .and_then(parse_region_bypass_ip)
+    }
+
+    pub fn region_bypass_choices(&self) -> Vec<Option<String>> {
+        let mut choices = vec![None];
+        for ip in self.region_bypass_ip.iter().chain(&self.region_bypass_history) {
+            if !choices.iter().any(|c| c.as_deref() == Some(ip.as_str())) {
+                choices.push(Some(ip.clone()));
+            }
+        }
+        choices
+    }
+
+    pub fn next_region_bypass_choice(&self) -> Option<String> {
+        let choices = self.region_bypass_choices();
+        let index = choices
+            .iter()
+            .position(|c| *c == self.region_bypass_ip)
+            .unwrap_or(0);
+        choices[(index + 1) % choices.len()].clone()
+    }
+
+    pub fn remember_region_bypass_ip(&mut self, ip: &str) {
+        self.region_bypass_history.retain(|known| known != ip);
+        self.region_bypass_history.insert(0, ip.to_owned());
+        self.region_bypass_history
+            .truncate(REGION_BYPASS_HISTORY_LIMIT);
+    }
+
     pub fn game_profile(&self, title_id: &str) -> Option<&GameProfile> {
         self.game_profiles.get(title_id)
     }
@@ -265,5 +320,49 @@ impl Settings {
         if let Err(error) = result {
             eprintln!("Settings: failed to save: {error:#}");
         }
+    }
+}
+
+#[cfg(test)]
+mod region_bypass_tests {
+    use super::*;
+
+    #[test]
+    fn parses_and_normalises_ips() {
+        assert_eq!(parse_region_bypass_ip(" 1.2.3.4 ").as_deref(), Some("1.2.3.4"));
+        assert_eq!(parse_region_bypass_ip("2001:DB8::1").as_deref(), Some("2001:db8::1"));
+        assert_eq!(parse_region_bypass_ip("1.2.3"), None);
+        assert_eq!(parse_region_bypass_ip("0.0.0.0"), None);
+        assert_eq!(parse_region_bypass_ip("127.0.0.1"), None);
+        assert_eq!(parse_region_bypass_ip(""), None);
+    }
+
+    #[test]
+    fn cycles_off_active_then_history() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.next_region_bypass_choice(), None);
+
+        settings.region_bypass_history = vec!["1.1.1.1".into(), "2.2.2.2".into()];
+        settings.region_bypass_ip = Some("2.2.2.2".into());
+        // active IP already in history: no duplicate choice.
+        assert_eq!(settings.region_bypass_choices().len(), 3);
+        assert_eq!(settings.next_region_bypass_choice().as_deref(), Some("1.1.1.1"));
+
+        settings.region_bypass_ip = Some("1.1.1.1".into());
+        assert_eq!(settings.next_region_bypass_choice(), None);
+        settings.region_bypass_ip = None;
+        assert_eq!(settings.next_region_bypass_choice().as_deref(), Some("1.1.1.1"));
+    }
+
+    #[test]
+    fn history_is_most_recent_first_and_capped() {
+        let mut settings = Settings::default();
+        for i in 0..7 {
+            settings.remember_region_bypass_ip(&format!("10.0.0.{i}"));
+        }
+        settings.remember_region_bypass_ip("10.0.0.4");
+        assert_eq!(settings.region_bypass_history.len(), REGION_BYPASS_HISTORY_LIMIT);
+        assert_eq!(settings.region_bypass_history[0], "10.0.0.4");
+        assert_eq!(settings.region_bypass_history[1], "10.0.0.6");
     }
 }
