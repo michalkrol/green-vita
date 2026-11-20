@@ -58,7 +58,7 @@ pub async fn run(mut app: App) -> Result<()> {
     let mut held_direction: Option<InputCommand> = None;
     let mut held_direction_since = Instant::now();
     let mut last_direction_repeat_at = Instant::now();
-    let mut vita_ime_active = false;
+    let mut vita_ime_target: Option<crate::app::ImeTarget> = None;
     let mut vita_ime_pending = None;
 
     loop {

@@ -94,8 +94,12 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     if title_id.is_none() {
         rows.push(SettingsRow::SwapShouldersTriggers(app.settings.swap_shoulders_and_triggers));
     }
-    rows.push(SettingsRow::RegionBypass);
-    rows.push(SettingsRow::RegionBypassEnterIp);
+    // Region bypass is an account-level (global) setting, not per-title; like
+    // SwapShouldersTriggers it only shows on the global settings screen.
+    if title_id.is_none() {
+        rows.push(SettingsRow::RegionBypass);
+        rows.push(SettingsRow::RegionBypassEnterIp);
+    }
     rows.push(SettingsRow::StreamDebug(app.settings.stream_debug_mode));
     rows.push(SettingsRow::LatencyTest(app.settings.latency_test_mode));
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
@@ -264,10 +268,15 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     ),
                 );
 
-                ui.add_space(14.0);
-                ui.separator();
-                {
-                    let label = match app.settings.region_bypass_ip.as_deref() {
+                // Region bypass is account-level (global): hidden on the
+                // per-title profile screen, mirroring `settings_rows`.
+                if title_id.is_none() {
+                    ui.add_space(14.0);
+                    ui.separator();
+                    // The row shows the effective (validated) value, so a
+                    // hand-edited invalid entry displays as Off — matching
+                    // what sign-in will actually do.
+                    let label = match app.settings.active_region_bypass_ip().as_deref() {
                         Some(ip) => {
                             let mut args = FluentArgs::new();
                             args.set("ip", arg_string(ip));

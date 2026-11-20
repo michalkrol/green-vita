@@ -133,7 +133,7 @@ pub enum DamagePolicy {
     Quality,
 }
 
-/// number of remmebered bypass IPs
+/// number of remembered bypass IPs
 pub const REGION_BYPASS_HISTORY_LIMIT: usize = 5;
 
 /// returns `None` for anything that is not a valid IPv4/IPv6 address.
@@ -239,9 +239,17 @@ impl Settings {
             .and_then(parse_region_bypass_ip)
     }
 
+    /// Cycle order is `[Off, active, …history]`. The active slot uses
+    /// [`Self::active_region_bypass_ip`] (validated), so a hand-edited invalid
+    /// `region_bypass_ip` never enters the choices and the row label always
+    /// reflects what sign-in will actually do.
     pub fn region_bypass_choices(&self) -> Vec<Option<String>> {
         let mut choices = vec![None];
-        for ip in self.region_bypass_ip.iter().chain(&self.region_bypass_history) {
+        for ip in self
+            .active_region_bypass_ip()
+            .iter()
+            .chain(&self.region_bypass_history)
+        {
             if !choices.iter().any(|c| c.as_deref() == Some(ip.as_str())) {
                 choices.push(Some(ip.clone()));
             }
@@ -253,7 +261,7 @@ impl Settings {
         let choices = self.region_bypass_choices();
         let index = choices
             .iter()
-            .position(|c| *c == self.region_bypass_ip)
+            .position(|c| *c == self.active_region_bypass_ip())
             .unwrap_or(0);
         choices[(index + 1) % choices.len()].clone()
     }
@@ -349,7 +357,11 @@ mod region_bypass_tests {
         assert_eq!(settings.next_region_bypass_choice().as_deref(), Some("1.1.1.1"));
 
         settings.region_bypass_ip = Some("1.1.1.1".into());
-        assert_eq!(settings.next_region_bypass_choice(), None);
+        // cycle order is [Off, active, …history]: from the first IP the next is the second
+        assert_eq!(
+            settings.next_region_bypass_choice().as_deref(),
+            Some("2.2.2.2")
+        );
         settings.region_bypass_ip = None;
         assert_eq!(settings.next_region_bypass_choice().as_deref(), Some("1.1.1.1"));
     }
