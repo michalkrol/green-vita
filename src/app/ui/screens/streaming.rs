@@ -62,6 +62,12 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
         let enc = f("enc:");
         let err = f("err:");
         let cs = f("cs:");
+        let rxd = f("rxd:");
+        let rcpu = f("rcpu:");
+        let ui = f("ui:");
+        let uw = f("uw:");
+        let kf = f("kf:");
+        let idr = f("idr:");
 
         const LABEL_WIDTH: usize = 16;
         const VALUE_WIDTH: usize = 8;
@@ -80,9 +86,12 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("SRage:{}ms", srage), format!("SRcoff:{}ms", srcoff)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Resync:{}", rs), format!("Flush:{}", fl)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("TWCC:{}", tw_s), format!("Strd:{}", st)),
-            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Pick:{}us", pick), ""),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Pick:{}us", pick), format!("RxCPU:{}ms", rcpu)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", "Decoder:avcdec", format!("Res:{}", res)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Color:{}", color_val), format!("Err:{}", err_val)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("UIloop:{}ms", ui), format!("UIwork:{}ms", uw)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("KfReq:{}", kf), format!("IDR:{}KB", idr)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("RxdMax:{}", rxd), ""),
         ];
 
         // Free any previously cached rows and store the new ones.

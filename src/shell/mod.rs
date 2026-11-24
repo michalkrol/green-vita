@@ -59,10 +59,23 @@ pub async fn run(mut app: App) -> Result<()> {
     let mut held_direction_since = Instant::now();
     let mut last_direction_repeat_at = Instant::now();
     let mut vita_ime_active = false;
+    // Perf-plan stage 0 probe: start instant of the previous loop iteration.
+    let mut previous_loop_start: Option<Instant> = None;
     let mut vita_ime_pending = None;
 
     loop {
         let loop_started_at = Instant::now();
+        // Perf-plan stage 0 probe (observe-only): loop period (start to start)
+        // and, further below, the work time of this iteration.
+        if let Some(previous) = previous_loop_start {
+            crate::streaming::video::metrics::METRICS
+                .ui_loop_us
+                .store(
+                    loop_started_at.duration_since(previous).as_micros() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+        }
+        previous_loop_start = Some(loop_started_at);
         // Main-thread liveness for the PS-button watchdog (brainstorm §6), even in menus.
         crate::ps_button::bump_heartbeat();
         let mut egui_events = Vec::new();
@@ -295,6 +308,12 @@ pub async fn run(mut app: App) -> Result<()> {
             &clipped_primitives,
             &full_output.textures_delta,
         )?;
+        crate::streaming::video::metrics::METRICS
+            .ui_work_us
+            .store(
+                loop_started_at.elapsed().as_micros() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         let frame_deadline = loop_started_at + TARGET_FRAME_TIME;
         if Instant::now() < frame_deadline {
             while Instant::now() < frame_deadline {

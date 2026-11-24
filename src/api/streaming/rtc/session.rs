@@ -117,6 +117,19 @@ impl<B: RtcSessionBackend> RtcSession<B> {
         // Initialize the RAM-buffered metrics CSV log for this session.
         // It outlives the session so the flush at end sees all rows.
         crate::streaming::video::metrics::init_csv_log();
+        // Perf-plan stage 0 probe: log the clocks the app is really running
+        // at while streaming (the 444 MHz profile is currently compiled out).
+        #[cfg(target_os = "vita")]
+        unsafe {
+            eprintln!(
+                "clocks at session start: arm={} bus={} gpu={} gpu_xbar={} wireless={}",
+                vitasdk_sys::scePowerGetArmClockFrequency(),
+                vitasdk_sys::scePowerGetBusClockFrequency(),
+                vitasdk_sys::scePowerGetGpuClockFrequency(),
+                vitasdk_sys::scePowerGetGpuXbarClockFrequency(),
+                vitasdk_sys::scePowerGetUsingWireless(),
+            );
+        }
         // Initialize the RAM-buffered RTP dump log for this session.
         crate::streaming::video::rtp_dump_log::init_rtp_dump();
         video.reset_lag_anchor();
@@ -332,6 +345,11 @@ impl<B: RtcSessionBackend> RtcSession<B> {
 
         self.recent_keyframe_requests.push(now);
         self.last_keyframe_request = Some(now);
+        // Perf-plan stage 0 probe: count keyframe requests actually sent
+        // (after the cooldown gate), so IDRs-per-request can be computed.
+        crate::streaming::video::metrics::METRICS
+            .kf_req
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.backend.notify_keyframe_requested(&mut self.peer);
         self.video.request_keyframe(&mut self.peer);
     }

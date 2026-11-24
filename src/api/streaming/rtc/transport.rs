@@ -40,6 +40,41 @@ impl RtcTransport {
         std_socket
             .set_nonblocking(true)
             .context("failed to set UDP socket non-blocking")?;
+        // Perf-plan stage 0 probe (read-only): log the kernel's default UDP
+        // receive buffer. No size is requested; this only records what we get.
+        // std's sockets on Vita are newlib descriptors (vita-newlib-shims
+        // routes the same calls), so the C getsockopt applies to this fd.
+        #[cfg(target_os = "vita")]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe extern "C" {
+                fn getsockopt(
+                    fd: i32,
+                    level: i32,
+                    optname: i32,
+                    optval: *mut std::ffi::c_void,
+                    optlen: *mut u32,
+                ) -> i32;
+            }
+            let mut size: i32 = 0;
+            let mut length: u32 = std::mem::size_of::<i32>() as u32;
+            let result = unsafe {
+                getsockopt(
+                    std_socket.as_raw_fd(),
+                    vitasdk_sys::SCE_NET_SOL_SOCKET as i32,
+                    vitasdk_sys::SCE_NET_SO_RCVBUF as i32,
+                    (&mut size as *mut i32).cast(),
+                    &mut length,
+                )
+            };
+            if result == 0 {
+                eprintln!("WebRTC UDP receive buffer (kernel default): {size} bytes");
+            } else {
+                eprintln!(
+                    "WebRTC UDP receive buffer size unavailable (getsockopt returned {result})"
+                );
+            }
+        }
         let socket_addr = std_socket
             .local_addr()
             .context("failed to read local UDP socket address")?;
@@ -91,9 +126,13 @@ impl RtcTransport {
                 // Arm the arrival clock BEFORE the first recv so every
                 // capture instant is >= the anchor (no duration underflow).
                 std::sync::LazyLock::force(&crate::api::streaming::rtc::rtp::RX_CLOCK);
+                // Perf-plan stage 0 probe: datagrams drained since the last
+                // idle moment; its maximum is reported as rx_drain_max.
+                let mut drained_since_idle: u64 = 0;
                 loop {
                     match rx_socket.recv_from(&mut buf) {
                         Ok((n, peer_addr)) => {
+                            drained_since_idle += 1;
                             // Raw SR census at the true wire layer (RFC 7983:
                             // V=2 + PT=200; SRTCP keeps the 8-byte header in
                             // clear; STUN/DTLS have V!=2 and RTP payload types
@@ -142,6 +181,12 @@ impl RtcTransport {
                             }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if drained_since_idle > 0 {
+                                METRICS
+                                    .rx_drain_max
+                                    .fetch_max(drained_since_idle, Ordering::Relaxed);
+                                drained_since_idle = 0;
+                            }
                             thread::sleep(Duration::from_millis(1));
                         }
                         Err(error) => {
@@ -219,6 +264,7 @@ impl RtcTransport {
                         let seq = u16::from_be_bytes([datagram.data[2], datagram.data[3]]);
                         crate::api::streaming::rtc::rtp::offer_twcc_arrival(seq, datagram.at_us);
                     }
+                    let handle_started = Instant::now();
                     if let Err(error) = peer.handle_read(TaggedBytesMut {
                         now: datagram.at,
                         transport: TransportContext {
@@ -234,6 +280,12 @@ impl RtcTransport {
                             datagram.peer_addr
                         );
                     }
+                    // Perf-plan stage 0 probe: RTC-thread CPU spent in the
+                    // WebRTC read path (SRTP decrypt, RTP demux) per second.
+                    METRICS.rtc_cpu_us.fetch_add(
+                        handle_started.elapsed().as_micros() as u64,
+                        Ordering::Relaxed,
+                    );
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {

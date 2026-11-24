@@ -679,6 +679,10 @@ impl VideoRtp {
         }
         if unit.has_idr {
             METRICS.au_idr_submitted.fetch_add(1, Ordering::Relaxed);
+            // Perf-plan stage 0 probe: keyframe share of the stream's bytes.
+            METRICS
+                .idr_bytes
+                .fetch_add(data.len() as u64, Ordering::Relaxed);
         }
         if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
             eprintln!("Video decoder queue is full; continuing while requesting a keyframe");

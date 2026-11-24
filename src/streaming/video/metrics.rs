@@ -107,6 +107,15 @@ pub(crate) struct MetricsSnapshot {
     // PLI→IDR latency metrics (Task D): last-value and max-over-session.
     pub(crate) pli_idr_ms_last: u64,
     pub(crate) pli_idr_ms_max: u64,
+    // Perf-plan stage 0 probes (2026-11-24): UI loop period and work time,
+    // RX datagrams drained per wake (max), RTC-thread CPU in handle_read,
+    // IDR bytes submitted, keyframe requests actually sent.
+    pub(crate) ui_loop_us: u64,
+    pub(crate) ui_work_us: u64,
+    pub(crate) rx_drain_max: u64,
+    pub(crate) rtc_cpu_us: u64,
+    pub(crate) idr_bytes: u64,
+    pub(crate) kf_req: u64,
 }
 
 pub(crate) struct VideoMetrics {
@@ -216,6 +225,13 @@ pub(crate) struct VideoMetrics {
     pub(crate) pli_idr_ms_max: AtomicU64,
     /// Damaged AUs shed-to-IDR under the Quality/Balanced damage policies.
     pub(crate) damaged_dropped: AtomicU64,
+    // Perf-plan stage 0 probes (2026-11-24).
+    pub(crate) ui_loop_us: AtomicU64,
+    pub(crate) ui_work_us: AtomicU64,
+    pub(crate) rx_drain_max: AtomicU64,
+    pub(crate) rtc_cpu_us: AtomicU64,
+    pub(crate) idr_bytes: AtomicU64,
+    pub(crate) kf_req: AtomicU64,
 }
 
 pub(crate) static METRICS: VideoMetrics = VideoMetrics {
@@ -315,6 +331,12 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     pli_idr_ms_max: AtomicU64::new(0),
     damaged_dropped: AtomicU64::new(0),
     rtcp_rtpfb_any: AtomicU64::new(0),
+    ui_loop_us: AtomicU64::new(0),
+    ui_work_us: AtomicU64::new(0),
+    rx_drain_max: AtomicU64::new(0),
+    rtc_cpu_us: AtomicU64::new(0),
+    idr_bytes: AtomicU64::new(0),
+    kf_req: AtomicU64::new(0),
 };
 
 
@@ -370,7 +392,7 @@ pub fn video_performance_summary() -> String {
         METRICS.sr_clock_offset_ms.load(Ordering::Relaxed),
     );
     let line2 = format!(
-        "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{}",
+        "r:{rtp_average}/{rtp_max} rs:{} rst:{} wk:{} ab:{} hold:{}/{}/{} iv:{} qf:{} fl:{} tw:{}/{}/{} stride:{} md:{} pick:{} pickMax:{} rxd:{} rcpu:{} ui:{} uw:{} kf:{} idr:{}",
         METRICS.resyncs.load(Ordering::Relaxed),
         METRICS.resets.load(Ordering::Relaxed),
         METRICS.rtp_wait_drops.load(Ordering::Relaxed),
@@ -388,6 +410,12 @@ pub fn video_performance_summary() -> String {
         METRICS.video_metadata_sent.load(Ordering::Relaxed),
         METRICS.display_pickup_us.load(Ordering::Relaxed),
         METRICS.display_pickup_max_us.load(Ordering::Relaxed),
+        METRICS.rx_drain_max.load(Ordering::Relaxed),
+        METRICS.rtc_cpu_us.load(Ordering::Relaxed) / 1000,
+        METRICS.ui_loop_us.load(Ordering::Relaxed) / 1000,
+        METRICS.ui_work_us.load(Ordering::Relaxed) / 1000,
+        METRICS.kf_req.load(Ordering::Relaxed),
+        METRICS.idr_bytes.load(Ordering::Relaxed) / 1024,
     );
     // HUD vt segment: vt_max_0..5 and vt_exit_count
     let vt_segment = format!(
@@ -511,6 +539,12 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         pli_idr_ms_max: METRICS.pli_idr_ms_max.load(Ordering::Relaxed),
         rtp_ext_twcc: METRICS.rtp_ext_twcc.swap(0, Ordering::Relaxed),
         rtcp_rtpfb_any: METRICS.rtcp_rtpfb_any.swap(0, Ordering::Relaxed),
+        ui_loop_us: METRICS.ui_loop_us.swap(0, Ordering::Relaxed),
+        ui_work_us: METRICS.ui_work_us.swap(0, Ordering::Relaxed),
+        rx_drain_max: METRICS.rx_drain_max.swap(0, Ordering::Relaxed),
+        rtc_cpu_us: METRICS.rtc_cpu_us.swap(0, Ordering::Relaxed),
+        idr_bytes: METRICS.idr_bytes.swap(0, Ordering::Relaxed),
+        kf_req: METRICS.kf_req.swap(0, Ordering::Relaxed),
     }
 }
 
@@ -599,6 +633,12 @@ pub(crate) fn reset_session_metrics() {
     METRICS.pli_idr_ms_max.store(0, Ordering::Relaxed);
     METRICS.rtp_ext_twcc.store(0, Ordering::Relaxed);
     METRICS.rtcp_rtpfb_any.store(0, Ordering::Relaxed);
+    METRICS.ui_loop_us.store(0, Ordering::Relaxed);
+    METRICS.ui_work_us.store(0, Ordering::Relaxed);
+    METRICS.rx_drain_max.store(0, Ordering::Relaxed);
+    METRICS.rtc_cpu_us.store(0, Ordering::Relaxed);
+    METRICS.idr_bytes.store(0, Ordering::Relaxed);
+    METRICS.kf_req.store(0, Ordering::Relaxed);
 }
 
     /// Flush the RAM-buffered metrics CSV log to disk once at session end.
