@@ -72,6 +72,9 @@ pub async fn run(mut app: App) -> Result<()> {
     // Perf-plan stage 0 probe: start instant of the previous loop iteration.
     let mut previous_loop_start: Option<Instant> = None;
     let mut vita_ime_pending = None;
+    // Perf-plan stage 2b: egui events accumulate across loop iterations; they
+    // are consumed on UI frames and capped while the UI is skipped.
+    let mut egui_events: Vec<egui::Event> = Vec::new();
 
     loop {
         let loop_started_at = Instant::now();
@@ -91,7 +94,6 @@ pub async fn run(mut app: App) -> Result<()> {
         previous_loop_start = Some(loop_started_at);
         // Main-thread liveness for the PS-button watchdog (brainstorm §6), even in menus.
         crate::ps_button::bump_heartbeat();
-        let mut egui_events = Vec::new();
         let mut direct_commands = Vec::new();
         if app.title_search_requested && !vita_ime_active {
             app.title_search_requested = false;
@@ -277,50 +279,74 @@ pub async fn run(mut app: App) -> Result<()> {
         if let Some(streaming) = app.state.streaming_mut() {
             audio_renderer.submit_packets(streaming.take_audio_packets());
         }
-        surface.sync_video_frame(app.state.streaming())?;
-
-        let raw_input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE),
-            )),
-            viewport_id: egui::ViewportId::ROOT,
-            viewports: std::iter::once((
-                egui::ViewportId::ROOT,
-                egui::ViewportInfo {
-                    native_pixels_per_point: Some(UI_SCALE),
-                    ..Default::default()
-                },
-            ))
-            .collect(),
-            time: Some(start_time.elapsed().as_secs_f64()),
-            predicted_dt: TARGET_FRAME_TIME.as_secs_f32(),
-            events: egui_events,
-            ..Default::default()
-        };
-
         // HUD hint for as long as the PS button is physically held (capture
         // on, stream live): reflects the last 4 ms poll sample from
         // `ps_button::tick`.
         let ps_hold_hint =
             app.settings.ps_button_capture && streaming_unpaused && crate::ps_button::is_pressed();
-        let mut ui_commands = Vec::new();
-        let full_output = egui_ctx.run(raw_input, |ctx| {
-            ui_commands = build_ui(ctx, &app, hold_progress, ps_hold_hint);
-        });
 
-        for command in ui_commands {
-            app.handle_command(command).await?;
+        // Perf-plan stage 2b: while streaming unpaused with the video HUD off
+        // and no gesture pending, present the frame without running the UI
+        // toolkit (its work measured 1.3-1.5 ms per frame on the Vita). egui
+        // events are carried over to the next UI frame.
+        let ui_needed = hold_progress.is_some()
+            || ps_hold_hint
+            || vita_ime_active
+            || !matches!(&app.state, AppState::Streaming(s) if !s.paused)
+            || app.settings.stream_debug_mode != crate::settings::StreamDebugMode::Off
+            || !app
+                .state
+                .streaming()
+                .map(|s| s.video_frame().is_some())
+                .unwrap_or(false);
+        surface.sync_video_frame(app.state.streaming())?;
+
+        if ui_needed {
+            let raw_input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(WIDTH as f32 / UI_SCALE, HEIGHT as f32 / UI_SCALE),
+                )),
+                viewport_id: egui::ViewportId::ROOT,
+                viewports: std::iter::once((
+                    egui::ViewportId::ROOT,
+                    egui::ViewportInfo {
+                        native_pixels_per_point: Some(UI_SCALE),
+                        ..Default::default()
+                    },
+                ))
+                .collect(),
+                time: Some(start_time.elapsed().as_secs_f64()),
+                predicted_dt: TARGET_FRAME_TIME.as_secs_f32(),
+                events: std::mem::take(&mut egui_events),
+                ..Default::default()
+            };
+            let mut ui_commands = Vec::new();
+            let full_output = egui_ctx.run(raw_input, |ctx| {
+                ui_commands = build_ui(ctx, &app, hold_progress, ps_hold_hint);
+            });
+
+            for command in ui_commands {
+                app.handle_command(command).await?;
+            }
+
+            surface.draw_scene(matches!(&app.state, AppState::Streaming(_)))?;
+            let clipped_primitives =
+                egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+            surface.paint_egui(
+                full_output.pixels_per_point,
+                &clipped_primitives,
+                &full_output.textures_delta,
+            )?;
+        } else {
+            // Carry the events over, capped so a touch storm cannot grow the
+            // buffer unboundedly while the UI is skipped.
+            if egui_events.len() > 256 {
+                egui_events.drain(..egui_events.len() - 256);
+            }
+            surface.draw_scene(true)?;
+            surface.canvas.present();
         }
-
-        surface.draw_scene(matches!(&app.state, AppState::Streaming(_)))?;
-        let clipped_primitives =
-            egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
-        surface.paint_egui(
-            full_output.pixels_per_point,
-            &clipped_primitives,
-            &full_output.textures_delta,
-        )?;
         crate::streaming::video::metrics::METRICS
             .ui_work_us
             .store(

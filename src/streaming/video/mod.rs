@@ -161,6 +161,24 @@ impl DirectVideoOutput {
             index,
         })
     }
+
+    /// Perf-plan stage 3: non-blocking variant of `lock_decode_target` —
+    /// fast path only. Returns None when every texture is displayed, pending
+    /// or still DMA-read by the GPU, without waiting.
+    pub(super) fn try_lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
+        let state = self.state.lock().ok()?;
+        let targets = state.targets?;
+        let index = (0..NUM_TEXTURES).find(|&i| {
+            state.displayed != Some(i)
+                && state.last_displayed != Some(i)
+                && state.pending.as_ref().map(|(idx, _)| *idx) != Some(i)
+        })?;
+        Some(DirectVideoTargetGuard {
+            state,
+            target: targets[index],
+            index,
+        })
+    }
 }
 
 pub(super) struct DirectVideoTargetGuard<'a> {

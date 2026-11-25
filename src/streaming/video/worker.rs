@@ -1,6 +1,6 @@
 use super::decoder::HwVideoDecoder;
 use super::metrics;
-use super::{DecodedFrame, DecoderConfig, DirectVideoOutput};
+use super::{DecodedFrame, DecoderConfig, DirectVideoOutput, DirectVideoTargetGuard};
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased, unbounded};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -258,6 +258,22 @@ fn run_decode_loop(
             },
             recv(access_units) -> access_unit => {
                 let Ok(access_unit) = access_unit else { break };
+                // Perf-plan stage 3: when a newer access unit is already
+                // queued, this one is stale. Decode it anyway — the H.264
+                // reference chain must stay intact — into a scratch texture
+                // that is never published, and skip the pace sleep so the
+                // burst drains at decode speed. With no scratch texture free
+                // the frame takes the normal path: correctness over
+                // freshness.
+                let mut retire = !access_units.is_empty();
+                let scratch = if retire {
+                    direct_output.try_lock_decode_target()
+                } else {
+                    None
+                };
+                if retire && scratch.is_none() {
+                    retire = false;
+                }
                 decode_queued_access_unit(
                     &mut decoder,
                     config,
@@ -266,9 +282,13 @@ fn run_decode_loop(
                     &result_ready,
                     access_unit,
                     &direct_output,
+                    retire,
+                    scratch,
                 );
-                let queue_depth = access_units.len();
-                sleep(scheduler.yield_after_decode(queue_depth));
+                if !retire {
+                    let queue_depth = access_units.len();
+                    sleep(scheduler.yield_after_decode(queue_depth));
+                }
             }
         }
     }
@@ -282,6 +302,8 @@ fn decode_queued_access_unit(
     result_ready: &tokio::sync::Notify,
     access_unit: QueuedAccessUnit,
     direct_output: &DirectVideoOutput,
+    retire: bool,
+    scratch: Option<DirectVideoTargetGuard<'_>>,
 ) {
     if access_unit.generation != generation.load(Ordering::Acquire) {
         return;
@@ -301,11 +323,19 @@ fn decode_queued_access_unit(
         }
     }
 
-    let Some(direct_target) = direct_output.lock_decode_target() else {
-        // Do not decode until the renderer has registered its two GXM textures. There is no
-        // legacy output buffer to copy from anymore.
-        metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
-        return;
+    // Stage 3: a stale frame arrives with its scratch texture pre-locked by
+    // the caller; the normal path locks the display ring as before.
+    let direct_target = match scratch {
+        Some(target) => target,
+        None => {
+            let Some(target) = direct_output.lock_decode_target() else {
+                // Do not decode until the renderer has registered its two GXM textures. There is no
+                // legacy output buffer to copy from anymore.
+                metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
+                return;
+            };
+            target
+        }
     };
     // Measure the hardware call and contain an unexpected decoder panic inside its worker.
     let decode_started_at = Instant::now();
@@ -325,24 +355,32 @@ fn decode_queued_access_unit(
 
     match decode_result {
         Ok(Ok(true)) => {
-            metrics::METRICS.decoded.fetch_add(1, Ordering::Relaxed);
-            let (texture_index, generation) = direct_target.publish();
-            let pipeline_age_us = access_unit.queued_at.elapsed().as_micros() as u64;
-            metrics::METRICS
-                .pipeline_age_us
-                .store(pipeline_age_us, Ordering::Relaxed);
-            metrics::METRICS
-                .pipeline_age_max_us
-                .fetch_max(pipeline_age_us, Ordering::Relaxed);
-            publish_result(
-                latest_result,
-                result_ready,
-                Ok(DecodedFrame {
-                    texture_index,
-                    generation,
-                    published_at: Instant::now(),
-                }),
-            );
+            if retire {
+                // Stage 3: the picture is stale (a newer access unit was
+                // queued behind it). It is retired before display — the
+                // texture guard drops without publish, so the slot stays
+                // free — while the decoder's reference state stays correct.
+                metrics::METRICS.au_scratch.fetch_add(1, Ordering::Relaxed);
+            } else {
+                metrics::METRICS.decoded.fetch_add(1, Ordering::Relaxed);
+                let (texture_index, generation) = direct_target.publish();
+                let pipeline_age_us = access_unit.queued_at.elapsed().as_micros() as u64;
+                metrics::METRICS
+                    .pipeline_age_us
+                    .store(pipeline_age_us, Ordering::Relaxed);
+                metrics::METRICS
+                    .pipeline_age_max_us
+                    .fetch_max(pipeline_age_us, Ordering::Relaxed);
+                publish_result(
+                    latest_result,
+                    result_ready,
+                    Ok(DecodedFrame {
+                        texture_index,
+                        generation,
+                        published_at: Instant::now(),
+                    }),
+                );
+            }
         }
         Ok(Ok(false)) => {
             metrics::METRICS.hw_buffered.fetch_add(1, Ordering::Relaxed);

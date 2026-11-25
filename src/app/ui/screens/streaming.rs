@@ -68,6 +68,7 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
         let uw = f("uw:");
         let kf = f("kf:");
         let idr = f("idr:");
+        let scr = f("scr:");
 
         const LABEL_WIDTH: usize = 16;
         const VALUE_WIDTH: usize = 8;
@@ -91,7 +92,7 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Color:{}", color_val), format!("Err:{}", err_val)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("UIloop:{}ms", ui), format!("UIwork:{}ms", uw)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("KfReq:{}", kf), format!("IDR:{}KB", idr)),
-            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("RxdMax:{}", rxd), ""),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("RxdMax:{}", rxd), format!("Scratch:{}", scr)),
         ];
 
         // Free any previously cached rows and store the new ones.

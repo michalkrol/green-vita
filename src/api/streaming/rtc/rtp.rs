@@ -685,8 +685,13 @@ impl VideoRtp {
                 .fetch_add(data.len() as u64, Ordering::Relaxed);
         }
         if !worker.submit_access_unit(data.to_vec(), self.source_frame_duration_us) {
-            eprintln!("Video decoder queue is full; continuing while requesting a keyframe");
-            *keyframe_requested = true;
+            // Perf-plan stage 3: a decode-queue rejection is our own
+            // back-pressure, not stream damage — requesting a keyframe on top
+            // of the dropped frame made the console send its largest frames
+            // at the worst moment. Stage 3 drains bursts by retiring stale
+            // decoded pictures, so this path should be rare; if it fires,
+            // the following frames conceal until the next natural keyframe.
+            eprintln!("Video decoder queue is full; dropping the frame without a keyframe request");
             stats.dropped = stats.dropped.saturating_add(1);
         }
         stats
