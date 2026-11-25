@@ -115,6 +115,17 @@ impl App {
             },
             std::sync::atomic::Ordering::Relaxed,
         );
+        // Repair-window policy (perf plan stage 3b): settings → stream start → the assembler's
+        // repair window preset. 0=Off, 1=Short, 2=Balanced, 3=Patient.
+        crate::pipeline::media::assembler::REPAIR_WINDOW_POLICY.store(
+            match self.settings.repair_window {
+                crate::settings::RepairWindow::Off => 0,
+                crate::settings::RepairWindow::Short => 1,
+                crate::settings::RepairWindow::Balanced => 2,
+                crate::settings::RepairWindow::Patient => 3,
+            },
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // Manual TWCC (2c): settings → stream start → the per-packet gate in
         // rtp::receive + media::send_twcc.
         crate::api::streaming::rtc::rtp::set_manual_twcc(self.settings.manual_twcc_60ms);

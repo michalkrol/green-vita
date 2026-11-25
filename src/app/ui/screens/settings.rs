@@ -4,7 +4,7 @@ use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::smooth_scroll_area;
 use crate::i18n::{I18n, arg_string};
-use crate::settings::{ColorProfile, H264Profile, StreamDebugMode};
+use crate::settings::{ColorProfile, H264Profile, RepairWindow, StreamDebugMode};
 use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
@@ -27,6 +27,7 @@ pub enum Command {
     SetVideoBitrateCap(u32),
     SetVideoH264Profile(H264Profile),
     SetDamagePolicy(crate::settings::DamagePolicy),
+    SetRepairWindow(crate::settings::RepairWindow),
     SetManualTwcc(bool),
     SetLatencyProfile(crate::settings::LatencyProfile),
     SetColorProfile(crate::settings::ColorProfile),
@@ -47,6 +48,7 @@ enum SettingsRow {
     VideoBitrateCap(u32),
     VideoH264Profile(H264Profile),
     DamagePolicy(crate::settings::DamagePolicy),
+    RepairWindow(crate::settings::RepairWindow),
     ManualTwcc(bool),
     LatencyProfile(crate::settings::LatencyProfile),
     ColorProfile(crate::settings::ColorProfile),
@@ -103,6 +105,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
     rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
+    rows.push(SettingsRow::RepairWindow(app.settings.repair_window));
     rows.push(SettingsRow::ManualTwcc(app.settings.manual_twcc_60ms));
     rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
     rows.push(SettingsRow::ColorProfile(app.settings.color_profile));
@@ -365,6 +368,37 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                             }
                         };
                         commands.push(Command::SetDamagePolicy(next).into());
+                    }
+                }
+                row_index += 1;
+                ui.add_space(14.0);
+                ui.separator();
+                {
+                    let label = format!(
+                        "Repair window: {}",
+                        match app.settings.repair_window {
+                            crate::settings::RepairWindow::Off => "Off",
+                            crate::settings::RepairWindow::Short => "Short",
+                            crate::settings::RepairWindow::Balanced => "Balanced",
+                            crate::settings::RepairWindow::Patient => "Patient",
+                        }
+                    );
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.repair_window {
+                            crate::settings::RepairWindow::Off => {
+                                crate::settings::RepairWindow::Short
+                            }
+                            crate::settings::RepairWindow::Short => {
+                                crate::settings::RepairWindow::Balanced
+                            }
+                            crate::settings::RepairWindow::Balanced => {
+                                crate::settings::RepairWindow::Patient
+                            }
+                            crate::settings::RepairWindow::Patient => {
+                                crate::settings::RepairWindow::Off
+                            }
+                        };
+                        commands.push(Command::SetRepairWindow(next).into());
                     }
                 }
                 row_index += 1;
@@ -695,6 +729,23 @@ impl App {
                 };
                 return self.handle_settings_command(Command::SetDamagePolicy(next));
             }
+            SettingsRow::RepairWindow(policy) => {
+                let next = match policy {
+                    crate::settings::RepairWindow::Off => {
+                        crate::settings::RepairWindow::Short
+                    }
+                    crate::settings::RepairWindow::Short => {
+                        crate::settings::RepairWindow::Balanced
+                    }
+                    crate::settings::RepairWindow::Balanced => {
+                        crate::settings::RepairWindow::Patient
+                    }
+                    crate::settings::RepairWindow::Patient => {
+                        crate::settings::RepairWindow::Off
+                    }
+                };
+                return self.handle_settings_command(Command::SetRepairWindow(next));
+            }
             SettingsRow::ManualTwcc(enabled) => {
                 return self.handle_settings_command(Command::SetManualTwcc(!enabled));
             }
@@ -837,6 +888,11 @@ impl App {
                     },
                     std::sync::atomic::Ordering::Relaxed,
                 );
+            }
+            Command::SetRepairWindow(policy) => {
+                self.settings.repair_window = policy;
+                self.settings.save();
+                // Live: the assembler reads this per damage event from the atomic.
             }
             Command::SetManualTwcc(enabled) => {
                 self.settings.manual_twcc_60ms = enabled;

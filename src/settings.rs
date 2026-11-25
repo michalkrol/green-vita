@@ -133,6 +133,25 @@ pub enum DamagePolicy {
     Quality,
 }
 
+/// Repair-window policy (perf plan 2026-11-25): how long the assembler may
+/// hold the reference chain on a damaged AU while RTX retransmissions fill
+/// its holes. A park avoids a PLI/IDR and persistent artefacts at the cost of
+/// a bounded chain freeze (the screen holds the last good picture); the
+/// follow-up frames are decoded in order after the fill, so nothing stale is
+/// ever published. Presets map to the RepairPolicy table in assembler.rs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RepairWindow {
+    /// No park: damage resolves immediately (no RTX repair window).
+    Off,
+    /// 17 ms park — tightest chain hold; loses fills that land later.
+    Short,
+    /// 40 ms park — the pre-2026-11-25 fixed budget. Default.
+    #[default]
+    Balanced,
+    /// 60 ms park — longest chain hold, highest fill rate.
+    Patient,
+}
+
 /// Hardware decoder output color profile. RGB565 (default) halves the
 /// decoder-to-texture CDRAM traffic vs RGBA8888; RGBA8888 (TODO item 3) is the
 /// optional quality mode that eliminates RGB565 dark-scene banding ("reads as
@@ -150,9 +169,11 @@ pub enum ColorProfile {
     Rgba8888,
 }
 
-/// Decode-bank depth profile (item 15): Fast = shallow bank (minimal floor);
-/// Smooth = deep bank (bursts + shed stalls absorbed invisibly — the 0.3.1
-/// quality recreation, accumulation-safe by construction).
+/// Decode-bank depth profile (item 15): Fast = shallow bank (target 0,
+    /// bursts shed or conceal — minimal floor); Smooth = deep bank (target 6,
+    /// hard cap 12 ≈ +100–200 ms floor) — bursts and damage-shed stalls
+    /// absorbed invisibly (the 0.3.1 quality recreation, accumulation-safe: the
+    /// bank is hard-capped in admission and TWCC stamps pre-bank).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum LatencyProfile {
     /// Bank target 0, boost ≤2 (+33 ms worst case). Default.
@@ -187,6 +208,9 @@ pub struct Settings {
     /// IDR on severe damage; Quality sheds on every damaged frame
     /// (artefact-free, micro-freeze per event). See DamagePolicy.
     pub damage_policy: DamagePolicy,
+    /// Repair-window policy: how long a damaged AU may be held for RTX repair
+    /// before resolving Damaged (PLI + decode-through concealment). See RepairWindow.
+    pub repair_window: RepairWindow,
     /// Manual 60ms TWCC feedback cadence (per-packet transport-wide congestion
     /// reports to the console); helps lossy links, can regress good ones.
     /// Applies live — the per-packet gate reads the atomic every packet.
@@ -194,8 +218,8 @@ pub struct Settings {
     /// Decode-bank depth profile (item 15): Fast = shallow bank (target 0,
     /// bursts shed or conceal — minimal floor); Smooth = deep bank (target 6,
     /// hard cap 12 ≈ +100–200 ms floor) — bursts and damage-shed stalls
-    /// absorbed invisibly (the 0.3.1 quality recreation, accumulation-safe:
-    /// the bank is hard-capped in admission and TWCC stamps pre-bank).
+    /// absorbed invisibly (the 0.3.1 quality recreation, accumulation-safe: the bank
+    /// is hard-capped in admission and TWCC stamps pre-bank).
     pub latency_profile: LatencyProfile,
     /// When true, a keyframe (IDR) is requested from the console every 200 ms via
     /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
@@ -247,6 +271,7 @@ impl Default for Settings {
             video_bitrate_kbps: 15_000,
             video_h264_profile: H264Profile::default(),
             damage_policy: DamagePolicy::default(),
+            repair_window: RepairWindow::default(),
             manual_twcc_60ms: false,
             latency_profile: LatencyProfile::default(),
             color_profile: ColorProfile::default(),
