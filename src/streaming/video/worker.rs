@@ -258,23 +258,28 @@ fn run_decode_loop(
             },
             recv(access_units) -> access_unit => {
                 let Ok(access_unit) = access_unit else { break };
-                // Perf-plan stage 3 (+ fix 2026-11-25): when a newer access
-                // unit is already queued, this one is stale. Decode it anyway
-                // — the H.264 reference chain must stay intact — but NEVER
-                // publish it and NEVER pace-sleep after it. With a scratch
-                // texture free the picture is retired immediately; with all
-                // three ring slots busy (the common case while the UI still
-                // holds `pending`) it takes the blocking ring lock, decodes,
-                // and still retires without publish. Falling back to the
-                // normal display path here let stale frames occupy `pending`
-                // ahead of fresher queued ones and pay the pace sleep — the
-                // backlog then drained slower than it arrived (accumulation).
+                // Perf-plan stage 3c (2026-11-26): when a newer access unit is
+                // already queued, this one is stale. Decode it anyway — the
+                // H.264 reference chain must stay intact — into the
+                // decoder-private scratch texture, and never publish it, never
+                // pace-sleep after it. The scratch texture is outside the
+                // display ring and needs no ring state lock, so a stale decode
+                // no longer waits for the UI to consume `pending`: the backlog
+                // drains at decode speed instead of the 58 fps presentation
+                // rate. (Before: stale AUs blocked on the ring lock, so a
+                // 60 fps arrival rate outran the loop and `pipeline_age`
+                // drifted upward ~2.5 ms/min.)
                 let retire = !access_units.is_empty();
                 let scratch = if retire {
-                    direct_output.try_lock_decode_target()
+                    direct_output.lock_scratch_target()
                 } else {
                     None
                 };
+                if retire && scratch.is_none() {
+                    // Renderer has not registered its textures yet.
+                    metrics::METRICS.skipped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 decode_queued_access_unit(
                     &mut decoder,
                     config,

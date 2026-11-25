@@ -23,7 +23,7 @@ use rtc::rtp::codec::opus::OpusPacket;
 #[cfg(test)]
 use rtc::rtp::packetizer::Depacketizer;
 use rtc_media::io::sample_builder::SampleBuilder;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 #[cfg(test)]
 use std::time::Duration;
@@ -561,6 +561,39 @@ impl VideoRtp {
             ..
         } = au;
         self.update_stream_lag(au.timestamp, au.first_packet_at);
+        // AU-level one-way delay on the media clock, relative to the session's
+        // first AU (perf plan 2026-11-26): delay = first-packet arrival µs −
+        // RTP timestamp/90 kHz. Both timelines tick in real time, so the
+        // constant console capture offset cancels; GROWTH in this column is
+        // console-encode + network + receive-queue latency accumulation,
+        // measured with no clock sync and independent of the decoder (that is
+        // `pipeline_age_us`). Absolute capture-to-arrival would need the SR NTP
+        // anchor, which the console SRTCP-encrypts (see transport.rs). One-off
+        // step after ~13.2 h when the 32-bit RTP timestamp wraps.
+        {
+            let arrival_us = au
+                .first_packet_at
+                .duration_since(*SHADOW_CLOCK)
+                .as_micros() as i64;
+            let media_us = i64::from(au.timestamp) * 100 / 9;
+            let delay_raw = arrival_us - media_us;
+            let base = match DELAY_BASE_US.compare_exchange(
+                i64::MIN,
+                delay_raw,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => delay_raw,
+                Err(existing) => existing,
+            };
+            let relative_us = delay_raw - base;
+            METRICS
+                .capture_to_arrival_us
+                .store(relative_us, Ordering::Relaxed);
+            METRICS
+                .capture_to_arrival_max_us
+                .fetch_max(relative_us, Ordering::Relaxed);
+        }
         // Record both average and worst-case RTP assembly time for the stream HUD.
         let assembly_us = au.first_packet_at.elapsed().as_micros() as u64;
         crate::streaming::video::metrics::METRICS
@@ -1628,6 +1661,12 @@ fn inspect_h264_access_unit(data: &[u8]) -> AccessUnitInfo {
 
 /// Monotonic µs clock for the shadow assembler's 12 ms hold window.
 static SHADOW_CLOCK: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// Baseline for `capture_to_arrival_us` (AU-level one-way delay): the
+/// (arrival − media-time) value of the session's first completed AU, in µs on
+/// SHADOW_CLOCK. `i64::MIN` = not yet set. Relative values make growth
+/// readable without clock sync (see `finish_au`).
+static DELAY_BASE_US: AtomicI64 = AtomicI64::new(i64::MIN);
 
 // ---------------------------------------------------------------------------
 // TWCC socket-arrival stamping (A arm of the 2026-11-01 stamp A/B). The

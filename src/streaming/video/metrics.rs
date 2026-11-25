@@ -155,8 +155,6 @@ pub(crate) struct VideoMetrics {
     pub(crate) rtx_crate_seen: AtomicU64,
     // Absolute latency metrics (Task D)
     // SR anchor timestamps and per-second derived metrics
-    pub(crate) sr_anchor_ntp: AtomicU64,          // NTP timestamp from SR (ms since 1900)
-    pub(crate) sr_anchor_rtp_ts: AtomicU64,       // RTP timestamp from SR
     pub(crate) sr_anchor_local_us: AtomicU64,     // Local monotonic time when SR arrived (us since boot)
     pub(crate) sr_anchor_local_wall_us: AtomicU64, // Client wall clock at SR arrival (us since UNIX epoch)
 
@@ -548,11 +546,6 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         sr_clock_offset_ms: METRICS.sr_clock_offset_ms.swap(0, Ordering::Relaxed) as i64,
         capture_to_arrival_us: METRICS.capture_to_arrival_us.swap(0, Ordering::Relaxed) as i64,
         capture_to_arrival_max_us: METRICS.capture_to_arrival_max_us.swap(0, Ordering::Relaxed) as i64,
-        sr_anchor_ntp: METRICS.sr_anchor_ntp.load(Ordering::Relaxed) as u64,
-        sr_anchor_rtp_ts: METRICS.sr_anchor_rtp_ts.load(Ordering::Relaxed) as u64,
-        sr_anchor_local_us: METRICS.sr_anchor_local_us.load(Ordering::Relaxed) as u64,
-        sr_anchor_local_wall_us: METRICS.sr_anchor_local_wall_us.load(Ordering::Relaxed) as u64,
-        sh_match: METRICS.sh_match.swap(0, Ordering::Relaxed),
         sh_bound_mismatch: METRICS.sh_bound_mismatch.swap(0, Ordering::Relaxed),
         sh_bytes_mismatch: METRICS.sh_bytes_mismatch.swap(0, Ordering::Relaxed),
         sh_class_mismatch: METRICS.sh_class_mismatch.swap(0, Ordering::Relaxed),
@@ -655,10 +648,6 @@ pub(crate) fn reset_session_metrics() {
     METRICS.video_bandwidth_kbps.store(0, Ordering::Relaxed);
     METRICS.display_pickup_us.store(0, Ordering::Relaxed);
     METRICS.display_pickup_max_us.store(0, Ordering::Relaxed);
-    METRICS.sr_anchor_ntp.store(0, Ordering::Relaxed);
-    METRICS.sr_anchor_rtp_ts.store(0, Ordering::Relaxed);
-    METRICS.sr_anchor_local_us.store(0, Ordering::Relaxed);
-    METRICS.sr_anchor_local_wall_us.store(0, Ordering::Relaxed);
     METRICS.sr_age_ms.store(0, Ordering::Relaxed);
     METRICS.sr_clock_offset_ms.store(0, Ordering::Relaxed);
     METRICS.capture_to_arrival_us.store(0, Ordering::Relaxed);

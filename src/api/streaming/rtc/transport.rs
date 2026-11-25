@@ -225,29 +225,25 @@ impl RtcTransport {
                             // crate's post-read stats).
                             if n >= 2 && buf[0] >> 6 == 2 && buf[1] == 200 {
                                 METRICS.rtcp_sr_raw.fetch_add(1, Ordering::Relaxed);
-                                // Parse SR anchor from the first 24 bytes (RFC 3550 SR header):
-                                //   0-3: version/padding/count/payload type
-                                //   4-7: sender SSRC
-                                //   8-15: NTP timestamp (64-bit, big-endian, ms since 1900)
-                                //   16-19: RTP timestamp (32-bit, big-endian, 90 kHz clock)
+                                // The SR body is SRTCP-encrypted: only the first 8 bytes
+                                // (V/P/RC, PT, sender SSRC) are in clear, bytes 8-11
+                                // are the SRTCP index and 12+ is ciphertext. Parsing
+                                // `buf[8..20]` therefore yielded the index plus
+                                // ciphertext, not NTP/RTP timestamps — the 2026-11-26
+                                // lobby session showed a non-monotone NTP "anchor"
+                                // (1.05-2.75e12) and a structurally dead
+                                // capture_to_arrival metric. The SRTCP key lives inside
+                                // the rtc crate, so the body stays unread here; only the
+                                // LOCAL arrival instant and the census are recorded.
                                 if n >= 28 {
-                                    // NTP 64-bit is seconds:32 | fraction:32 since 1900;
-                                    // convert to ms since 1900 (what the ref's math expects).
-                                    let ntp64 = u64::from_be_bytes(buf[8..16].try_into().unwrap());
-                                    let sr_anchor_ntp = (ntp64 >> 32) * 1000 + (((ntp64 & 0xFFFF_FFFF) * 1000) >> 32);
-                                    let sr_anchor_rtp_ts = u64::from(u32::from_be_bytes(buf[16..20].try_into().unwrap()));
                                     let sr_anchor_local_us = crate::api::streaming::rtc::media::PROCESS_START.elapsed().as_micros() as u64;
                                     // Wall clock at SR arrival: UNIX epoch microseconds.
                                     let sr_anchor_local_wall_us = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_micros() as u64)
                                         .unwrap_or(0);
-                                    METRICS.sr_anchor_ntp.store(sr_anchor_ntp, Ordering::Relaxed);
-                                    METRICS.sr_anchor_rtp_ts.store(sr_anchor_rtp_ts, Ordering::Relaxed);
                                     METRICS.sr_anchor_local_us.store(sr_anchor_local_us, Ordering::Relaxed);
                                     METRICS.sr_anchor_local_wall_us.store(sr_anchor_local_wall_us, Ordering::Relaxed);
-                                    // If the console encrypts SRTCP, the body is ciphertext;
-                                    // downstream guards (ntp>0, delta_ts<=900_000) suppress garbage.
                                 }
                             }
                             let at = Instant::now();

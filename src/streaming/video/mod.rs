@@ -11,7 +11,11 @@ pub const HW_OUTPUT_WIDTH: u32 = 960;
 pub const HW_OUTPUT_HEIGHT: u32 = 544;
 pub(crate) const DEFAULT_VIDEO_FPS: u32 = 30;
 pub(crate) const UNLOCKED_VIDEO_FPS: u32 = 60;
-pub(crate) const NUM_TEXTURES: usize = 3;
+pub(crate) const NUM_TEXTURES: usize = 4;
+/// Display ring size. Index `NUM_DISPLAY_TEXTURES` (the last texture) is the
+/// decoder-private scratch target used to retire stale access units; it is
+/// never displayed, so the ring bookkeeping below ignores it.
+pub(crate) const NUM_DISPLAY_TEXTURES: usize = NUM_TEXTURES - 1;
 
 pub use memory::reserve_decoder_cdram;
 pub use metrics::video_performance_summary;
@@ -131,7 +135,7 @@ impl DirectVideoOutput {
         // be DMA-reading it from the previous VSYNC cycle.  Waiting one full
         // display interval before recycling that slot prevents texture-race
         // artifacts that appear as blocky corruption.
-        let free = (0..NUM_TEXTURES).find(|&i| {
+        let free = (0..NUM_DISPLAY_TEXTURES).find(|&i| {
             state.displayed != Some(i)
                 && state.last_displayed != Some(i)
                 && state.pending.as_ref().map(|(idx, _)| *idx) != Some(i)
@@ -149,7 +153,7 @@ impl DirectVideoOutput {
                 })
                 .ok()?;
             state = waited;
-            (0..NUM_TEXTURES).find(|&i| {
+            (0..NUM_DISPLAY_TEXTURES).find(|&i| {
                 state.displayed != Some(i)
                     && state.pending.as_ref().map(|(idx, _)| *idx) != Some(i)
             })?
@@ -168,30 +172,58 @@ impl DirectVideoOutput {
     pub(super) fn try_lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
         let state = self.state.lock().ok()?;
         let targets = state.targets?;
-        let index = (0..NUM_TEXTURES).find(|&i| {
+        let index = (0..NUM_DISPLAY_TEXTURES).find(|&i| {
             state.displayed != Some(i)
                 && state.last_displayed != Some(i)
                 && state.pending.as_ref().map(|(idx, _)| *idx) != Some(i)
         })?;
         Some(DirectVideoTargetGuard {
-            state,
+            state: Some(state),
             target: targets[index],
             index,
+        })
+    }
+
+    /// Decoder-private scratch target for retired (stale) access units.
+    ///
+    /// It is not part of the display ring: no `displayed`/`pending`
+    /// bookkeeping, and — unlike `lock_decode_target` — the state mutex is NOT
+    /// held across the hardware decode. Holding it serialized the decoder with
+    /// the UI/RTC threads (blocking up to a vblank and, in the worst measured
+    /// case, 66–172 ms), which slaved the decode drain rate to presentation and
+    /// let a 60 fps arrival rate outrun a 58 fps display rate — the residual
+    /// pipeline-age drift.
+    pub(super) fn lock_scratch_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
+        let target = {
+            let state = self.state.lock().ok()?;
+            *state.targets.as_ref()?.get(NUM_DISPLAY_TEXTURES)?
+        };
+        Some(DirectVideoTargetGuard {
+            state: None,
+            target,
+            index: NUM_DISPLAY_TEXTURES,
         })
     }
 }
 
 pub(super) struct DirectVideoTargetGuard<'a> {
-    state: MutexGuard<'a, DirectVideoOutputState>,
+    /// `None` for the decoder-private scratch target: it holds no ring state,
+    /// so the state mutex is released before the hardware decode and
+    /// `publish` must never be called on it (a retired frame is not displayed).
+    state: Option<MutexGuard<'a, DirectVideoOutputState>>,
     target: VideoTextureTarget,
     index: usize,
 }
 
 impl DirectVideoTargetGuard<'_> {
     pub(super) fn publish(mut self) -> (usize, u64) {
-        self.state.next_generation = self.state.next_generation.wrapping_add(1);
-        let generation = self.state.next_generation;
-        self.state.pending = Some((self.index, generation));
+        let state = self
+            .state
+            .as_mut()
+            .expect("scratch target must never be published");
+        state.next_generation = state.next_generation.wrapping_add(1);
+        let generation = state.next_generation;
+        state.pending = Some((self.index, generation));
         (self.index, generation)
     }
 }
