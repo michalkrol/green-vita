@@ -258,22 +258,23 @@ fn run_decode_loop(
             },
             recv(access_units) -> access_unit => {
                 let Ok(access_unit) = access_unit else { break };
-                // Perf-plan stage 3: when a newer access unit is already
-                // queued, this one is stale. Decode it anyway — the H.264
-                // reference chain must stay intact — into a scratch texture
-                // that is never published, and skip the pace sleep so the
-                // burst drains at decode speed. With no scratch texture free
-                // the frame takes the normal path: correctness over
-                // freshness.
-                let mut retire = !access_units.is_empty();
+                // Perf-plan stage 3 (+ fix 2026-11-25): when a newer access
+                // unit is already queued, this one is stale. Decode it anyway
+                // — the H.264 reference chain must stay intact — but NEVER
+                // publish it and NEVER pace-sleep after it. With a scratch
+                // texture free the picture is retired immediately; with all
+                // three ring slots busy (the common case while the UI still
+                // holds `pending`) it takes the blocking ring lock, decodes,
+                // and still retires without publish. Falling back to the
+                // normal display path here let stale frames occupy `pending`
+                // ahead of fresher queued ones and pay the pace sleep — the
+                // backlog then drained slower than it arrived (accumulation).
+                let retire = !access_units.is_empty();
                 let scratch = if retire {
                     direct_output.try_lock_decode_target()
                 } else {
                     None
                 };
-                if retire && scratch.is_none() {
-                    retire = false;
-                }
                 decode_queued_access_unit(
                     &mut decoder,
                     config,
