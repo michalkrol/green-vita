@@ -40,10 +40,11 @@ impl RtcTransport {
         std_socket
             .set_nonblocking(true)
             .context("failed to set UDP socket non-blocking")?;
-        // Perf-plan stage 0 probe (read-only): log the kernel's default UDP
-        // receive buffer. No size is requested; this only records what we get.
-        // std's sockets on Vita are newlib descriptors (vita-newlib-shims
-        // routes the same calls), so the C getsockopt applies to this fd.
+        // Perf-plan stage 0 probe + stage 4 buffer sizing (read-only probe, then
+        // one setsockopt ladder). std's sockets on Vita are newlib descriptors
+        // (vita-newlib-shims routes the same calls), so the C socket options
+        // apply to this fd. Runs before the socket is moved into the runtime
+        // twin and before the RX thread starts.
         #[cfg(target_os = "vita")]
         {
             use std::os::fd::AsRawFd;
@@ -55,25 +56,86 @@ impl RtcTransport {
                     optval: *mut std::ffi::c_void,
                     optlen: *mut u32,
                 ) -> i32;
+                // C signature: socklen_t is passed BY VALUE for setsockopt
+                // (getsockopt takes a pointer). The stage-4 draft declared it as
+                // *mut u32 and did not compile on the Vita target.
+                fn setsockopt(
+                    fd: i32,
+                    level: i32,
+                    optname: i32,
+                    optval: *const std::ffi::c_void,
+                    optlen: u32,
+                ) -> i32;
             }
+            let level = vitasdk_sys::SCE_NET_SOL_SOCKET as i32;
+            let optname = vitasdk_sys::SCE_NET_SO_RCVBUF as i32;
+            let fd = std_socket.as_raw_fd();
             let mut size: i32 = 0;
             let mut length: u32 = std::mem::size_of::<i32>() as u32;
-            let result = unsafe {
-                getsockopt(
-                    std_socket.as_raw_fd(),
-                    vitasdk_sys::SCE_NET_SOL_SOCKET as i32,
-                    vitasdk_sys::SCE_NET_SO_RCVBUF as i32,
-                    (&mut size as *mut i32).cast(),
-                    &mut length,
-                )
+            let probe = unsafe {
+                getsockopt(fd, level, optname, (&mut size as *mut i32).cast(), &mut length)
             };
-            if result == 0 {
+            if probe == 0 {
+                // Session-constant CSV column (perf plan 2026-11-24): stderr is
+                // not retrievable from the device, the CSV is.
+                METRICS
+                    .rcvbuf_def_bytes
+                    .store(size.max(0) as u64, Ordering::Relaxed);
                 eprintln!("WebRTC UDP receive buffer (kernel default): {size} bytes");
             } else {
                 eprintln!(
-                    "WebRTC UDP receive buffer size unavailable (getsockopt returned {result})"
+                    "WebRTC UDP receive buffer size unavailable (getsockopt returned {probe})"
                 );
             }
+
+            // Perf-plan stage 4: target 512 packets (~1.1 KB each = 589824 B),
+            // stepping down to 256 then 128 packets if the OS refuses, instead
+            // of the 124800-byte default (~113 packets). Measured pile-ups
+            // reached 95 packets = 77% of that default while the RX thread was
+            // starved.
+            let ladder = [589_824i32, 294_912, 147_456];
+            let mut requested: i32 = 0;
+            for candidate in ladder {
+                let result = unsafe {
+                    setsockopt(
+                        fd,
+                        level,
+                        optname,
+                        (&candidate as *const i32).cast(),
+                        std::mem::size_of::<i32>() as u32,
+                    )
+                };
+                if result == 0 {
+                    requested = candidate;
+                    break;
+                }
+            }
+            let mut effective: i32 = 0;
+            let mut effective_len: u32 = std::mem::size_of::<i32>() as u32;
+            let queried =
+                unsafe { getsockopt(fd, level, optname, (&mut effective as *mut i32).cast(), &mut effective_len) };
+            if queried != 0 {
+                // Fall back to what we know: our request, else the default.
+                effective = if requested != 0 { requested } else { size };
+            }
+            // stderr is not retrievable from the device, so keep one line on
+            // disk next to metrics.csv / rtp-dump.bin for the FTP pull.
+            let _ = std::fs::create_dir_all("ux0:data/xcloud-rust");
+            let _ = std::fs::write(
+                "ux0:data/xcloud-rust/rcvbuf.txt",
+                format!(
+                    "default_bytes={} requested_bytes={} effective_bytes={}\n",
+                    size.max(0),
+                    requested.max(0),
+                    effective.max(0)
+                ),
+            );
+            eprintln!(
+                "SO_RCVBUF: default {} requested {} effective {}",
+                size.max(0),
+                requested.max(0),
+                effective.max(0)
+            );
         }
         let socket_addr = std_socket
             .local_addr()
@@ -91,7 +153,6 @@ impl RtcTransport {
             .context("failed to clone UDP socket for receive thread")?;
         let socket = UdpSocket::from_std(std_socket)
             .context("failed to register UDP socket with the async runtime")?;
-
         match ice::discover_server_reflexive_candidate(&socket, local_addr, stun_server).await {
             Ok(Some(public_addr)) => {
                 if let Err(error) =
@@ -122,6 +183,16 @@ impl RtcTransport {
                         eprintln!("rtc-recv affinity pin failed: {result}");
                     }
                 }
+                #[cfg(target_os = "vita")]
+                {
+                    let thread_id = unsafe { vitasdk_sys::sceKernelGetThreadId() };
+                    let result = unsafe {
+                        vitasdk_sys::sceKernelChangeThreadPriority(thread_id, 64)
+                    };
+                    if result < 0 {
+                        eprintln!("Failed to set receive thread priority to 64: {result:#x}");
+                    }
+                }
                 let mut buf = vec![0u8; 2048];
                 // Arm the arrival clock BEFORE the first recv so every
                 // capture instant is >= the anchor (no duration underflow).
@@ -129,7 +200,19 @@ impl RtcTransport {
                 // Perf-plan stage 0 probe: datagrams drained since the last
                 // idle moment; its maximum is reported as rx_drain_max.
                 let mut drained_since_idle: u64 = 0;
+                // Pause probe (perf plan 2026-11-25): time of the previous poll
+                // of the socket; the largest poll-to-poll interval is reported
+                // as rx_gap_max_us (how long this thread went unscheduled).
+                let mut last_poll_at = Instant::now();
                 loop {
+                    {
+                        let now = Instant::now();
+                        METRICS.rx_gap_max_us.fetch_max(
+                            now.duration_since(last_poll_at).as_micros() as u64,
+                            Ordering::Relaxed,
+                        );
+                        last_poll_at = now;
+                    }
                     match rx_socket.recv_from(&mut buf) {
                         Ok((n, peer_addr)) => {
                             drained_since_idle += 1;
