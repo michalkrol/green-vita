@@ -2,6 +2,7 @@
 #[link(name = "SceAudio_stub", kind = "static")]
 unsafe extern "C" {}
 
+mod direct_present;
 mod egui_painter;
 pub(crate) mod netctl;
 pub(crate) mod netprobe;
@@ -346,7 +347,9 @@ pub async fn run(mut app: App) -> Result<()> {
                 egui_events.drain(..egui_events.len() - 256);
             }
             surface.draw_scene(true)?;
-            surface.canvas.present();
+            if !surface.present_direct()? {
+                surface.canvas.present();
+            }
         }
         crate::streaming::video::metrics::METRICS
             .ui_work_us

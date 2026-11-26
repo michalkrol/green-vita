@@ -229,6 +229,13 @@ impl VitaSurface {
         Ok(())
     }
 
+    /// Direct-present experiment: scan the drawn frame out immediately
+    /// (tearing) instead of at the next vblank. Returns `false` to fall back
+    /// to the normal SDL present.
+    pub fn present_direct(&mut self) -> Result<bool> {
+        crate::shell::direct_present::present_immediate(&mut self.canvas, WIDTH, HEIGHT)
+    }
+
     pub fn paint_egui(
         &mut self,
         pixels_per_point: f32,
