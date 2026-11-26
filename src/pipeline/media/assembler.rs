@@ -139,6 +139,10 @@ pub struct AccessUnitAssembler {
     /// newer frames queue behind it (bounded HOL ≤ the repair window on
     /// damaged moments only; zero cost on clean frames).
     grace_parked: Option<(AuBuilder, u64, u16)>,
+    /// Stage 6: whether the parked AU's still-missing ranges have been
+    /// re-NACKed at the half-window mark. One refresh per park; reset whenever
+    /// a new AU parks.
+    grace_refreshed: bool,
 }
 
 impl AccessUnitAssembler {
@@ -167,6 +171,7 @@ impl AccessUnitAssembler {
             grace_enabled: true,
             prev_close_before_current: 0,
             grace_parked: None,
+            grace_refreshed: false,
         }
     }
 
@@ -247,6 +252,7 @@ impl AccessUnitAssembler {
                                 arrival_us.saturating_add(repair_policy().base_us),
                                 expected_first,
                             ));
+                        self.grace_refreshed = false;
                         METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
                         // Micro-jb event: parked AU = burst signature.
                         MICRO_JB_EVENTS.fetch_add(1, Ordering::Relaxed);
@@ -606,6 +612,7 @@ impl AccessUnitAssembler {
                 now_us.saturating_add(repair_policy().base_us),
                 expected_first,
             ));
+            self.grace_refreshed = false;
             METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
             // Micro-jb event: a parked AU is a burst signature — the decode
             // bank may grow (bounded) to absorb the next burst invisibly.
@@ -662,6 +669,7 @@ impl AccessUnitAssembler {
         au.nack_reported = true;
         self.pending_nacks.push((expect, first_seq.wrapping_sub(1)));
         self.grace_parked = Some((au, arrival_us.saturating_add(repair_policy().base_us), expect));
+        self.grace_refreshed = false;
         METRICS.grace_held.fetch_add(1, Ordering::Relaxed);
         // Micro-jb event: parked AU = burst signature.
         MICRO_JB_EVENTS.fetch_add(1, Ordering::Relaxed);
@@ -675,6 +683,29 @@ impl AccessUnitAssembler {
     /// they belong to the NEWEST resolved AU and must not rewind when a
     /// parked AU resolves late.
     fn grace_expire_if_due(&mut self, now_us: u64) {
+        // Stage 6 (2026-11-26): half-window NACK refresh. The original NACK is
+        // sent once when the AU parks; if the RTX answer is late or lost, the
+        // hole never recovers and the AU expires damaged. Re-send the still
+        // missing ranges once, when the parked AU reaches half of its budget,
+        // so a second RTX chance exists before the deadline. One refresh per
+        // park (`grace_refreshed`), reset by every park site.
+        let base_us = repair_policy().base_us;
+        let refresh = match &self.grace_parked {
+            Some((au, deadline, _))
+                if !self.grace_refreshed
+                    && base_us > 0
+                    && now_us >= deadline.saturating_sub(base_us / 2) =>
+            {
+                Some(compute_missing_ranges(&au.payloads))
+            }
+            _ => None,
+        };
+        if let Some(ranges) = refresh {
+            if !ranges.is_empty() {
+                self.pending_nacks.extend(ranges);
+            }
+            self.grace_refreshed = true;
+        }
         let due = matches!(&self.grace_parked, Some((_, deadline, _)) if now_us >= *deadline);
         if !due {
             return;
@@ -851,14 +882,27 @@ pub(crate) struct RepairPolicy {
 }
 
 pub(crate) fn repair_policy() -> RepairPolicy {
-    RepairPolicy {
-        base_us: match REPAIR_WINDOW_POLICY.load(std::sync::atomic::Ordering::Relaxed) {
-            0 => 0,
-            1 => 17_000,
-            3 => 60_000,
-            _ => 40_000,
-        },
-    }
+    let base_us = match REPAIR_WINDOW_POLICY.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => 0,
+        1 => 17_000,
+        3 => 60_000,
+        // Stage 6 (2026-11-26): RTT-aware Balanced window. The only RTT signal
+        // this fork has is the netprobe value (`probe_rtt_ms_x10`, stored at
+        // stream start) -- TWCC is send-only and SRTCP is encrypted, so there
+        // is no per-packet RTT. `clamp(RTT + 20 ms, 40 ms, 100 ms)`: the 40 ms
+        // floor keeps the measured radio tail (TWCC median 36-39 ms) covered
+        // when RTT is small, and the 100 ms cap stops a bad probe from parking
+        // an AU long enough to become visible latency. Presets Off/Short/
+        // Patient stay fixed; only the Balanced default is RTT-scaled.
+        _ => {
+            let rtt_ms = METRICS.probe_rtt_ms_x10.load(std::sync::atomic::Ordering::Relaxed) / 10;
+            rtt_ms
+                .saturating_mul(1000)
+                .saturating_add(20_000)
+                .clamp(40_000, 100_000)
+        }
+    };
+    RepairPolicy { base_us }
 }
 
 /// AU size cap — matches legacy `MAX_H264_ACCESS_UNIT_BYTES` in rtp.rs.
