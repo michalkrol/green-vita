@@ -292,6 +292,7 @@ pub async fn run(mut app: App) -> Result<()> {
         let ui_needed = hold_progress.is_some()
             || ps_hold_hint
             || vita_ime_active
+            || app.settings.latency_test_mode
             || !matches!(&app.state, AppState::Streaming(s) if !s.paused)
             || app.settings.stream_debug_mode != crate::settings::StreamDebugMode::Off
             || !app
@@ -360,6 +361,21 @@ pub async fn run(mut app: App) -> Result<()> {
             // loops/s) for ~59 decoded frames/s. Polling the vblank counter makes
             // the loop run exactly once per vblank whenever the frame's work fits.
             // Input polling keeps its own cadence (STREAM_INPUT_POLL_INTERVAL).
+            //
+            // 2026-11-26 fix: input is sampled ONCE here, before the wait, so a
+            // frame whose work exceeds the remaining vblank can never skip the
+            // poll entirely (the `while` would exit on its first check). That
+            // regression was invisible at 1.4 ms of work but appears as soon as
+            // something forces the egui pass -- latency test mode measured as
+            // "slightly less responsive" for exactly this reason.
+            event_pump.pump_events();
+            send_stream_gamepad_state(
+                &mut app,
+                controller.as_ref(),
+                raw_joystick.as_ref(),
+                &rear_touch_buttons,
+                false,
+            );
             let mut since_input_poll = Duration::ZERO;
             while vblank_count() == vblank_at_start {
                 sleep(VBLANK_POLL_INTERVAL).await;
