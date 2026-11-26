@@ -55,6 +55,21 @@ impl VitaSurface {
         })
     }
 
+    /// True when a frame newer than the one currently displayed is available.
+    ///
+    /// Latency (2026-11-26): the Vita loop paces by the vblank counter, so a
+    /// frame published just after a loop iteration waited ~16 ms for the next
+    /// one (`display_pickup` median 13 ms). The renderer is created without
+    /// `PRESENTVSYNC`, so presenting off-vblank is already allowed; this lets
+    /// the loop break out of the vblank wait and present as soon as a frame
+    /// arrives. If the panel latches at vblank this is a no-op; if it scans
+    /// immediately it returns the pickup to ~1-2 ms.
+    pub fn has_new_frame(&self, streaming: Option<&StreamingSession>) -> bool {
+        streaming
+            .and_then(|s| s.video_frame())
+            .is_some_and(|(frame_id, _)| frame_id != self.last_frame_id)
+    }
+
     /// Where the video quad lands on screen - accounts for letterboxing, see `fit_rect`.
     pub fn video_rect(&self) -> sdl2::rect::Rect {
         Self::fit_rect(self.video_width, self.video_height, WIDTH, HEIGHT)

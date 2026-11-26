@@ -378,6 +378,14 @@ pub async fn run(mut app: App) -> Result<()> {
             );
             let mut since_input_poll = Duration::ZERO;
             while vblank_count() == vblank_at_start {
+                // Latency (2026-11-26): do not sit out the whole vblank when a
+                // new frame is already waiting. The pickup is the vblank phase,
+                // not vsync (the renderer has no PRESENTVSYNC), so breaking
+                // here lets the same iteration sync/draw/present immediately.
+                // If no frame is new, the wait still paces the loop at 60 Hz.
+                if surface.has_new_frame(app.state.streaming()) {
+                    break;
+                }
                 sleep(VBLANK_POLL_INTERVAL).await;
                 since_input_poll += VBLANK_POLL_INTERVAL;
                 if since_input_poll >= STREAM_INPUT_POLL_INTERVAL {
