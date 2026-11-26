@@ -142,11 +142,18 @@ pub enum DamagePolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum RepairWindow {
     /// No park: damage resolves immediately (no RTX repair window).
+    ///
+    /// Default since 2026-11-26: the park holds the whole queue for the
+    /// window, so Balanced (40 ms) and Patient (60 ms) produced visible
+    /// freezes on every damaged AU (user: "Repair window Off - no freezes;
+    /// Balanced - many; Patient - a lot, unplayable"). Repair quality is
+    /// better with a window, but playability wins by default; the setting
+    /// remains for quality-first sessions.
+    #[default]
     Off,
     /// 17 ms park — tightest chain hold; loses fills that land later.
     Short,
-    /// 40 ms park — the pre-2026-11-25 fixed budget. Default.
-    #[default]
+    /// 40 ms park — the pre-2026-11-25 fixed budget.
     Balanced,
     /// 60 ms park — longest chain hold, highest fill rate.
     Patient,
