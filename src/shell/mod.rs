@@ -432,6 +432,11 @@ pub async fn run(mut app: App) -> Result<()> {
     }
 }
 
+/// Pause-menu edge guard: true while the pause menu is open. The first sample
+/// after it closes is dropped, because the button that triggered "return to
+/// game" (X) is still held and would otherwise leak into the game as a press.
+static WAS_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn send_stream_gamepad_state(
     app: &mut App,
     controller: Option<&sdl2::controller::GameController>,
@@ -439,6 +444,9 @@ fn send_stream_gamepad_state(
     rear_touch_buttons: &RearTouchButtons,
     relay_back_as_view: bool,
 ) {
+    let paused = matches!(&app.state, AppState::Streaming(s) if s.paused);
+    let just_resumed =
+        WAS_PAUSED.swap(paused, std::sync::atomic::Ordering::Relaxed) && !paused;
     let settings = &app.settings;
     let (rear_touch_enabled, front_touch_auxiliary_buttons) = match &app.state {
         AppState::Streaming(streaming) if !streaming.paused => (
@@ -459,6 +467,12 @@ fn send_stream_gamepad_state(
     ) else {
         return;
     };
+
+    // Drop the first sample after the pause menu closes (see WAS_PAUSED): the
+    // button that resumed the game is still held and must not reach the game.
+    if just_resumed {
+        return;
+    }
 
     // Detect button press edges for latency test mode (square/stopwatch).
     // This is intentionally cheap and does not alter the frame contents or timing.
