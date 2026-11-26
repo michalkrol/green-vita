@@ -12,6 +12,12 @@ use std::sync::{Arc, Mutex};
 /// (the queue oscillates 0<->1 every frame), so retiring there starves the
 /// display; only a genuine burst (>= 2 already queued) is worth skipping.
 const RETIRE_DEPTH: usize = 2;
+/// Smooth profile keeps a deep bank by design (admission limit up to 13, i.e.
+/// ~+100-200 ms of intentional buffering). Retiring at `RETIRE_DEPTH` there
+/// would treat the bank itself as a burst and starve the display -- the
+/// 2026-11-26 "Smooth gives frame drops and freezes" report. Retire only at the
+/// admission edge, where the producer would reject anyway.
+const RETIRE_DEPTH_SMOOTH: usize = 12;
 use std::time::{Duration, Instant};
 use crate::pipeline::decode::{Admission, DecodeScheduler, SchedulerMode};
 
@@ -282,7 +288,18 @@ fn run_decode_loop(
                 // in the bd8904d session), and a retired AU is one the display
                 // never gets -- 45 decoded/s instead of 60, seen as 10 fps
                 // freezes and jumps. Depth >= 2 only triggers on a real burst.
-                let retire = access_units.len() >= RETIRE_DEPTH;
+                // Revision 4 (2026-11-26): the threshold is profile-aware. The
+                // Smooth profile deliberately holds a deep bank (admission limit
+                // up to 13), so a fixed depth of 2 retired the bank itself and
+                // starved the display -- the reported Smooth freezes. Fast keeps
+                // depth 2 (its queue genuinely oscillates 0<->1); Smooth retires
+                // only at the admission edge.
+                let retire_depth = if LATENCY_PROFILE.load(Ordering::Relaxed) == 1 {
+                    RETIRE_DEPTH_SMOOTH
+                } else {
+                    RETIRE_DEPTH
+                };
+                let retire = access_units.len() >= retire_depth;
                 let scratch = if retire {
                     direct_output.lock_scratch_target()
                 } else {
