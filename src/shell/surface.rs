@@ -1,9 +1,7 @@
 use crate::app::StreamingSession;
 use crate::settings::ColorProfile;
 use crate::shell::egui_painter::SdlEguiPainter;
-use crate::streaming::video::{
-    DirectVideoOutput, NUM_DISPLAY_TEXTURES, NUM_TEXTURES, VideoTextureTarget,
-};
+use crate::streaming::video::{DirectVideoOutput, VideoTextureTarget, NUM_TEXTURES};
 use anyhow::{Context, Result};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{Canvas, Texture};
@@ -74,7 +72,7 @@ impl VitaSurface {
             return Ok(());
         }
         let index = frame.texture_index;
-        if index >= NUM_DISPLAY_TEXTURES {
+        if index >= NUM_TEXTURES {
             anyhow::bail!("decoder returned invalid direct texture index {index}");
         }
         crate::streaming::video::metrics::METRICS
@@ -134,16 +132,8 @@ impl VitaSurface {
             create_texture()?,
             create_texture()?,
             create_texture()?,
-            // Decoder-private scratch (stage 3c): retired AUs decode here and
-            // are never displayed.
-            create_texture()?,
         ];
         let mut targets: [_; NUM_TEXTURES] = [
-            VideoTextureTarget {
-                ptr: 0,
-                pitch: 0,
-                capacity: 0,
-            },
             VideoTextureTarget {
                 ptr: 0,
                 pitch: 0,
