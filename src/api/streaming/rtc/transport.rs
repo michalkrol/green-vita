@@ -40,16 +40,19 @@ impl RtcTransport {
         std_socket
             .set_nonblocking(true)
             .context("failed to set UDP socket non-blocking")?;
-        // Perf-plan stage 0 probe (read-only): report the kernel's default UDP
-        // receive buffer for this socket. Stage 4 (2026-11-25) raised it to
-        // 294 912 B and lowered the RX thread priority; device A/B on 2026-11-26
-        // showed that combination adds standing latency the CSV cannot see
-        // (0.3.2 with the 124 800 B default: no accumulation; 0.3.3 with
-        // 294 912 B: ~1 s within a minute). The buffer is a FIFO between the
-        // radio and our process and our arrival clock starts AFTER recv_from, so
-        // queued datagrams are pre-history. Stage 4 is therefore reverted: the
-        // socket keeps the OS default and the RX thread keeps its default
-        // priority. Only the probe and the on-disk report remain.
+        // Perf-plan stage 0 probe + stage 4 re-test (buffer only). The probe
+        // reports the kernel's default UDP receive buffer; stage 4 then raises
+        // it to 512 packets with a step-down ladder.
+        //
+        // History: stage 4 (2026-11-25) raised the buffer to 294 912 B AND
+        // lowered the RX thread priority to 64. Device A/B on 2026-11-26 showed
+        // that combination adds standing latency the CSV cannot see (0.3.2 with
+        // the 124 800 B default: no accumulation; 0.3.3 with 294 912 B: ~1 s
+        // within a minute), so both were reverted (4ba69db). That A/B only
+        // disproved the buffer as a cause of ACCUMULATION; the stage's actual
+        // target -- damage in busy sessions -- was never tested. This re-test
+        // changes the buffer alone and keeps the RX thread at its default
+        // priority, so the two effects stay separable.
         #[cfg(target_os = "vita")]
         {
             use std::os::fd::AsRawFd;
@@ -60,6 +63,15 @@ impl RtcTransport {
                     optname: i32,
                     optval: *mut std::ffi::c_void,
                     optlen: *mut u32,
+                ) -> i32;
+                // C signature: socklen_t is passed BY VALUE for setsockopt
+                // (getsockopt takes a pointer).
+                fn setsockopt(
+                    fd: i32,
+                    level: i32,
+                    optname: i32,
+                    optval: *const std::ffi::c_void,
+                    optlen: u32,
                 ) -> i32;
             }
             let level = vitasdk_sys::SCE_NET_SOL_SOCKET as i32;
@@ -83,20 +95,64 @@ impl RtcTransport {
                 );
             }
 
+            // Perf-plan stage 4 (buffer-only re-test): target 512 packets
+            // (~1.1 KB each = 589 824 B), stepping down to 256 then 128 packets
+            // if the OS refuses, instead of the 124 800-byte default (~113
+            // packets). Measured pile-ups reached 95 packets = 77 % of that
+            // default while the RX thread was starved. The RX thread priority is
+            // deliberately left at its default in this build.
+            let ladder = [589_824i32, 294_912, 147_456];
+            let mut requested: i32 = 0;
+            for candidate in ladder {
+                let result = unsafe {
+                    setsockopt(
+                        fd,
+                        level,
+                        optname,
+                        (&candidate as *const i32).cast(),
+                        std::mem::size_of::<i32>() as u32,
+                    )
+                };
+                if result == 0 {
+                    requested = candidate;
+                    break;
+                }
+            }
+            let mut effective: i32 = 0;
+            let mut effective_len: u32 = std::mem::size_of::<i32>() as u32;
+            let queried = unsafe {
+                getsockopt(
+                    fd,
+                    level,
+                    optname,
+                    (&mut effective as *mut i32).cast(),
+                    &mut effective_len,
+                )
+            };
+            if queried != 0 {
+                // Fall back to what we know: our request, else the default.
+                effective = if requested != 0 { requested } else { size };
+            }
+
             // stderr is not retrievable from the device, so keep one line on
             // disk next to metrics.csv / rtp-dump.bin for the FTP pull.
-            // `requested_bytes=0` means stage 4 is reverted and the socket runs
-            // at the OS default.
+            // `requested_bytes=0` would mean the ladder did not run.
             let _ = std::fs::create_dir_all("ux0:data/xcloud-rust");
             let _ = std::fs::write(
                 "ux0:data/xcloud-rust/rcvbuf.txt",
                 format!(
-                    "default_bytes={} requested_bytes=0 effective_bytes={}\n",
+                    "default_bytes={} requested_bytes={} effective_bytes={}\n",
                     size.max(0),
-                    size.max(0)
+                    requested.max(0),
+                    effective.max(0)
                 ),
             );
-            eprintln!("SO_RCVBUF: default {} (stage 4 reverted)", size.max(0));
+            eprintln!(
+                "SO_RCVBUF: default {} requested {} effective {}",
+                size.max(0),
+                requested.max(0),
+                effective.max(0)
+            );
         }
         let socket_addr = std_socket
             .local_addr()
@@ -145,11 +201,11 @@ impl RtcTransport {
                     }
                 }
                 // Stage 4 (2026-11-25) also lowered this thread's priority to 64
-                // (Vita: 0 = highest, 0x7F = lowest, default 32). Device A/B on
-                // 2026-11-26 showed the deepened socket buffer plus the
-                // deprioritised drain produced standing latency the CSV cannot
-                // see, so the priority change is reverted with the buffer: the
-                // thread keeps the default it had in 0.3.2.
+                // (Vita: 0 = highest, 0x7F = lowest, default 32). The 2026-11-26
+                // A/B could not separate the buffer from the priority, so this
+                // buffer-only re-test keeps the default priority: the thread
+                // keeps the priority it had in 0.3.2 and only the socket buffer
+                // changes.
                 let mut buf = vec![0u8; 2048];
                 // Arm the arrival clock BEFORE the first recv so every
                 // capture instant is >= the anchor (no duration underflow).
