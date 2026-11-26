@@ -437,6 +437,13 @@ pub async fn run(mut app: App) -> Result<()> {
 /// game" (X) is still held and would otherwise leak into the game as a press.
 static WAS_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Set when the pause menu closes; input stays blocked until the gamepad is
+/// neutral (see `GamepadFrame::is_neutral`). A single dropped sample is not
+/// enough -- the resume button is held for ~100 ms, so the 4 ms samples after
+/// it would still leak.
+static BLOCK_UNTIL_NEUTRAL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn send_stream_gamepad_state(
     app: &mut App,
     controller: Option<&sdl2::controller::GameController>,
@@ -447,6 +454,9 @@ fn send_stream_gamepad_state(
     let paused = matches!(&app.state, AppState::Streaming(s) if s.paused);
     let just_resumed =
         WAS_PAUSED.swap(paused, std::sync::atomic::Ordering::Relaxed) && !paused;
+    if just_resumed {
+        BLOCK_UNTIL_NEUTRAL.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let settings = &app.settings;
     let (rear_touch_enabled, front_touch_auxiliary_buttons) = match &app.state {
         AppState::Streaming(streaming) if !streaming.paused => (
@@ -468,10 +478,14 @@ fn send_stream_gamepad_state(
         return;
     };
 
-    // Drop the first sample after the pause menu closes (see WAS_PAUSED): the
-    // button that resumed the game is still held and must not reach the game.
-    if just_resumed {
-        return;
+    // After the pause menu closes, block input until the pad is neutral: the
+    // resume button is still held and would otherwise leak into the game.
+    if BLOCK_UNTIL_NEUTRAL.load(std::sync::atomic::Ordering::Relaxed) {
+        if frame.is_neutral() {
+            BLOCK_UNTIL_NEUTRAL.store(false, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            return;
+        }
     }
 
     // Detect button press edges for latency test mode (square/stopwatch).
