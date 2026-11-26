@@ -823,7 +823,19 @@ impl VideoRtp {
                 self.next_sequence = desc
                     .marker_seen
                     .then(|| desc.last_seq.wrapping_add(1));
-                *keyframe_requested = true;
+                // Step 6 (2026-11-26): the immediate keyframe request is a
+                // property of the SHED policies, not of damage itself. The
+                // LowLatency default is documented as "decodes through: brief
+                // artefacts, no stall", but this line requested a keyframe on
+                // EVERY damaged AU regardless of policy -- 128 damaged AUs
+                // became 112 PLIs and 199 IDRs (14.5 MB) in 736 s. Under
+                // LowLatency the gentler `record_damage` threshold (3 events at
+                // 60 fps) is the trigger, and the resync path requests the
+                // keyframe from `finish_au` while `waiting_for_keyframe` is set,
+                // so the chain still recovers.
+                if DAMAGE_POLICY.load(Ordering::Relaxed) != 0 {
+                    *keyframe_requested = true;
+                }
                 self.record_damage(worker);
                 *frame_was_damaged = true;
                 stats.dropped = stats.dropped.saturating_add(1);
