@@ -15,9 +15,12 @@ const RETIRE_DEPTH: usize = 2;
 /// Smooth profile keeps a deep bank by design (admission limit up to 13, i.e.
 /// ~+100-200 ms of intentional buffering). Retiring at `RETIRE_DEPTH` there
 /// would treat the bank itself as a burst and starve the display -- the
-/// 2026-11-26 "Smooth gives frame drops and freezes" report. Retire only at the
-/// admission edge, where the producer would reject anyway.
-const RETIRE_DEPTH_SMOOTH: usize = 12;
+/// 2026-11-26 "Smooth gives frame drops and freezes" report. Retire at the
+/// bank target (6): keep the intended 6-frame bank, retire beyond it. A
+/// threshold of 12 (the admission edge) disabled retire entirely, so the
+/// consumer could not drain and the queue backed up (queue_full 46/s, 52/s
+/// decoded in the 4e1cd3a Smooth session).
+const RETIRE_DEPTH_SMOOTH: usize = 6;
 use std::time::{Duration, Instant};
 use crate::pipeline::decode::{Admission, DecodeScheduler, SchedulerMode};
 
