@@ -143,8 +143,8 @@ impl MetricsCsvLog {
             snapshot.capture_to_arrival_max_us as i64,
             snapshot.twcc_delay_med_us as i64,
             snapshot.twcc_delay_max_us as i64,
-            snapshot.sr_anchor_ntp as i64,
-            snapshot.sr_anchor_rtp_ts as i64,
+            0, // sr_anchor_ntp: SRTCP-encrypted, unreadable,
+            0, // sr_anchor_rtp_ts: SRTCP-encrypted, unreadable,
             snapshot.sr_anchor_local_us as i64,
             snapshot.sr_anchor_local_wall_us as i64,
             snapshot.grace_held as i64,
@@ -192,8 +192,6 @@ impl MetricsCsvLog {
         // Session-end mismatch-evidence flush (RAM-buffered capture from the
         // shadow comparator; no-op when no event fired this session).
         crate::api::streaming::rtc::rtp::mismatch_log::session_flush();
-        // Session-end decoder-error flush (same lifecycle as the CSV).
-        crate::streaming::video::decode_error_log::flush();
         let buffer = self.rows.lock().unwrap_or_else(|_| panic!("metrics_csv_log flush mutex poisoned"));
         let path = std::path::Path::new("ux0:data/xcloud-rust/metrics.csv");
         // Ensure directory exists (no-op if already exists on-device; off-device will fail)
@@ -327,8 +325,8 @@ fn csv_row_from_snapshot(snapshot: &MetricsSnapshot) -> String {
         snapshot.capture_to_arrival_max_us as i64,
         snapshot.twcc_delay_med_us as i64,
         snapshot.twcc_delay_max_us as i64,
-        snapshot.sr_anchor_ntp as i64,
-        snapshot.sr_anchor_rtp_ts as i64,
+        0, // sr_anchor_ntp: SRTCP-encrypted, unreadable,
+        0, // sr_anchor_rtp_ts: SRTCP-encrypted, unreadable,
         snapshot.sr_anchor_local_us as i64,
         snapshot.sr_anchor_local_wall_us as i64,
         snapshot.grace_held as i64,
@@ -390,8 +388,6 @@ mod tests {
             sr_clock_offset_ms: 0,
             capture_to_arrival_us: 0,
             capture_to_arrival_max_us: 0,
-            sr_anchor_ntp: 0,
-            sr_anchor_rtp_ts: 0,
             sr_anchor_local_us: 0,
             sr_anchor_local_wall_us: 0,
             stream_lag_max_us: 0,
@@ -520,8 +516,6 @@ mod tests {
             sr_clock_offset_ms: 0,
             capture_to_arrival_us: 0,
             capture_to_arrival_max_us: 0,
-            sr_anchor_ntp: 0,
-            sr_anchor_rtp_ts: 0,
             sr_anchor_local_us: 0,
             sr_anchor_local_wall_us: 0,
             stream_lag_max_us: 0,

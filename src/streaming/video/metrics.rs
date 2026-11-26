@@ -63,8 +63,6 @@ pub(crate) struct MetricsSnapshot {
     pub(crate) sr_clock_offset_ms: i64,
     pub(crate) capture_to_arrival_us: i64,
     pub(crate) capture_to_arrival_max_us: i64,
-    pub(crate) sr_anchor_ntp: u64,
-    pub(crate) sr_anchor_rtp_ts: u64,
     pub(crate) sr_anchor_local_us: u64,
     pub(crate) sr_anchor_local_wall_us: u64,
     pub(crate) sh_match: u64,
@@ -313,8 +311,6 @@ pub(crate) static METRICS: VideoMetrics = VideoMetrics {
     video_metadata_sent: AtomicU64::new(0),
     video_bandwidth_kbps: AtomicU64::new(0),
     // Absolute latency metrics (Task D) - SR anchor and per-second derived metrics
-    sr_anchor_ntp: AtomicU64::new(0),
-    sr_anchor_rtp_ts: AtomicU64::new(0),
     sr_anchor_local_us: AtomicU64::new(0),
     sr_anchor_local_wall_us: AtomicU64::new(0),
     sr_age_ms: AtomicI64::new(0),
@@ -392,8 +388,6 @@ pub(crate) fn init_csv_log() {
     if let Some(old) = METRICS_CSV_LOG.lock().unwrap().take() {
         old.flush();
     }
-    // New session: forget decoder errors that were never flushed.
-    crate::streaming::video::decode_error_log::init();
     *METRICS_CSV_LOG.lock().unwrap() = Some(crate::streaming::video::metrics_log::MetricsCsvLog::new());
 }
 
@@ -546,6 +540,9 @@ pub(crate) fn drain_metrics() -> MetricsSnapshot {
         sr_clock_offset_ms: METRICS.sr_clock_offset_ms.swap(0, Ordering::Relaxed) as i64,
         capture_to_arrival_us: METRICS.capture_to_arrival_us.swap(0, Ordering::Relaxed) as i64,
         capture_to_arrival_max_us: METRICS.capture_to_arrival_max_us.swap(0, Ordering::Relaxed) as i64,
+        sr_anchor_local_us: METRICS.sr_anchor_local_us.load(Ordering::Relaxed),
+        sr_anchor_local_wall_us: METRICS.sr_anchor_local_wall_us.load(Ordering::Relaxed),
+        sh_match: METRICS.sh_match.swap(0, Ordering::Relaxed),
         sh_bound_mismatch: METRICS.sh_bound_mismatch.swap(0, Ordering::Relaxed),
         sh_bytes_mismatch: METRICS.sh_bytes_mismatch.swap(0, Ordering::Relaxed),
         sh_class_mismatch: METRICS.sh_class_mismatch.swap(0, Ordering::Relaxed),

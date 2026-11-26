@@ -160,7 +160,7 @@ impl DirectVideoOutput {
         };
 
         Some(DirectVideoTargetGuard {
-            state,
+            state: Some(state),
             target: targets[index],
             index,
         })
