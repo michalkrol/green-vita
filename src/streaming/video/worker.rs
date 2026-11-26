@@ -6,6 +6,12 @@ use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, select_biased, 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Backlog depth at which an access unit is considered stale and retired into
+/// the scratch texture instead of being displayed. Depth 1 is ordinary jitter
+/// (the queue oscillates 0<->1 every frame), so retiring there starves the
+/// display; only a genuine burst (>= 2 already queued) is worth skipping.
+const RETIRE_DEPTH: usize = 2;
 use std::time::{Duration, Instant};
 use crate::pipeline::decode::{Admission, DecodeScheduler, SchedulerMode};
 
@@ -269,7 +275,14 @@ fn run_decode_loop(
                 // rate. (Before: stale AUs blocked on the ring lock, so a
                 // 60 fps arrival rate outran the loop and `pipeline_age`
                 // drifted upward ~2.5 ms/min.)
-                let retire = !access_units.is_empty();
+                //
+                // Revision 3 (2026-11-26): the retire decision needs a DEPTH
+                // threshold, not "any". With `!is_empty()` the queue's normal
+                // 0<->1 jitter retired 27 % of all access units (4350 of 16205
+                // in the bd8904d session), and a retired AU is one the display
+                // never gets -- 45 decoded/s instead of 60, seen as 10 fps
+                // freezes and jumps. Depth >= 2 only triggers on a real burst.
+                let retire = access_units.len() >= RETIRE_DEPTH;
                 let scratch = if retire {
                     direct_output.lock_scratch_target()
                 } else {
