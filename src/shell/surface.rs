@@ -128,9 +128,11 @@ impl VitaSurface {
         if !output.decoder_ready.load(Ordering::Acquire) {
             return Ok(());
         }
-        let direct_now = crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed);
+        // Keep the targets alive when direct mode is inactive (pause menu):
+        // clearing them while the decoder is mid-AU gives it a null target and
+        // crashes sceAvcdec. The SDL canvas is presented for the menu instead.
         if output_is_current
-            && (self.video_textures.is_some() || (direct_now && self.direct_video_output.is_some()))
+            && (self.video_textures.is_some() || self.direct_video_output.is_some())
         {
             return Ok(());
         }
