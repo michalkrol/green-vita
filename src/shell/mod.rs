@@ -290,6 +290,15 @@ pub async fn run(mut app: App) -> Result<()> {
         // and no gesture pending, present the frame without running the UI
         // toolkit (its work measured 1.3-1.5 ms per frame on the Vita). egui
         // events are carried over to the next UI frame.
+        // 2b: direct mode is a streaming-only property. The static defaults to
+        // true, but the title/settings UI must still present through SDL, so
+        // gate it on the streaming state every iteration (otherwise the title
+        // screen is black and the app appears to exit before sign-in).
+        crate::shell::direct_present::DIRECT_MODE.store(
+            app.settings.direct_present && matches!(&app.state, AppState::Streaming(_)),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
         let ui_needed = hold_progress.is_some()
             || ps_hold_hint
             || vita_ime_active
