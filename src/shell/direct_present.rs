@@ -18,8 +18,13 @@
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// Master switch for the experiment.
-pub static ENABLED: AtomicBool = AtomicBool::new(true);
+/// Master switch for the experiment. Disabled 2026-11-27: with the format fix
+/// the direct path fired (direct-present.txt ok=871 fallback=0) but the SDL
+/// readback of a 960x544 A8B8G8R8 frame + row copy cost ~79 ms/frame
+/// (ui_work_us 78.8, 15 fps) and produced a black/broken image. The readback
+/// approach is a dead end; a real direct present needs the decoder to write
+/// straight into the framebuffer (no SDL readback).
+pub static ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// When true, a fallback does NOT present through SDL: the caller is told the
 /// frame was "presented" so the last image stays on screen. Use it to prove the
