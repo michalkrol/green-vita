@@ -93,7 +93,9 @@ mod imp {
         let fb = SceDisplayFrameBuf {
             size: std::mem::size_of::<SceDisplayFrameBuf>(),
             base: ptr as *mut std::ffi::c_void,
-            pitch,
+            // SceDisplayFrameBuf.pitch is in PIXELS (not bytes); the target
+            // pitch is bytes (4 B/px for A8B8G8R8).
+            pitch: pitch / 4,
             pixelformat: 0,
             width,
             height,
