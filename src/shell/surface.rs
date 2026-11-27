@@ -124,12 +124,31 @@ impl VitaSurface {
         if !output.decoder_ready.load(Ordering::Acquire) {
             return Ok(());
         }
-        if output_is_current && self.video_textures.is_some() {
+        if output_is_current
+            && (self.video_textures.is_some() || self.direct_video_output.is_some())
+        {
             return Ok(());
         }
 
         self.detach_direct_video_output();
         let (width, height) = (output.width, output.height);
+        // 2a: direct mode -- the display framebuffer is the decode target
+        // (single buffer, no SDL texture, no readback). RGBA8888 only.
+        if crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed)
+            && output.color_profile == ColorProfile::Rgba8888
+            && let Some((ptr, pitch, capacity)) =
+                crate::shell::direct_present::framebuffer_target()
+        {
+            let target = VideoTextureTarget { ptr, pitch, capacity };
+            output.set_targets([target; NUM_TEXTURES]);
+            self.video_textures = None;
+            self.displayed_video_texture = None;
+            self.direct_video_output = Some(output);
+            self.video_width = width;
+            self.video_height = height;
+            self.last_frame_id = 0;
+            return Ok(());
+        }
         // Match the hardware decoder's output format (ColorProfile). SCE pixel-format
         // naming puts the red channel in the lowest byte/bits (the working RGB565 path
         // is the same convention: SCE "RGBA565" pairs with SDL BGR565), so SCE
@@ -233,6 +252,9 @@ impl VitaSurface {
     /// (tearing) instead of at the next vblank. Returns `false` to fall back
     /// to the normal SDL present.
     pub fn present_direct(&mut self) -> Result<bool> {
+        if crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed) {
+            return Ok(crate::shell::direct_present::present_framebuffer());
+        }
         crate::shell::direct_present::present_immediate(&mut self.canvas, WIDTH, HEIGHT)
     }
 

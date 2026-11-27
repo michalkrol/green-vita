@@ -31,6 +31,10 @@ pub static ENABLED: AtomicBool = AtomicBool::new(false);
 /// direct path is active (the screen freezes if it is not).
 pub static STRICT: AtomicBool = AtomicBool::new(false);
 
+/// 2a: use the display framebuffer as the decode target (RGBA8888 only; the
+/// framebuffer is A8B8G8R8, 4 B/px). Single buffer -> tearing.
+pub static DIRECT_MODE: AtomicBool = AtomicBool::new(true);
+
 static OK: AtomicU64 = AtomicU64::new(0);
 static FALLBACK: AtomicU64 = AtomicU64::new(0);
 static LAST_REPORT_MS: AtomicU64 = AtomicU64::new(0);
@@ -82,6 +86,44 @@ mod imp {
     unsafe extern "C" {
         fn sceDisplayGetFrameBuf(p: *mut SceDisplayFrameBuf, sync: i32) -> i32;
         fn sceDisplaySetFrameBuf(p: *const SceDisplayFrameBuf, sync: i32) -> i32;
+    }
+
+    /// 2a: the display framebuffer as a decode target (single buffer, no
+    /// allocation). Returns (base ptr, pitch, capacity) for A8B8G8R8.
+    pub fn framebuffer_target() -> Option<(usize, u32, u32)> {
+        let mut fb = SceDisplayFrameBuf {
+            size: std::mem::size_of::<SceDisplayFrameBuf>(),
+            base: std::ptr::null_mut(),
+            pitch: 0,
+            pixelformat: 0,
+            width: 0,
+            height: 0,
+        };
+        let got = unsafe { sceDisplayGetFrameBuf(&mut fb, SCE_DISPLAY_SETBUF_IMMEDIATE) };
+        if got != 0 || fb.base.is_null() || fb.pixelformat != 0 {
+            return None;
+        }
+        Some((fb.base as usize, fb.pitch, fb.pitch.saturating_mul(fb.height)))
+    }
+
+    /// 2a: present the framebuffer the decoder just wrote (no readback).
+    pub fn present_framebuffer() -> bool {
+        let mut fb = SceDisplayFrameBuf {
+            size: std::mem::size_of::<SceDisplayFrameBuf>(),
+            base: std::ptr::null_mut(),
+            pitch: 0,
+            pixelformat: 0,
+            width: 0,
+            height: 0,
+        };
+        let got = unsafe { sceDisplayGetFrameBuf(&mut fb, SCE_DISPLAY_SETBUF_IMMEDIATE) };
+        if got != 0 || fb.base.is_null() {
+            return false;
+        }
+        unsafe {
+            sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_IMMEDIATE);
+        }
+        true
     }
 
     /// Present the already-drawn screen immediately. Returns `true` when the
@@ -163,6 +205,15 @@ mod imp {
     ) -> Result<bool> {
         Ok(false)
     }
+
+    pub fn framebuffer_target() -> Option<(usize, u32, u32)> {
+        None
+    }
+
+    pub fn present_framebuffer() -> bool {
+        false
+    }
 }
 
 pub use imp::present_immediate;
+pub use imp::{framebuffer_target, present_framebuffer};
