@@ -99,15 +99,15 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
         rows.push(SettingsRow::SwapShouldersTriggers(app.settings.swap_shoulders_and_triggers));
     }
     rows.push(SettingsRow::PsButtonCapture(app.settings.ps_button_capture));
+    rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
     rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
     rows.push(SettingsRow::ColorProfile(app.settings.color_profile));
     rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
     rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
     rows.push(SettingsRow::RepairWindow(app.settings.repair_window));
+    rows.push(SettingsRow::DirectPresent(app.settings.direct_present));
     rows.push(SettingsRow::StreamDebug(app.settings.stream_debug_mode));
     rows.push(SettingsRow::LatencyTest(app.settings.latency_test_mode));
-    rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
-    rows.push(SettingsRow::DirectPresent(app.settings.direct_present));
     rows.push(SettingsRow::Back);
     rows
 }
@@ -291,6 +291,26 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 ui.add_space(14.0);
                 ui.separator();
                 {
+                    let mut args = FluentArgs::new();
+                    let label = if app.settings.video_bitrate_kbps == 0 {
+                        i18n.text("settings-video-bitrate-nocap")
+                    } else {
+                        args.set(
+                            "kbps",
+                            arg_string(app.settings.video_bitrate_kbps.to_string()),
+                        );
+                        i18n.text_with("settings-video-bitrate-cap", args)
+                    };
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = next_bitrate_preset(app.settings.video_bitrate_kbps);
+                        commands.push(Command::SetVideoBitrateCap(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                {
                     let label = format!("H264 profile: {}", match app.settings.video_h264_profile {
                         H264Profile::Baseline => "Baseline",
                         H264Profile::Main => "Main",
@@ -413,6 +433,19 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.direct_present,
+                    i18n.text("settings-direct-present"),
+                ) {
+                    commands
+                        .push(Command::SetDirectPresent(!app.settings.direct_present).into());
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
                 {
                     let label = format!(
                         "Debug: {}",
@@ -445,39 +478,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 }
                 row_index += 1;
 
-                ui.add_space(14.0);
-                ui.separator();
-                {
-                    let mut args = FluentArgs::new();
-                    let label = if app.settings.video_bitrate_kbps == 0 {
-                        i18n.text("settings-video-bitrate-nocap")
-                    } else {
-                        args.set(
-                            "kbps",
-                            arg_string(app.settings.video_bitrate_kbps.to_string()),
-                        );
-                        i18n.text_with("settings-video-bitrate-cap", args)
-                    };
-                    if focus_row(ui, selected_index == row_index, label) {
-                        let next = next_bitrate_preset(app.settings.video_bitrate_kbps);
-                        commands.push(Command::SetVideoBitrateCap(next).into());
-                    }
-                }
-                row_index += 1;
-
-                ui.add_space(14.0);
-                ui.separator();
-                if checkbox_row(
-                    ui,
-                    selected_index == row_index,
-                    app.settings.direct_present,
-                    i18n.text("settings-direct-present"),
-                ) {
-                    commands
-                        .push(Command::SetDirectPresent(!app.settings.direct_present).into());
-                }
-                row_index += 1;
-
                 // Descriptions (read-only, at the bottom).
                 ui.add_space(14.0);
                 ui.separator();
@@ -487,11 +487,14 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 for key in [
                     "settings-swap-shoulders-triggers",
                     "settings-ps-button-capture-sub",
+                    "settings-bitrate",
                     "settings-color-profile",
                     "settings-direct-present-sub",
                     "settings-latency-profile",
                     "settings-damage-policy",
                     "settings-repair-window",
+                    "settings-debug-modes",
+                    "settings-latency-test",
                 ] {
                     ui.colored_label(
                         theme.text,
