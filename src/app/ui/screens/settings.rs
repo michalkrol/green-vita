@@ -4,7 +4,7 @@ use crate::app::ui::header::show_header_row;
 use crate::app::ui::theme::Theme;
 use crate::app::ui::widgets::smooth_scroll_area;
 use crate::i18n::{I18n, arg_string};
-use crate::settings::{ColorProfile, H264Profile, RepairWindow, StreamDebugMode};
+use crate::settings::{ColorProfile, H264Profile, RepairWindow, StreamDebugMode, parse_region_bypass_ip};
 use crate::{App, AppCommand, AppState, Locale};
 use anyhow::Result;
 use fluent_bundle::FluentArgs;
@@ -33,6 +33,8 @@ pub enum Command {
     SetDirectPresent(bool),
     SetLatencyTestMode(bool),
     SetPsButtonCapture(bool),
+    SetRegionBypassIp(Option<String>),
+    EnterRegionBypassIp,
 }
 
 #[derive(Clone)]
@@ -53,6 +55,8 @@ enum SettingsRow {
     DirectPresent(bool),
     LatencyTest(bool),
     PsButtonCapture(bool),
+    RegionBypass,
+    RegionBypassEnterIp,
     Back,
 }
 
@@ -108,6 +112,11 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::DirectPresent(app.settings.direct_present));
     rows.push(SettingsRow::StreamDebug(app.settings.stream_debug_mode));
     rows.push(SettingsRow::LatencyTest(app.settings.latency_test_mode));
+    // 0.4.0 networking settings stay last (user request).
+    if title_id.is_none() {
+        rows.push(SettingsRow::RegionBypass);
+        rows.push(SettingsRow::RegionBypassEnterIp);
+    }
     rows.push(SettingsRow::Back);
     rows
 }
@@ -478,6 +487,57 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                 }
                 row_index += 1;
 
+                // 0.4.0 networking settings (last, per user request).
+                if title_id.is_none() {
+                    ui.add_space(14.0);
+                    ui.separator();
+                    let label = match app.settings.active_region_bypass_ip().as_deref() {
+                        Some(ip) => {
+                            let mut args = FluentArgs::new();
+                            args.set("ip", arg_string(ip));
+                            i18n.text_with("settings-region-bypass-ip", args)
+                        }
+                        None => i18n.text("settings-region-bypass-off"),
+                    };
+                    if focus_row(ui, selected_index == row_index, label) {
+                        commands.push(
+                            Command::SetRegionBypassIp(app.settings.next_region_bypass_choice())
+                                .into(),
+                        );
+                    }
+                    row_index += 1;
+
+                    if focus_row(
+                        ui,
+                        selected_index == row_index,
+                        i18n.text("settings-region-bypass-enter-ip"),
+                    ) {
+                        commands.push(Command::EnterRegionBypassIp.into());
+                    }
+                    row_index += 1;
+
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(i18n.text("settings-region-bypass-warning"))
+                                .size(14.0)
+                                .color(theme.text),
+                        )
+                        .wrap(),
+                    );
+                    if app.region_bypass_changed {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(
+                                    i18n.text("settings-region-bypass-pending"),
+                                )
+                                .size(14.0)
+                                .color(theme.accent),
+                            )
+                            .wrap(),
+                        );
+                    }
+                }
+
                 // Descriptions (read-only, at the bottom).
                 ui.add_space(14.0);
                 ui.separator();
@@ -703,6 +763,13 @@ impl App {
             SettingsRow::LatencyTest(enabled) => {
                 return self.handle_settings_command(Command::SetLatencyTestMode(!enabled));
             }
+            SettingsRow::RegionBypass => {
+                let next = self.settings.next_region_bypass_choice();
+                return self.handle_settings_command(Command::SetRegionBypassIp(next));
+            }
+            SettingsRow::RegionBypassEnterIp => {
+                return self.handle_settings_command(Command::EnterRegionBypassIp);
+            }
             SettingsRow::VideoBitrateCap(current) => {
                 return self.handle_settings_command(Command::SetVideoBitrateCap(
                     next_bitrate_preset(*current),
@@ -780,7 +847,23 @@ impl App {
     fn leave_settings(&mut self) {
         let state = std::mem::replace(&mut self.state, AppState::TitleList { selected: 0 });
         if let AppState::Settings { return_to, .. } = state {
-            self.set_state(*return_to);
+            // streaming tokens are issued at sign-in
+            let safe_to_refresh = matches!(
+                *return_to,
+                AppState::ModeSelect { .. }
+                    | AppState::TitleList { .. }
+                    | AppState::ConsoleList { .. }
+                    | AppState::Error {
+                        retry_sign_in: true,
+                        ..
+                    }
+            );
+            if self.region_bypass_changed && safe_to_refresh && self.service.auth.has_saved_login()
+            {
+                self.load_credentials();
+            } else {
+                self.set_state(*return_to);
+            }
         } else {
             self.state = state;
         }
@@ -920,9 +1003,38 @@ impl App {
                 self.settings.ps_button_capture = enabled;
                 self.settings.save();
             }
+            Command::SetRegionBypassIp(ip) => {
+                let before = self.settings.active_region_bypass_ip();
+                self.settings.region_bypass_ip = ip;
+                self.settings.save();
+                self.note_region_bypass_change(before);
+            }
+            Command::EnterRegionBypassIp => {
+                self.ime_request = Some(crate::app::ImeTarget::RegionBypassIp);
+            }
         }
 
         Ok(())
+    }
+
+    /// Text from the on-screen keyboard for the bypass IP. A valid IP becomes the
+    /// active one; empty input turns the bypass off; anything else is ignored.
+    pub(crate) fn set_region_bypass_ip_from_input(&mut self, text: &str) {
+        let ip = if text.trim().is_empty() {
+            None
+        } else if let Some(ip) = parse_region_bypass_ip(text) {
+            Some(ip)
+        } else {
+            eprintln!("Settings: ignoring invalid region bypass IP {text:?}");
+            return;
+        };
+        let _ = self.handle_settings_command(Command::SetRegionBypassIp(ip));
+    }
+
+    fn note_region_bypass_change(&mut self, before: Option<String>) {
+        if self.settings.active_region_bypass_ip() != before {
+            self.region_bypass_changed = true;
+        }
     }
 
     pub(crate) fn set_locale(&mut self, locale: Locale) {
