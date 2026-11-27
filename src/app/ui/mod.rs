@@ -6,7 +6,12 @@ mod widgets;
 
 use crate::{App, AppCommand, AppState};
 
-pub fn build_ui(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) -> Vec<AppCommand> {
+pub fn build_ui(
+    ctx: &egui::Context,
+    app: &App,
+    hold_progress: Option<f32>,
+    ps_hold_hint: bool,
+) -> Vec<AppCommand> {
     let mut commands = Vec::new();
 
     match &app.state {
@@ -17,7 +22,7 @@ pub fn build_ui(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) -> V
             screens::paused_overlay::show(ctx, app, &mut commands);
         }
         AppState::Streaming(_) => {
-            screens::streaming::show(ctx, app, hold_progress);
+            screens::streaming::show(ctx, app, hold_progress, ps_hold_hint);
         }
         AppState::TitleList { .. } | AppState::LoadingTitles(_) => {
             screens::title_list::show(ctx, app, &mut commands);

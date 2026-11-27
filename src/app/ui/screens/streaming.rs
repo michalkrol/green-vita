@@ -62,6 +62,13 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
         let enc = f("enc:");
         let err = f("err:");
         let cs = f("cs:");
+        let rxd = f("rxd:");
+        let rcpu = f("rcpu:");
+        let ui = f("ui:");
+        let uw = f("uw:");
+        let kf = f("kf:");
+        let idr = f("idr:");
+        let scr = f("scr:");
 
         const LABEL_WIDTH: usize = 16;
         const VALUE_WIDTH: usize = 8;
@@ -80,9 +87,12 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("SRage:{}ms", srage), format!("SRcoff:{}ms", srcoff)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Resync:{}", rs), format!("Flush:{}", fl)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("TWCC:{}", tw_s), format!("Strd:{}", st)),
-            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Pick:{}us", pick), ""),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Pick:{}us", pick), format!("RxCPU:{}ms", rcpu)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", "Decoder:avcdec", format!("Res:{}", res)),
             format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("Color:{}", color_val), format!("Err:{}", err_val)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("UIloop:{}ms", ui), format!("UIwork:{}ms", uw)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("KfReq:{}", kf), format!("IDR:{}KB", idr)),
+            format!("{:<LABEL_WIDTH$}{:>VALUE_WIDTH$}", format!("RxdMax:{}", rxd), format!("Scratch:{}", scr)),
         ];
 
         // Free any previously cached rows and store the new ones.
@@ -103,7 +113,12 @@ fn build_debug_rows(status: &str, settings: &crate::settings::Settings) -> Vec<S
 }
 
 /// Fullscreen video view with debug overlays.
-pub(crate) fn show(ctx: &egui::Context, app: &App, hold_progress: Option<f32>) {
+pub(crate) fn show(
+    ctx: &egui::Context,
+    app: &App,
+    hold_progress: Option<f32>,
+    ps_hold_hint: bool,
+) {
     const HINT_VISIBLE: std::time::Duration = std::time::Duration::from_secs(2);
     const HINT_FADE: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -373,12 +388,47 @@ match app.settings.stream_debug_mode {
     }
     _ => {}
 }
-    if let Some(progress) = hold_progress {
+    // 2b: in direct mode the SDL present overwrites the framebuffer, so the
+    // hold spinner is not drawn at all (the screen stays on the video). The
+    // present still happens, so the pause menu transition is unaffected.
+    if let Some(progress) = hold_progress
+        && !crate::shell::direct_present::DIRECT_MODE
+            .load(std::sync::atomic::Ordering::Relaxed)
+    {
         egui::Area::new(egui::Id::new("pause_hold_indicator"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::LEFT_TOP, egui::vec2(16.0, 16.0))
             .show(ctx, |ui| {
                 draw_hold_progress_ring(ui, progress);
+            });
+    }
+
+    // PS button held (capture on, stream live): show a small hint for as
+    // long as the button is down — once the hold-arm has unlocked the shell
+    // (>= 600 ms), releasing the button alone reaches the Vita home screen.
+    if ps_hold_hint {
+        egui::Area::new(egui::Id::new("ps_hold_hint"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
+            .show(ctx, |ui| {
+                let painter = ui.painter();
+                let text = i18n.text("streaming-ps-hold-hint");
+                let font_id = FontId::proportional(14.0);
+                let text_size = painter
+                    .layout_no_wrap(text.clone(), font_id.clone(), egui::Color32::WHITE)
+                    .size();
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    text_size + egui::vec2(16.0, 10.0),
+                );
+                painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(128));
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    text,
+                    font_id,
+                    egui::Color32::WHITE,
+                );
             });
     }
     });

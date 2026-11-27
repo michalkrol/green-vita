@@ -1,5 +1,5 @@
 mod decoder;
-mod memory;
+pub(crate) mod memory;
 pub(crate) mod metrics;
 pub(crate) mod worker;
 pub(crate) mod metrics_log;
@@ -12,11 +12,16 @@ pub const HW_OUTPUT_HEIGHT: u32 = 544;
 pub(crate) const DEFAULT_VIDEO_FPS: u32 = 30;
 pub(crate) const UNLOCKED_VIDEO_FPS: u32 = 60;
 pub(crate) const NUM_TEXTURES: usize = 3;
+/// Display ring size. Index `NUM_DISPLAY_TEXTURES` (the last texture) is the
+/// decoder-private scratch target used to retire stale access units; it is
+/// never displayed, so the ring bookkeeping below ignores it.
+pub(crate) const NUM_DISPLAY_TEXTURES: usize = NUM_TEXTURES - 1;
 
 pub use memory::reserve_decoder_cdram;
 pub use metrics::video_performance_summary;
 pub use worker::VideoDecodeWorker;
 
+use crate::settings::ColorProfile;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -50,10 +55,13 @@ pub(crate) struct DirectVideoOutput {
     pub(crate) decoder_ready: AtomicBool,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    /// Hardware decoder output profile; the SDL renderer creates the direct
+    /// video textures in the matching pixel format (shell/surface.rs).
+    pub(crate) color_profile: ColorProfile,
 }
 
 impl DirectVideoOutput {
-    pub(crate) fn new(width: u32, height: u32) -> Self {
+    pub(crate) fn new(width: u32, height: u32, color_profile: ColorProfile) -> Self {
         Self {
             state: Mutex::new(DirectVideoOutputState {
                 targets: None,
@@ -66,6 +74,7 @@ impl DirectVideoOutput {
             decoder_ready: AtomicBool::new(false),
             width,
             height,
+            color_profile,
         }
     }
 
@@ -87,7 +96,14 @@ impl DirectVideoOutput {
         self.frame_displayed.notify_all();
     }
 
-    pub(crate) fn mark_displayed(&self, index: usize, generation: u64) {
+    /// 2b: the raw target for a slot (used by direct present to get the
+        /// framebuffer pointer/pitch without the state lock held).
+        pub(crate) fn target(&self, index: usize) -> Option<VideoTextureTarget> {
+            let state = self.state.lock().ok()?;
+            state.targets?.get(index).copied()
+        }
+
+        pub(crate) fn mark_displayed(&self, index: usize, generation: u64) {
         let mut cleared_pending = false;
         if let Ok(mut state) = self.state.lock() {
             state.last_displayed = state.displayed;
@@ -126,7 +142,7 @@ impl DirectVideoOutput {
         // be DMA-reading it from the previous VSYNC cycle.  Waiting one full
         // display interval before recycling that slot prevents texture-race
         // artifacts that appear as blocky corruption.
-        let free = (0..NUM_TEXTURES).find(|&i| {
+        let free = (0..NUM_DISPLAY_TEXTURES).find(|&i| {
             state.displayed != Some(i)
                 && state.last_displayed != Some(i)
                 && state.pending.as_ref().map(|(idx, _)| *idx) != Some(i)
@@ -144,31 +160,77 @@ impl DirectVideoOutput {
                 })
                 .ok()?;
             state = waited;
-            (0..NUM_TEXTURES).find(|&i| {
+            (0..NUM_DISPLAY_TEXTURES).find(|&i| {
                 state.displayed != Some(i)
                     && state.pending.as_ref().map(|(idx, _)| *idx) != Some(i)
             })?
         };
 
         Some(DirectVideoTargetGuard {
-            state,
+            state: Some(state),
             target: targets[index],
             index,
+        })
+    }
+
+    /// Perf-plan stage 3: non-blocking variant of `lock_decode_target` —
+    /// fast path only. Returns None when every texture is displayed, pending
+    /// or still DMA-read by the GPU, without waiting.
+    pub(super) fn try_lock_decode_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
+        let state = self.state.lock().ok()?;
+        let targets = state.targets?;
+        let index = (0..NUM_DISPLAY_TEXTURES).find(|&i| {
+            state.displayed != Some(i)
+                && state.last_displayed != Some(i)
+                && state.pending.as_ref().map(|(idx, _)| *idx) != Some(i)
+        })?;
+        Some(DirectVideoTargetGuard {
+            state: Some(state),
+            target: targets[index],
+            index,
+        })
+    }
+
+    /// Decoder-private scratch target for retired (stale) access units.
+    ///
+    /// It is not part of the display ring: no `displayed`/`pending`
+    /// bookkeeping, and — unlike `lock_decode_target` — the state mutex is NOT
+    /// held across the hardware decode. Holding it serialized the decoder with
+    /// the UI/RTC threads (blocking up to a vblank and, in the worst measured
+    /// case, 66–172 ms), which slaved the decode drain rate to presentation and
+    /// let a 60 fps arrival rate outrun a 58 fps display rate — the residual
+    /// pipeline-age drift.
+    pub(super) fn lock_scratch_target(&self) -> Option<DirectVideoTargetGuard<'_>> {
+        let target = {
+            let state = self.state.lock().ok()?;
+            *state.targets.as_ref()?.get(NUM_DISPLAY_TEXTURES)?
+        };
+        Some(DirectVideoTargetGuard {
+            state: None,
+            target,
+            index: NUM_DISPLAY_TEXTURES,
         })
     }
 }
 
 pub(super) struct DirectVideoTargetGuard<'a> {
-    state: MutexGuard<'a, DirectVideoOutputState>,
+    /// `None` for the decoder-private scratch target: it holds no ring state,
+    /// so the state mutex is released before the hardware decode and
+    /// `publish` must never be called on it (a retired frame is not displayed).
+    state: Option<MutexGuard<'a, DirectVideoOutputState>>,
     target: VideoTextureTarget,
     index: usize,
 }
 
 impl DirectVideoTargetGuard<'_> {
     pub(super) fn publish(mut self) -> (usize, u64) {
-        self.state.next_generation = self.state.next_generation.wrapping_add(1);
-        let generation = self.state.next_generation;
-        self.state.pending = Some((self.index, generation));
+        let state = self
+            .state
+            .as_mut()
+            .expect("scratch target must never be published");
+        state.next_generation = state.next_generation.wrapping_add(1);
+        let generation = state.next_generation;
+        state.pending = Some((self.index, generation));
         (self.index, generation)
     }
 }
@@ -185,4 +247,6 @@ pub struct DecoderConfig {
     pub decode_height: u32,
     pub output_width: u32,
     pub output_height: u32,
+    /// Hardware decoder output color profile (see `ColorProfile`).
+    pub color_profile: ColorProfile,
 }

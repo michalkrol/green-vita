@@ -12,14 +12,14 @@ use anyhow::Result;
 use rtc::peer_connection::sdp::RTCSessionDescription;
 
 use crate::api::streaming::rtc::peer::FeedbackPeer as RTCPeerConnection;
-use crate::settings::H264Profile;
+use crate::settings::{ColorProfile, H264Profile};
 
 struct XboxRtcWorkerProvider {
     stream: Stream,
     video_fps: u32,
     video_bitrate_kbps: u32,
     video_h264_profile: H264Profile,
-    periodic_keyframe: bool,
+    color_profile: ColorProfile,
 }
 
 impl RtcWorkerProvider for XboxRtcWorkerProvider {
@@ -42,8 +42,8 @@ impl RtcWorkerProvider for XboxRtcWorkerProvider {
                 decode_height: STREAM_HEIGHT,
                 output_width: HW_OUTPUT_WIDTH,
                 output_height: HW_OUTPUT_HEIGHT,
+                color_profile: self.color_profile,
             },
-            periodic_keyframe_enabled: self.periodic_keyframe,
         }
     }
 
@@ -87,7 +87,7 @@ pub(crate) fn spawn(
     request_60fps: bool,
     video_bitrate_kbps: u32,
     video_h264_profile: H264Profile,
-    periodic_keyframe: bool,
+    color_profile: ColorProfile,
 ) -> Result<RtcWorker> {
     let video_fps = if request_60fps {
         UNLOCKED_VIDEO_FPS
@@ -99,6 +99,6 @@ pub(crate) fn spawn(
         video_fps,
         video_bitrate_kbps,
         video_h264_profile,
-        periodic_keyframe,
+        color_profile,
     })
 }

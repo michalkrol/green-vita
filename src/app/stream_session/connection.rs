@@ -115,6 +115,33 @@ impl App {
             },
             std::sync::atomic::Ordering::Relaxed,
         );
+        // Repair-window policy (perf plan stage 3b): settings → stream start → the assembler's
+        // repair window preset. 0=Off, 1=Short, 2=Balanced, 3=Patient.
+        crate::pipeline::media::assembler::REPAIR_WINDOW_POLICY.store(
+            match self.settings.repair_window {
+                crate::settings::RepairWindow::Off => 0,
+                crate::settings::RepairWindow::Short => 1,
+                crate::settings::RepairWindow::Balanced => 2,
+                crate::settings::RepairWindow::Patient => 3,
+            },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        // Manual TWCC (2c): settings → stream start → the per-packet gate in
+        // rtp::receive + media::send_twcc.
+        // Hidden config (no settings row): manual 60 ms TWCC, default off.
+        crate::api::streaming::rtc::rtp::set_manual_twcc(self.settings.manual_twcc_60ms);
+        // Latency profile (item 15): settings → stream start → the decode
+        // bank admission limit (Fast = shallow, Smooth = deep).
+        crate::streaming::video::worker::LATENCY_PROFILE.store(
+            match self.settings.latency_profile {
+                crate::settings::LatencyProfile::Fast => 0,
+                crate::settings::LatencyProfile::Smooth => 1,
+            },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        // 2b: direct present on/off (settings). Off = SDL path, HUD visible.
+        crate::shell::direct_present::DIRECT_MODE
+            .store(self.settings.direct_present, std::sync::atomic::Ordering::Relaxed);
         let api = self.service.api.clone();
         let kind = target.kind;
         let target_id = target.target_id.clone();
@@ -260,7 +287,7 @@ impl App {
                     true, // always request 60: the console encodes ~60 regardless of a=framerate (54-session src_fps survey)
                     self.settings.video_bitrate_kbps,
                     self.settings.video_h264_profile,
-                    self.settings.periodic_keyframe,
+                    self.settings.color_profile,
                 ) {
                     Ok(streaming) => Ok(AppState::Streaming(streaming)),
                     Err(error) => {
