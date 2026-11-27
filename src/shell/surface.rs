@@ -292,7 +292,13 @@ impl VitaSurface {
             primitives,
             textures_delta,
         )?;
-        self.canvas.present();
+        // 2b: in direct mode the display shows the CDRAM framebuffer, so an
+        // SDL present would overwrite the video with a black canvas (the
+        // hold-to-menu spinner made this visible). Skip it; the HUD is
+        // invisible in direct mode by design.
+        if !crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed) {
+            self.canvas.present();
+        }
         Ok(())
     }
 

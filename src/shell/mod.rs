@@ -2,7 +2,7 @@
 #[link(name = "SceAudio_stub", kind = "static")]
 unsafe extern "C" {}
 
-mod direct_present;
+pub(crate) mod direct_present;
 mod egui_painter;
 pub(crate) mod netctl;
 pub(crate) mod netprobe;
