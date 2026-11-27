@@ -303,7 +303,16 @@ pub async fn run(mut app: App) -> Result<()> {
                 .unwrap_or(false);
         surface.sync_video_frame(app.state.streaming())?;
 
-        if ui_needed {
+        // 2b: in direct mode, do not run the egui pass while the hold-to-menu
+        // spinner is showing -- the video path keeps presenting the frame, so
+        // the screen stays on the game instead of going black. When the hold
+        // completes (paused) the menu presents through SDL as before.
+        let suppress_ui = crate::shell::direct_present::DIRECT_MODE
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && hold_progress.is_some()
+            && !matches!(&app.state, AppState::Streaming(s) if s.paused);
+
+        if ui_needed && !suppress_ui {
             let raw_input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
