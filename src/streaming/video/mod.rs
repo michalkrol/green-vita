@@ -11,7 +11,7 @@ pub const HW_OUTPUT_WIDTH: u32 = 960;
 pub const HW_OUTPUT_HEIGHT: u32 = 544;
 pub(crate) const DEFAULT_VIDEO_FPS: u32 = 30;
 pub(crate) const UNLOCKED_VIDEO_FPS: u32 = 60;
-pub(crate) const NUM_TEXTURES: usize = 4;
+pub(crate) const NUM_TEXTURES: usize = 3;
 /// Display ring size. Index `NUM_DISPLAY_TEXTURES` (the last texture) is the
 /// decoder-private scratch target used to retire stale access units; it is
 /// never displayed, so the ring bookkeeping below ignores it.
