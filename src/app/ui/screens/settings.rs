@@ -98,16 +98,16 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     if title_id.is_none() {
         rows.push(SettingsRow::SwapShouldersTriggers(app.settings.swap_shoulders_and_triggers));
     }
+    rows.push(SettingsRow::PsButtonCapture(app.settings.ps_button_capture));
+    rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
+    rows.push(SettingsRow::ColorProfile(app.settings.color_profile));
+    rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
+    rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
+    rows.push(SettingsRow::RepairWindow(app.settings.repair_window));
     rows.push(SettingsRow::StreamDebug(app.settings.stream_debug_mode));
     rows.push(SettingsRow::LatencyTest(app.settings.latency_test_mode));
     rows.push(SettingsRow::VideoBitrateCap(app.settings.video_bitrate_kbps));
-    rows.push(SettingsRow::VideoH264Profile(app.settings.video_h264_profile));
-    rows.push(SettingsRow::DamagePolicy(app.settings.damage_policy));
-    rows.push(SettingsRow::RepairWindow(app.settings.repair_window));
-    rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
-    rows.push(SettingsRow::ColorProfile(app.settings.color_profile));
     rows.push(SettingsRow::DirectPresent(app.settings.direct_present));
-    rows.push(SettingsRow::PsButtonCapture(app.settings.ps_button_capture));
     rows.push(SettingsRow::Back);
     rows
 }
@@ -272,6 +272,147 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
+                ui.heading(
+                    egui::RichText::new(i18n.text("settings-instream-controls"))
+                        .color(theme.text_bright),
+                );
+                if checkbox_row(
+                    ui,
+                    selected_index == row_index,
+                    app.settings.ps_button_capture,
+                    i18n.text("settings-ps-button-capture"),
+                ) {
+                    commands.push(
+                        Command::SetPsButtonCapture(!app.settings.ps_button_capture).into(),
+                    );
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                {
+                    let label = format!("H264 profile: {}", match app.settings.video_h264_profile {
+                        H264Profile::Baseline => "Baseline",
+                        H264Profile::Main => "Main",
+                    });
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.video_h264_profile {
+                            H264Profile::Baseline => H264Profile::Main,
+                            H264Profile::Main => H264Profile::Baseline,
+                        };
+                        commands.push(Command::SetVideoH264Profile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                {
+                    let mut args = FluentArgs::new();
+                    args.set(
+                        "mode",
+                        arg_string(match app.settings.color_profile {
+                            ColorProfile::Rgb565 => "RGB565",
+                            ColorProfile::Rgba8888 => "RGBA8888",
+                        }),
+                    );
+                    let label = i18n.text_with("settings-color-profile", args);
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = match app.settings.color_profile {
+                            ColorProfile::Rgb565 => ColorProfile::Rgba8888,
+                            ColorProfile::Rgba8888 => ColorProfile::Rgb565,
+                        };
+                        commands.push(Command::SetColorProfile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                {
+                    let label = format!(
+                        "Latency profile: {}",
+                        match app.settings.latency_profile {
+                            crate::settings::LatencyProfile::Fast => "Fast",
+                            crate::settings::LatencyProfile::Smooth => "Smooth",
+                        }
+                    );
+                    if focus_row(ui, selected_index == row_index, label) {
+                        let next = match app.settings.latency_profile {
+                            crate::settings::LatencyProfile::Fast => {
+                                crate::settings::LatencyProfile::Smooth
+                            }
+                            crate::settings::LatencyProfile::Smooth => {
+                                crate::settings::LatencyProfile::Fast
+                            }
+                        };
+                        commands.push(Command::SetLatencyProfile(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                {
+                    let label = format!(
+                        "Damage policy: {}",
+                        match app.settings.damage_policy {
+                            crate::settings::DamagePolicy::LowLatency => "Low latency",
+                            crate::settings::DamagePolicy::Balanced => "Balanced",
+                            crate::settings::DamagePolicy::Quality => "Quality",
+                        }
+                    );
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.damage_policy {
+                            crate::settings::DamagePolicy::LowLatency => {
+                                crate::settings::DamagePolicy::Balanced
+                            }
+                            crate::settings::DamagePolicy::Balanced => {
+                                crate::settings::DamagePolicy::Quality
+                            }
+                            crate::settings::DamagePolicy::Quality => {
+                                crate::settings::DamagePolicy::LowLatency
+                            }
+                        };
+                        commands.push(Command::SetDamagePolicy(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
+                {
+                    let label = format!(
+                        "Repair window: {}",
+                        match app.settings.repair_window {
+                            crate::settings::RepairWindow::Off => "Off",
+                            crate::settings::RepairWindow::Short => "Short",
+                            crate::settings::RepairWindow::Balanced => "Balanced",
+                            crate::settings::RepairWindow::Patient => "Patient",
+                        }
+                    );
+                    if focus_row(ui, selected_index == row_index, &label) {
+                        let next = match app.settings.repair_window {
+                            crate::settings::RepairWindow::Off => {
+                                crate::settings::RepairWindow::Short
+                            }
+                            crate::settings::RepairWindow::Short => {
+                                crate::settings::RepairWindow::Balanced
+                            }
+                            crate::settings::RepairWindow::Balanced => {
+                                crate::settings::RepairWindow::Patient
+                            }
+                            crate::settings::RepairWindow::Patient => {
+                                crate::settings::RepairWindow::Off
+                            }
+                        };
+                        commands.push(Command::SetRepairWindow(next).into());
+                    }
+                }
+                row_index += 1;
+
+                ui.add_space(14.0);
+                ui.separator();
                 {
                     let label = format!(
                         "Debug: {}",
@@ -326,133 +467,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
-                {
-                    let label = format!("H264 profile: {}", match app.settings.video_h264_profile {
-                        H264Profile::Baseline => "Baseline",
-                        H264Profile::Main => "Main",
-                    });
-                    if focus_row(ui, selected_index == row_index, &label) {
-                        let next = match app.settings.video_h264_profile {
-                            H264Profile::Baseline => H264Profile::Main,
-                            H264Profile::Main => H264Profile::Baseline,
-                        };
-                        commands.push(Command::SetVideoH264Profile(next).into());
-                    }
-                }
-                row_index += 1;
-
-                ui.add_space(14.0);
-                ui.separator();
-                {
-                    let label = format!(
-                        "Damage policy: {}",
-                        match app.settings.damage_policy {
-                            crate::settings::DamagePolicy::LowLatency => "Low latency",
-                            crate::settings::DamagePolicy::Balanced => "Balanced",
-                            crate::settings::DamagePolicy::Quality => "Quality",
-                        }
-                    );
-                    if focus_row(ui, selected_index == row_index, &label) {
-                        let next = match app.settings.damage_policy {
-                            crate::settings::DamagePolicy::LowLatency => {
-                                crate::settings::DamagePolicy::Balanced
-                            }
-                            crate::settings::DamagePolicy::Balanced => {
-                                crate::settings::DamagePolicy::Quality
-                            }
-                            crate::settings::DamagePolicy::Quality => {
-                                crate::settings::DamagePolicy::LowLatency
-                            }
-                        };
-                        commands.push(Command::SetDamagePolicy(next).into());
-                    }
-                }
-                row_index += 1;
-                ui.add_space(14.0);
-                ui.separator();
-                {
-                    let label = format!(
-                        "Repair window: {}",
-                        match app.settings.repair_window {
-                            crate::settings::RepairWindow::Off => "Off",
-                            crate::settings::RepairWindow::Short => "Short",
-                            crate::settings::RepairWindow::Balanced => "Balanced",
-                            crate::settings::RepairWindow::Patient => "Patient",
-                        }
-                    );
-                    if focus_row(ui, selected_index == row_index, &label) {
-                        let next = match app.settings.repair_window {
-                            crate::settings::RepairWindow::Off => {
-                                crate::settings::RepairWindow::Short
-                            }
-                            crate::settings::RepairWindow::Short => {
-                                crate::settings::RepairWindow::Balanced
-                            }
-                            crate::settings::RepairWindow::Balanced => {
-                                crate::settings::RepairWindow::Patient
-                            }
-                            crate::settings::RepairWindow::Patient => {
-                                crate::settings::RepairWindow::Off
-                            }
-                        };
-                        commands.push(Command::SetRepairWindow(next).into());
-                    }
-                }
-                row_index += 1;
-
-                ui.add_space(14.0);
-                ui.separator();
-                ui.add_space(14.0);
-                ui.separator();
-                {
-                    let label = format!(
-                        "Latency profile: {}",
-                        match app.settings.latency_profile {
-                            crate::settings::LatencyProfile::Fast => "Fast",
-                            crate::settings::LatencyProfile::Smooth => "Smooth",
-                        }
-                    );
-                    if focus_row(ui, selected_index == row_index, label) {
-                        let next = match app.settings.latency_profile {
-                            crate::settings::LatencyProfile::Fast => {
-                                crate::settings::LatencyProfile::Smooth
-                            }
-                            crate::settings::LatencyProfile::Smooth => {
-                                crate::settings::LatencyProfile::Fast
-                            }
-                        };
-                        commands.push(Command::SetLatencyProfile(next).into());
-                    }
-                }
-                row_index += 1;
-
-                ui.add_space(14.0);
-                ui.separator();
-                {
-                    // Hardware decoder output profile (TODO item 3). Takes effect
-                    // on the next stream start — no live atomic: the decoder
-                    // output format is fixed at decoder construction.
-                    let mut args = FluentArgs::new();
-                    args.set(
-                        "mode",
-                        arg_string(match app.settings.color_profile {
-                            ColorProfile::Rgb565 => "RGB565",
-                            ColorProfile::Rgba8888 => "RGBA8888",
-                        }),
-                    );
-                    let label = i18n.text_with("settings-color-profile", args);
-                    if focus_row(ui, selected_index == row_index, label) {
-                        let next = match app.settings.color_profile {
-                            ColorProfile::Rgb565 => ColorProfile::Rgba8888,
-                            ColorProfile::Rgba8888 => ColorProfile::Rgb565,
-                        };
-                        commands.push(Command::SetColorProfile(next).into());
-                    }
-                }
-                row_index += 1;
-
-                ui.add_space(14.0);
-                ui.separator();
                 if checkbox_row(
                     ui,
                     selected_index == row_index,
@@ -462,33 +476,29 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
                     commands
                         .push(Command::SetDirectPresent(!app.settings.direct_present).into());
                 }
-                ui.colored_label(
-                    theme.text,
-                    egui::RichText::new(i18n.text("settings-direct-present-sub")).size(14.0),
-                );
                 row_index += 1;
 
+                // Descriptions (read-only, at the bottom).
                 ui.add_space(14.0);
                 ui.separator();
                 ui.heading(
-                    egui::RichText::new(i18n.text("settings-instream-controls"))
-                        .color(theme.text_bright),
+                    egui::RichText::new(i18n.text("settings-help")).color(theme.text_bright),
                 );
-                if checkbox_row(
-                    ui,
-                    selected_index == row_index,
-                    app.settings.ps_button_capture,
-                    i18n.text("settings-ps-button-capture"),
-                ) {
-                    commands.push(
-                        Command::SetPsButtonCapture(!app.settings.ps_button_capture).into(),
+                for key in [
+                    "settings-swap-shoulders-triggers",
+                    "settings-ps-button-capture-sub",
+                    "settings-color-profile",
+                    "settings-direct-present-sub",
+                    "settings-latency-profile",
+                    "settings-damage-policy",
+                    "settings-repair-window",
+                ] {
+                    ui.colored_label(
+                        theme.text,
+                        egui::RichText::new(i18n.text(key)).size(14.0),
                     );
+                    ui.add_space(6.0);
                 }
-                row_index += 1;
-                ui.colored_label(
-                    theme.text,
-                    egui::RichText::new(i18n.text("settings-ps-button-capture-sub")).size(14.0),
-                );
 
                 ui.add_space(14.0);
                 ui.separator();

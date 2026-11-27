@@ -31,7 +31,11 @@ settings-video-h264-profile = H264 profile: { $profile }
 settings-periodic-keyframe = Periodic keyframe (clear artifacts)
 settings-manual-twcc = Manual TWCC feedback
 settings-direct-present = Direct present (low latency)
-settings-direct-present-sub = Decodes straight into the display buffer (RGBA8888 or RGB565). Turn off to show the debug HUD; adds one frame of latency.
+settings-direct-present-sub = Decodes straight into the display buffer (RGBA8888). Turn off to show the debug HUD; adds one frame of latency.
+settings-help = Settings explained
+settings-latency-profile = Latency profile: Fast = lowest floor; Smooth = deeper bank that absorbs bursts (adds latency).
+settings-damage-policy = Damage policy: Low latency decodes through damage; Balanced/Quality request a keyframe sooner (fewer artefacts, more IDRs).
+settings-repair-window = Repair window: Off = no repair hold, no freeze; Short = ~1 frame; Balanced/Patient hold the queue and can freeze for 300-500 ms.
 settings-instream-controls = In-stream controls
 settings-ps-button-capture = Capture PS button
 settings-ps-button-capture-sub = Tap = Xbox guide · Hold = Vita menu (experimental)

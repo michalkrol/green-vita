@@ -98,8 +98,8 @@ impl Locale {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum H264Profile {
     #[default]
-    Baseline,
     Main,
+    Baseline,
 }
 
 /// Mini debug mode: bitrate/bandwidth + displayed FPS only, white text on semi-transparent dark rectangle, TOP-RIGHT corner.
@@ -169,10 +169,11 @@ pub enum RepairWindow {
 /// identical; only local memory traffic differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ColorProfile {
-    /// Hardware RGB565 direct decode (default; lowest memory bandwidth).
-    #[default]
+    /// Hardware RGB565 direct decode (half the decode→texture bandwidth).
     Rgb565,
     /// Hardware RGBA8888 direct decode — true 8-bit channels, no banding.
+    /// Default: required for direct present (the framebuffer is A8B8G8R8).
+    #[default]
     Rgba8888,
 }
 
