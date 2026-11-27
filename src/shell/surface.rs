@@ -128,8 +128,9 @@ impl VitaSurface {
         if !output.decoder_ready.load(Ordering::Acquire) {
             return Ok(());
         }
+        let direct_now = crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed);
         if output_is_current
-            && (self.video_textures.is_some() || self.direct_video_output.is_some())
+            && (self.video_textures.is_some() || (direct_now && self.direct_video_output.is_some()))
         {
             return Ok(());
         }
