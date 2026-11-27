@@ -51,7 +51,8 @@ const HIGH_FPS_DAMAGE_LIMIT: u8 = 3;
 /// per packet with Relaxed, applies live mid-stream without reconnecting.
 pub(crate) static MANUAL_TWCC: AtomicBool = AtomicBool::new(false);
 
-/// Store the manual-TWCC master switch (settings checkbox / stream start).
+/// Hidden/compile-time switch (no settings row): store the manual-TWCC master
+/// switch. Read from `Settings::manual_twcc_60ms` at stream start.
 pub(crate) fn set_manual_twcc(enabled: bool) {
     MANUAL_TWCC.store(enabled, Ordering::Relaxed);
 }

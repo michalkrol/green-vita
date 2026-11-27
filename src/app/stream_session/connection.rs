@@ -128,6 +128,7 @@ impl App {
         );
         // Manual TWCC (2c): settings → stream start → the per-packet gate in
         // rtp::receive + media::send_twcc.
+        // Hidden config (no settings row): manual 60 ms TWCC, default off.
         crate::api::streaming::rtc::rtp::set_manual_twcc(self.settings.manual_twcc_60ms);
         // Latency profile (item 15): settings → stream start → the decode
         // bank admission limit (Fast = shallow, Smooth = deep).

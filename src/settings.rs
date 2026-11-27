@@ -221,6 +221,9 @@ pub struct Settings {
     /// Manual 60ms TWCC feedback cadence (per-packet transport-wide congestion
     /// reports to the console); helps lossy links, can regress good ones.
     /// Applies live — the per-packet gate reads the atomic every packet.
+    /// Hidden (no settings row): manual 60 ms TWCC feedback. Default off — the
+    /// plan found it regresses good links (3.2x less damage on bad links, but
+    /// regressions on good ones). Toggle via settings.json or at compile time.
     pub manual_twcc_60ms: bool,
     /// Decode-bank depth profile (item 15): Fast = shallow bank (target 0,
     /// bursts shed or conceal — minimal floor); Smooth = deep bank (target 6,
@@ -275,8 +278,8 @@ impl Default for Settings {
             video_h264_profile: H264Profile::default(),
             damage_policy: DamagePolicy::default(),
             repair_window: RepairWindow::default(),
-            manual_twcc_60ms: false,
             latency_profile: LatencyProfile::default(),
+            manual_twcc_60ms: false,
             color_profile: ColorProfile::default(),
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,
