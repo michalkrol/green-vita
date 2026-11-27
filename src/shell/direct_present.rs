@@ -63,7 +63,6 @@ mod imp {
     use sdl2::pixels::PixelFormatEnum;
 
     const SCE_DISPLAY_SETBUF_IMMEDIATE: i32 = 0;
-    const SCE_DISPLAY_FRAMEBUF_FORMAT_B5G6R5: u32 = 1;
 
     #[repr(C)]
     struct SceDisplayFrameBuf {
@@ -101,25 +100,27 @@ mod imp {
             height: 0,
         };
         let got = unsafe { sceDisplayGetFrameBuf(&mut fb, SCE_DISPLAY_SETBUF_IMMEDIATE) };
-        if got != 0
-            || fb.base.is_null()
-            || fb.pixelformat != SCE_DISPLAY_FRAMEBUF_FORMAT_B5G6R5
-            || fb.width != width
-            || fb.height != height
-        {
-            note_fallback(if got != 0 {
-                "getframebuf"
-            } else if fb.base.is_null() {
-                "null-base"
-            } else if fb.pixelformat != SCE_DISPLAY_FRAMEBUF_FORMAT_B5G6R5 {
-                "format"
-            } else {
-                "size"
-            });
+        if got != 0 || fb.base.is_null() {
+            note_fallback(if got != 0 { "getframebuf" } else { "null-base" });
+            return Ok(strict);
+        }
+        // Accept both Vita framebuffer formats: 0 = A8B8G8R8 (4 B/px),
+        // 1 = B5G6R5 (2 B/px). The earlier build only accepted B5G6R5 and
+        // silently fell back on this panel (direct-present.txt: format).
+        let (sdl_fmt, bpp) = match fb.pixelformat {
+            0 => (PixelFormatEnum::ABGR8888, 4usize),
+            1 => (PixelFormatEnum::BGR565, 2usize),
+            _ => {
+                note_fallback("format");
+                return Ok(strict);
+            }
+        };
+        if fb.width != width || fb.height != height {
+            note_fallback("size");
             return Ok(strict);
         }
 
-        let pixels = match canvas.read_pixels(None, PixelFormatEnum::BGR565) {
+        let pixels = match canvas.read_pixels(None, sdl_fmt) {
             Ok(p) => p,
             Err(_) => {
                 note_fallback("readpixels");
@@ -127,8 +128,18 @@ mod imp {
             }
         };
 
+        // Row-by-row copy honouring the framebuffer pitch (it may exceed
+        // width * bpp).
+        let src_pitch = width as usize * bpp;
+        let dst_pitch = fb.pitch as usize;
         unsafe {
-            std::ptr::copy_nonoverlapping(pixels.as_ptr(), fb.base as *mut u8, pixels.len());
+            for y in 0..height as usize {
+                std::ptr::copy_nonoverlapping(
+                    pixels.as_ptr().add(y * src_pitch),
+                    (fb.base as *mut u8).add(y * dst_pitch),
+                    src_pitch,
+                );
+            }
             sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_IMMEDIATE);
         }
         note_ok();
