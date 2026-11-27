@@ -102,6 +102,10 @@ pub(crate) struct VideoRtp {
     last_frame_timestamp: Option<u32>,
     source_frame_duration_us: Option<u64>,
     damage_score: u8,
+    /// 2026-11-26: last time a clean (non-damaged) AU was submitted. When
+    /// damage persists >= SUSTAINED_DAMAGE_MS the artefacts never clear on
+    /// their own (the console's next IDR can be ~2 s away), so request one.
+    last_clean_at: Option<Instant>,
     stream_too_large: bool,
     waiting_for_keyframe: bool,
     pli_idr_pending_at: Option<std::time::Instant>,
@@ -267,6 +271,7 @@ impl VideoRtp {
             last_frame_timestamp: None,
             source_frame_duration_us: None,
             damage_score: 0,
+            last_clean_at: None,
             stream_too_large: false,
             waiting_for_keyframe: false,
             pli_idr_pending_at: None,
@@ -700,8 +705,10 @@ impl VideoRtp {
             }
             self.waiting_for_keyframe = false;
             self.damage_score = 0;
+            self.last_clean_at = Some(Instant::now());
         } else if !frame_was_damaged {
             self.damage_score = self.damage_score.saturating_sub(1);
+            self.last_clean_at = Some(Instant::now());
         }
 
         // 8a telemetry (§3): submitted-AU counters that would have caught the
@@ -835,6 +842,16 @@ impl VideoRtp {
                 // keyframe from `finish_au` while `waiting_for_keyframe` is set,
                 // so the chain still recovers.
                 if DAMAGE_POLICY.load(Ordering::Relaxed) != 0 {
+                    *keyframe_requested = true;
+                }
+                // 2026-11-26: prolonged-artefact reaction. A single first-slice
+                // loss can stay blocky until the console's next IDR (~2 s). If
+                // no clean AU has been submitted for >= 1 s, request one now
+                // instead of waiting out the damage_score threshold.
+                if self
+                    .last_clean_at
+                    .is_some_and(|last| last.elapsed() >= std::time::Duration::from_millis(SUSTAINED_DAMAGE_MS))
+                {
                     *keyframe_requested = true;
                 }
                 self.record_damage(worker);
@@ -1564,6 +1581,10 @@ static NEG_AST_EXT_ID: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8
 /// severe damage), 2 Quality (shed-to-IDR on every damaged AU). Step 6;
 /// written by the app at stream start, read in the Damaged arm.
 pub(crate) static DAMAGE_POLICY: AtomicU8 = AtomicU8::new(0);
+
+/// 2026-11-26: if no clean AU has been submitted for this long while damage
+/// is still occurring, request a keyframe (prolonged-artefact reaction).
+const SUSTAINED_DAMAGE_MS: u64 = 1000;
 static NEG_VT_EXT_ID: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// 2a: store the answer-negotiated TWCC extension id (this was an empty stub
