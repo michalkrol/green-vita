@@ -3,6 +3,7 @@ use crate::settings::ColorProfile;
 use crate::shell::egui_painter::SdlEguiPainter;
 use crate::streaming::video::{
     DirectVideoOutput, NUM_DISPLAY_TEXTURES, NUM_TEXTURES, VideoTextureTarget,
+    memory::CdramBlock,
 };
 use anyhow::{Context, Result};
 use sdl2::pixels::PixelFormatEnum;
@@ -23,6 +24,8 @@ pub struct VitaSurface {
     video_height: u32,
     last_frame_id: u64,
     egui_painter: SdlEguiPainter,
+    /// 2b: keeps the CDRAM framebuffers alive for direct mode.
+    cdram: Vec<CdramBlock>,
 }
 
 impl VitaSurface {
@@ -52,6 +55,7 @@ impl VitaSurface {
             video_height: 0,
             last_frame_id: 0,
             egui_painter: SdlEguiPainter::default(),
+            cdram: Vec::new(),
         })
     }
 
@@ -132,15 +136,21 @@ impl VitaSurface {
 
         self.detach_direct_video_output();
         let (width, height) = (output.width, output.height);
-        // 2a: direct mode -- the display framebuffer is the decode target
-        // (single buffer, no SDL texture, no readback). RGBA8888 only.
+        // 2b: direct mode -- our own CDRAM buffers as the decode targets
+        // (2 display + 1 scratch). The decoder writes straight into them;
+        // present_direct hands the displayed one to SetFrameBuf(IMMEDIATE).
         if crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed)
             && output.color_profile == ColorProfile::Rgba8888
-            && let Some((ptr, pitch, capacity)) =
-                crate::shell::direct_present::framebuffer_target()
         {
-            let target = VideoTextureTarget { ptr, pitch, capacity };
-            output.set_targets([target; NUM_TEXTURES]);
+            let cap = width.saturating_mul(4).saturating_mul(height);
+            let b0 = CdramBlock::allocate("xcloud_fb0", cap)?;
+            let b1 = CdramBlock::allocate("xcloud_fb1", cap)?;
+            let bs = CdramBlock::allocate("xcloud_fb_scratch", cap)?;
+            let t0 = VideoTextureTarget { ptr: b0.ptr as usize, pitch: width * 4, capacity: cap };
+            let t1 = VideoTextureTarget { ptr: b1.ptr as usize, pitch: width * 4, capacity: cap };
+            let ts = VideoTextureTarget { ptr: bs.ptr as usize, pitch: width * 4, capacity: cap };
+            output.set_targets([t0, t1, ts]);
+            self.cdram = vec![b0, b1, bs];
             self.video_textures = None;
             self.displayed_video_texture = None;
             self.direct_video_output = Some(output);
@@ -247,7 +257,24 @@ impl VitaSurface {
     /// to the normal SDL present.
     pub fn present_direct(&mut self) -> Result<bool> {
         if crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed) {
-            return Ok(crate::shell::direct_present::present_framebuffer());
+            let Some(index) = self.displayed_video_texture else {
+                return Ok(false);
+            };
+            if let Some(t) = self
+                .direct_video_output
+                .as_ref()
+                .and_then(|o| o.target(index))
+            {
+                if t.ptr != 0 {
+                    return Ok(crate::shell::direct_present::present_target(
+                        t.ptr,
+                        t.pitch,
+                        WIDTH,
+                        HEIGHT,
+                    ));
+                }
+            }
+            return Ok(false);
         }
         crate::shell::direct_present::present_immediate(&mut self.canvas, WIDTH, HEIGHT)
     }

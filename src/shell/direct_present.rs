@@ -31,12 +31,9 @@ pub static ENABLED: AtomicBool = AtomicBool::new(false);
 /// direct path is active (the screen freezes if it is not).
 pub static STRICT: AtomicBool = AtomicBool::new(false);
 
-/// 2a: use the display framebuffer as the decode target. Disabled 2026-11-27:
-/// with the framebuffer as the target the decoder produced 0 frames (decoded=0,
-/// presented=0, hw_buffered=0 in 17 s) -- sceAvcdec cannot write into the
-/// display framebuffer (CRDAM/alignment). A real direct present needs our own
-/// CDRAM buffer as the target (2b), then SetFrameBuf on it.
-pub static DIRECT_MODE: AtomicBool = AtomicBool::new(false);
+/// 2b: own CDRAM buffers as decode targets (RGBA8888). The decoder writes
+/// straight into our buffer; present hands it to SetFrameBuf(IMMEDIATE).
+pub static DIRECT_MODE: AtomicBool = AtomicBool::new(true);
 
 static OK: AtomicU64 = AtomicU64::new(0);
 static FALLBACK: AtomicU64 = AtomicU64::new(0);
@@ -89,6 +86,19 @@ mod imp {
     unsafe extern "C" {
         fn sceDisplayGetFrameBuf(p: *mut SceDisplayFrameBuf, sync: i32) -> i32;
         fn sceDisplaySetFrameBuf(p: *const SceDisplayFrameBuf, sync: i32) -> i32;
+    }
+
+    /// 2b: present our own CDRAM buffer (RGBA8888 / A8B8G8R8).
+    pub fn present_target(ptr: usize, pitch: u32, width: u32, height: u32) -> bool {
+        let fb = SceDisplayFrameBuf {
+            size: std::mem::size_of::<SceDisplayFrameBuf>(),
+            base: ptr as *mut std::ffi::c_void,
+            pitch,
+            pixelformat: 0,
+            width,
+            height,
+        };
+        unsafe { sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_IMMEDIATE) == 0 }
     }
 
     /// 2a: the display framebuffer as a decode target (single buffer, no
@@ -216,7 +226,11 @@ mod imp {
     pub fn present_framebuffer() -> bool {
         false
     }
+
+    pub fn present_target(_ptr: usize, _pitch: u32, _width: u32, _height: u32) -> bool {
+        false
+    }
 }
 
 pub use imp::present_immediate;
-pub use imp::{framebuffer_target, present_framebuffer};
+pub use imp::{framebuffer_target, present_framebuffer, present_target};

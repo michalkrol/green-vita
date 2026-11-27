@@ -1,5 +1,5 @@
 mod decoder;
-mod memory;
+pub(crate) mod memory;
 pub(crate) mod metrics;
 pub(crate) mod worker;
 pub(crate) mod metrics_log;
@@ -96,7 +96,14 @@ impl DirectVideoOutput {
         self.frame_displayed.notify_all();
     }
 
-    pub(crate) fn mark_displayed(&self, index: usize, generation: u64) {
+    /// 2b: the raw target for a slot (used by direct present to get the
+        /// framebuffer pointer/pitch without the state lock held).
+        pub(crate) fn target(&self, index: usize) -> Option<VideoTextureTarget> {
+            let state = self.state.lock().ok()?;
+            state.targets?.get(index).copied()
+        }
+
+        pub(crate) fn mark_displayed(&self, index: usize, generation: u64) {
         let mut cleared_pending = false;
         if let Ok(mut state) = self.state.lock() {
             state.last_displayed = state.displayed;
