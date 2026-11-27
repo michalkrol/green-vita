@@ -142,13 +142,14 @@ impl VitaSurface {
         self.detach_direct_video_output();
         let (width, height) = (output.width, output.height);
         // 2b: direct mode -- our own CDRAM buffers as the decode targets
-        // (2 display + 1 scratch). Both formats are scanned out natively:
-        // RGBA8888 = A8B8G8R8 (0), RGB565 = B5G6R5 (0x50000000).
-        if crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed) {
-            let (bpp, fmt) = match output.color_profile {
-                ColorProfile::Rgba8888 => (4u32, 0u32),
-                ColorProfile::Rgb565 => (2u32, 0x5000_0000u32),
-            };
+        // (2 display + 1 scratch). RGBA8888 only: the display's second
+        // accepted format (0x50000000) is NOT B5G6R5 on this firmware --
+        // RGB565 direct produced a black screen with a healthy 60/60 pipeline
+        // (decoded=60, presented=60), so RGB565 falls back to the SDL path.
+        if crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed)
+            && output.color_profile == ColorProfile::Rgba8888
+        {
+            let (bpp, fmt) = (4u32, 0u32);
             let cap = width.saturating_mul(bpp).saturating_mul(height);
             let pitch = width * bpp;
             let b0 = CdramBlock::allocate("xcloud_fb0", cap)?;
