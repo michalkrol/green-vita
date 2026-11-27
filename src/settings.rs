@@ -225,10 +225,6 @@ pub struct Settings {
     /// plan found it regresses good links (3.2x less damage on bad links, but
     /// regressions on good ones). Toggle via settings.json or at compile time.
     pub manual_twcc_60ms: bool,
-    /// 2b: direct present (own CDRAM buffers + SetFrameBuf IMMEDIATE). Default
-    /// on. Turn OFF to use the SDL path so the debug HUD / latency square are
-    /// visible -- that adds one frame of display latency.
-    pub direct_present: bool,
     /// Decode-bank depth profile (item 15): Fast = shallow bank (target 0,
     /// bursts shed or conceal — minimal floor); Smooth = deep bank (target 6,
     /// hard cap 12 ≈ +100–200 ms floor) — bursts and damage-shed stalls
@@ -285,7 +281,6 @@ impl Default for Settings {
             latency_profile: LatencyProfile::default(),
             manual_twcc_60ms: false,
             color_profile: ColorProfile::default(),
-            direct_present: true,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,
             ps_button_capture: false,

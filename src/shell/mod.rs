@@ -2,7 +2,7 @@
 #[link(name = "SceAudio_stub", kind = "static")]
 unsafe extern "C" {}
 
-pub(crate) mod direct_present;
+mod direct_present;
 mod egui_painter;
 pub(crate) mod netctl;
 pub(crate) mod netprobe;
@@ -290,13 +290,13 @@ pub async fn run(mut app: App) -> Result<()> {
         // and no gesture pending, present the frame without running the UI
         // toolkit (its work measured 1.3-1.5 ms per frame on the Vita). egui
         // events are carried over to the next UI frame.
-        // 2b: direct mode is a streaming-only, non-paused property. The static
-        // defaults to true, but the title/settings UI and the pause menu must
-        // present through SDL (otherwise the menu is invisible and the
-        // paused->egui transition crashes). Gate it every iteration.
-        crate::shell::direct_present::DIRECT_MODE.store(
-            app.settings.direct_present
-                && matches!(&app.state, AppState::Streaming(s) if !s.paused),
+        // 2b: while the hold-to-menu spinner is showing, skip the SDL present
+        // in direct mode so the spinner (and its black frame) is not displayed.
+        // When paused the menu must present, so it is excluded.
+        crate::shell::direct_present::SUPPRESS_PRESENT.store(
+            crate::shell::direct_present::DIRECT_MODE.load(std::sync::atomic::Ordering::Relaxed)
+                && hold_progress.is_some()
+                && !matches!(&app.state, AppState::Streaming(s) if s.paused),
             std::sync::atomic::Ordering::Relaxed,
         );
 

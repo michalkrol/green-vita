@@ -35,6 +35,11 @@ pub static STRICT: AtomicBool = AtomicBool::new(false);
 /// straight into our buffer; present hands it to SetFrameBuf(IMMEDIATE).
 pub static DIRECT_MODE: AtomicBool = AtomicBool::new(true);
 
+/// Set while the hold-to-menu spinner is showing. In direct mode the SDL
+/// present would overwrite the framebuffer with a black canvas, so the
+/// present is skipped and the spinner is simply not displayed.
+pub static SUPPRESS_PRESENT: AtomicBool = AtomicBool::new(false);
+
 static OK: AtomicU64 = AtomicU64::new(0);
 static FALLBACK: AtomicU64 = AtomicU64::new(0);
 static LAST_REPORT_MS: AtomicU64 = AtomicU64::new(0);

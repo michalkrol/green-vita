@@ -30,7 +30,6 @@ pub enum Command {
     SetRepairWindow(crate::settings::RepairWindow),
     SetLatencyProfile(crate::settings::LatencyProfile),
     SetColorProfile(crate::settings::ColorProfile),
-    SetDirectPresent(bool),
     SetLatencyTestMode(bool),
     SetPsButtonCapture(bool),
 }
@@ -50,7 +49,6 @@ enum SettingsRow {
     RepairWindow(crate::settings::RepairWindow),
     LatencyProfile(crate::settings::LatencyProfile),
     ColorProfile(crate::settings::ColorProfile),
-    DirectPresent(bool),
     LatencyTest(bool),
     PsButtonCapture(bool),
     Back,
@@ -106,7 +104,6 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::RepairWindow(app.settings.repair_window));
     rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
     rows.push(SettingsRow::ColorProfile(app.settings.color_profile));
-    rows.push(SettingsRow::DirectPresent(app.settings.direct_present));
     rows.push(SettingsRow::PsButtonCapture(app.settings.ps_button_capture));
     rows.push(SettingsRow::Back);
     rows
@@ -453,23 +450,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
-                if checkbox_row(
-                    ui,
-                    selected_index == row_index,
-                    app.settings.direct_present,
-                    i18n.text("settings-direct-present"),
-                ) {
-                    commands
-                        .push(Command::SetDirectPresent(!app.settings.direct_present).into());
-                }
-                ui.colored_label(
-                    theme.text,
-                    egui::RichText::new(i18n.text("settings-direct-present-sub")).size(14.0),
-                );
-                row_index += 1;
-
-                ui.add_space(14.0);
-                ui.separator();
                 ui.add_space(14.0);
                 ui.separator();
                 ui.heading(
@@ -753,9 +733,6 @@ impl App {
                 };
                 return self.handle_settings_command(Command::SetColorProfile(next));
             }
-            SettingsRow::DirectPresent(enabled) => {
-                return self.handle_settings_command(Command::SetDirectPresent(!enabled));
-            }
             SettingsRow::PsButtonCapture(enabled) => {
                 return self.handle_settings_command(Command::SetPsButtonCapture(!enabled));
             }
@@ -892,12 +869,6 @@ impl App {
                     },
                     std::sync::atomic::Ordering::Relaxed,
                 );
-            }
-            Command::SetDirectPresent(enabled) => {
-                self.settings.direct_present = enabled;
-                self.settings.save();
-                // Applies at the next stream start (connection.rs stores
-                // DIRECT_MODE per session).
             }
             Command::SetColorProfile(profile) => {
                 // No live store: the decoder output format is fixed at decoder

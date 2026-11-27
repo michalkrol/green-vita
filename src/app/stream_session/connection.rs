@@ -139,9 +139,6 @@ impl App {
             },
             std::sync::atomic::Ordering::Relaxed,
         );
-        // 2b: direct present on/off (settings). Off = SDL path, HUD visible.
-        crate::shell::direct_present::DIRECT_MODE
-            .store(self.settings.direct_present, std::sync::atomic::Ordering::Relaxed);
         let api = self.service.api.clone();
         let kind = target.kind;
         let target_id = target.target_id.clone();

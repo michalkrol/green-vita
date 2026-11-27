@@ -128,9 +128,6 @@ impl VitaSurface {
         if !output.decoder_ready.load(Ordering::Acquire) {
             return Ok(());
         }
-        // Keep the targets alive when direct mode is inactive (pause menu):
-        // clearing them while the decoder is mid-AU gives it a null target and
-        // crashes sceAvcdec. The SDL canvas is presented for the menu instead.
         if output_is_current
             && (self.video_textures.is_some() || self.direct_video_output.is_some())
         {
@@ -295,11 +292,9 @@ impl VitaSurface {
             primitives,
             textures_delta,
         )?;
-        // 2b: in direct mode the display shows the CDRAM framebuffer, so an
-        // SDL present would overwrite the video with a black canvas (the
-        // hold-to-menu spinner made this visible). Skip it; the HUD is
-        // invisible in direct mode by design.
-        if !crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed) {
+        if !crate::shell::direct_present::SUPPRESS_PRESENT
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             self.canvas.present();
         }
         Ok(())
