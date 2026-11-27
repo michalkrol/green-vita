@@ -71,6 +71,16 @@ pub fn engage() -> StreamingPowerGuard {
         let _ = scePowerSetArmClockFrequency(ARM_CLOCK_MHZ);
         let _ = scePowerSetBusClockFrequency(BUS_CLOCK_MHZ);
         // Stage 5a: GPU/xbar left at the OS default; Wi-Fi owned by TurboWifi.
+        // Read back and record the real clocks (the CSV column was never
+        // written before, so 333 vs 444 could not be verified).
+        let arm = unsafe { scePowerGetArmClockFrequency() };
+        let bus = unsafe { scePowerGetBusClockFrequency() };
+        crate::streaming::video::metrics::METRICS
+            .clk_arm_mhz
+            .store(arm.max(0) as u64, Ordering::Relaxed);
+        crate::streaming::video::metrics::METRICS
+            .clk_bus_mhz
+            .store(bus.max(0) as u64, Ordering::Relaxed);
     }
     eprintln!(
         "streaming power profile engaged (was arm:{} bus:{} gpu:{} xbar:{} wireless:{})",
