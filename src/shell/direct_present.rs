@@ -88,15 +88,22 @@ mod imp {
         fn sceDisplaySetFrameBuf(p: *const SceDisplayFrameBuf, sync: i32) -> i32;
     }
 
-    /// 2b: present our own CDRAM buffer (RGBA8888 / A8B8G8R8).
-    pub fn present_target(ptr: usize, pitch: u32, width: u32, height: u32) -> bool {
+    /// 2b: present our own CDRAM buffer. `pitch` is bytes; `bpp` converts it
+    /// to the framebuffer's pixel pitch. Formats: 0 = A8B8G8R8 (RGBA8888),
+    /// 0x50000000 = B5G6R5 (RGB565).
+    pub fn present_target(
+        ptr: usize,
+        pitch: u32,
+        bpp: u32,
+        pixelformat: u32,
+        width: u32,
+        height: u32,
+    ) -> bool {
         let fb = SceDisplayFrameBuf {
             size: std::mem::size_of::<SceDisplayFrameBuf>(),
             base: ptr as *mut std::ffi::c_void,
-            // SceDisplayFrameBuf.pitch is in PIXELS (not bytes); the target
-            // pitch is bytes (4 B/px for A8B8G8R8).
-            pitch: pitch / 4,
-            pixelformat: 0,
+            pitch: pitch / bpp,
+            pixelformat,
             width,
             height,
         };
@@ -229,7 +236,14 @@ mod imp {
         false
     }
 
-    pub fn present_target(_ptr: usize, _pitch: u32, _width: u32, _height: u32) -> bool {
+    pub fn present_target(
+        _ptr: usize,
+        _pitch: u32,
+        _bpp: u32,
+        _pixelformat: u32,
+        _width: u32,
+        _height: u32,
+    ) -> bool {
         false
     }
 }

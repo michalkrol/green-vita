@@ -26,6 +26,9 @@ pub struct VitaSurface {
     egui_painter: SdlEguiPainter,
     /// 2b: keeps the CDRAM framebuffers alive for direct mode.
     cdram: Vec<CdramBlock>,
+    /// 2b: bytes per pixel and framebuffer pixelformat of the direct targets.
+    direct_bpp: u32,
+    direct_fmt: u32,
 }
 
 impl VitaSurface {
@@ -56,6 +59,8 @@ impl VitaSurface {
             last_frame_id: 0,
             egui_painter: SdlEguiPainter::default(),
             cdram: Vec::new(),
+            direct_bpp: 4,
+            direct_fmt: 0,
         })
     }
 
@@ -137,20 +142,25 @@ impl VitaSurface {
         self.detach_direct_video_output();
         let (width, height) = (output.width, output.height);
         // 2b: direct mode -- our own CDRAM buffers as the decode targets
-        // (2 display + 1 scratch). The decoder writes straight into them;
-        // present_direct hands the displayed one to SetFrameBuf(IMMEDIATE).
-        if crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed)
-            && output.color_profile == ColorProfile::Rgba8888
-        {
-            let cap = width.saturating_mul(4).saturating_mul(height);
+        // (2 display + 1 scratch). Both formats are scanned out natively:
+        // RGBA8888 = A8B8G8R8 (0), RGB565 = B5G6R5 (0x50000000).
+        if crate::shell::direct_present::DIRECT_MODE.load(Ordering::Relaxed) {
+            let (bpp, fmt) = match output.color_profile {
+                ColorProfile::Rgba8888 => (4u32, 0u32),
+                ColorProfile::Rgb565 => (2u32, 0x5000_0000u32),
+            };
+            let cap = width.saturating_mul(bpp).saturating_mul(height);
+            let pitch = width * bpp;
             let b0 = CdramBlock::allocate("xcloud_fb0", cap)?;
             let b1 = CdramBlock::allocate("xcloud_fb1", cap)?;
             let bs = CdramBlock::allocate("xcloud_fb_scratch", cap)?;
-            let t0 = VideoTextureTarget { ptr: b0.ptr as usize, pitch: width * 4, capacity: cap };
-            let t1 = VideoTextureTarget { ptr: b1.ptr as usize, pitch: width * 4, capacity: cap };
-            let ts = VideoTextureTarget { ptr: bs.ptr as usize, pitch: width * 4, capacity: cap };
+            let t0 = VideoTextureTarget { ptr: b0.ptr as usize, pitch, capacity: cap };
+            let t1 = VideoTextureTarget { ptr: b1.ptr as usize, pitch, capacity: cap };
+            let ts = VideoTextureTarget { ptr: bs.ptr as usize, pitch, capacity: cap };
             output.set_targets([t0, t1, ts]);
             self.cdram = vec![b0, b1, bs];
+            self.direct_bpp = bpp;
+            self.direct_fmt = fmt;
             self.video_textures = None;
             self.displayed_video_texture = None;
             self.direct_video_output = Some(output);
@@ -269,6 +279,8 @@ impl VitaSurface {
                     return Ok(crate::shell::direct_present::present_target(
                         t.ptr,
                         t.pitch,
+                        self.direct_bpp,
+                        self.direct_fmt,
                         WIDTH,
                         HEIGHT,
                     ));

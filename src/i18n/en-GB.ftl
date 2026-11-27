@@ -24,7 +24,8 @@ settings-cloud-host = Cloud host: { $host }
 settings-home-host = Home host: { $host }
 settings-stream-debug-info = Show streaming debug info
 settings-manual-twcc = Manual TWCC feedback
-settings-manual-twcc-sub = 60ms cadence — helps lossy links, can regress good ones (applies at next stream start; experimental)
+settings-direct-present = Direct present (low latency)
+settings-direct-present-sub = Decodes straight into the display buffer (RGBA8888 or RGB565). Turn off to show the debug HUD; adds one frame of latency.
 settings-ps-button-capture-sub = Tap = Xbox guide · Hold = Vita menu (experimental)
 action-back = Back
 
