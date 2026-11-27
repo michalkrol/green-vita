@@ -31,7 +31,6 @@ pub enum Command {
     SetManualTwcc(bool),
     SetLatencyProfile(crate::settings::LatencyProfile),
     SetColorProfile(crate::settings::ColorProfile),
-    SetPeriodicKeyframe(bool),
     SetLatencyTestMode(bool),
     SetPsButtonCapture(bool),
 }
@@ -52,7 +51,6 @@ enum SettingsRow {
     ManualTwcc(bool),
     LatencyProfile(crate::settings::LatencyProfile),
     ColorProfile(crate::settings::ColorProfile),
-    PeriodicKeyframe(bool),
     LatencyTest(bool),
     PsButtonCapture(bool),
     Back,
@@ -109,7 +107,6 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::ManualTwcc(app.settings.manual_twcc_60ms));
     rows.push(SettingsRow::LatencyProfile(app.settings.latency_profile));
     rows.push(SettingsRow::ColorProfile(app.settings.color_profile));
-    rows.push(SettingsRow::PeriodicKeyframe(app.settings.periodic_keyframe));
     rows.push(SettingsRow::PsButtonCapture(app.settings.ps_button_capture));
     rows.push(SettingsRow::Back);
     rows
@@ -470,17 +467,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &App, commands: &mut Vec<AppCommand
 
                 ui.add_space(14.0);
                 ui.separator();
-                if checkbox_row(
-                    ui,
-                    selected_index == row_index,
-                    app.settings.periodic_keyframe,
-                    i18n.text("settings-periodic-keyframe"),
-                ) {
-                    commands
-                        .push(Command::SetPeriodicKeyframe(!app.settings.periodic_keyframe).into());
-                }
-                row_index += 1;
-
                 ui.add_space(14.0);
                 ui.separator();
                 ui.heading(
@@ -767,9 +753,6 @@ impl App {
                 };
                 return self.handle_settings_command(Command::SetColorProfile(next));
             }
-            SettingsRow::PeriodicKeyframe(enabled) => {
-                return self.handle_settings_command(Command::SetPeriodicKeyframe(!enabled));
-            }
             SettingsRow::PsButtonCapture(enabled) => {
                 return self.handle_settings_command(Command::SetPsButtonCapture(!enabled));
             }
@@ -920,10 +903,6 @@ impl App {
                 // No live store: the decoder output format is fixed at decoder
                 // construction, so this applies at the next stream start.
                 self.settings.color_profile = profile;
-                self.settings.save();
-            }
-            Command::SetPeriodicKeyframe(enabled) => {
-                self.settings.periodic_keyframe = enabled;
                 self.settings.save();
             }
             Command::SetPsButtonCapture(enabled) => {

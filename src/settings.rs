@@ -228,10 +228,6 @@ pub struct Settings {
     /// absorbed invisibly (the 0.3.1 quality recreation, accumulation-safe: the bank
     /// is hard-capped in admission and TWCC stamps pre-bank).
     pub latency_profile: LatencyProfile,
-    /// When true, a keyframe (IDR) is requested from the console every 200 ms via
-    /// RTCP PLI.  This clears decoder-reference corruption (blocky artifacts) at the
-    /// cost of slightly larger periodic frames and a small bandwidth overhead.
-    pub periodic_keyframe: bool,
     /// Hardware decoder output color profile (ColorProfile). Rgb565 default;
     /// Rgba8888 kills 565 dark-scene banding at +memory-bandwidth cost
     /// (TODO item 3). Takes effect on the next stream start.
@@ -282,7 +278,6 @@ impl Default for Settings {
             manual_twcc_60ms: false,
             latency_profile: LatencyProfile::default(),
             color_profile: ColorProfile::default(),
-            periodic_keyframe: true,
             swap_shoulders_and_triggers: false,
             latency_test_mode: false,
             ps_button_capture: false,

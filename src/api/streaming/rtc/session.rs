@@ -16,7 +16,6 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const KEYFRAME_REQUEST_COOLDOWN: Duration = Duration::from_millis(300);
-const PERIODIC_KEYFRAME_INTERVAL: Duration = Duration::from_millis(200);
 /// Sustained keyframe demand means recovery is failing; spamming PLI/IDR requests
 /// every 300 ms overloads the console encoder and deepens its backlog.
 const KEYFRAME_STORM_WINDOW: Duration = Duration::from_secs(4);
@@ -49,7 +48,6 @@ pub(crate) struct RtcSessionConfig {
     pub video_fps: u32,
     pub video_bitrate_kbps: u32,
     pub decoder: DecoderConfig,
-    pub periodic_keyframe_enabled: bool,
 }
 
 /// Provider-specific hooks invoked by the reusable RTC session.
@@ -91,8 +89,6 @@ pub(crate) struct RtcSession<B: RtcSessionBackend> {
     drops_at_last_flush: u64,
     initial_video_watchdog_started_at: Option<Instant>,
     last_initial_video_keyframe_request: Option<Instant>,
-    last_periodic_keyframe: Option<Instant>,
-    periodic_keyframe_enabled: bool,
     pub status: String,
 }
 
@@ -148,8 +144,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             drops_at_last_flush: 0,
             initial_video_watchdog_started_at: None,
             last_initial_video_keyframe_request: None,
-            last_periodic_keyframe: None,
-            periodic_keyframe_enabled: config.periodic_keyframe_enabled,
             status: "Negotiating WebRTC connection".to_owned(),
         })
     }
@@ -203,9 +197,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             keyframe_requested = true;
         }
         self.request_keyframe(keyframe_requested, now);
-        if self.periodic_keyframe_enabled {
-            self.periodic_keyframe(now);
-        }
         // REMB-only feedback experiment: RTCP stays otherwise silent (no RR/SR),
         // but browsers continuously refresh the console's bandwidth estimate and
         // stay smooth; every prior REMB test was confounded by NACK/loss loops.
@@ -351,17 +342,6 @@ impl<B: RtcSessionBackend> RtcSession<B> {
             .kf_req
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.backend.notify_keyframe_requested(&mut self.peer);
-        self.video.request_keyframe(&mut self.peer);
-    }
-
-    fn periodic_keyframe(&mut self, now: Instant) {
-        if SUPPRESS_KEYFRAME_REQUESTS {
-            return;
-        }
-        if self.last_periodic_keyframe.is_some_and(|last| now.duration_since(last) < PERIODIC_KEYFRAME_INTERVAL) {
-            return;
-        }
-        self.last_periodic_keyframe = Some(now);
         self.video.request_keyframe(&mut self.peer);
     }
 
