@@ -58,7 +58,7 @@ pub async fn run(mut app: App) -> Result<()> {
     let mut held_direction: Option<InputCommand> = None;
     let mut held_direction_since = Instant::now();
     let mut last_direction_repeat_at = Instant::now();
-    let mut vita_ime_active = false;
+    let mut vita_ime_target: Option<crate::app::ImeTarget> = None;
     let mut vita_ime_pending = None;
 
     loop {
@@ -67,16 +67,17 @@ pub async fn run(mut app: App) -> Result<()> {
         crate::ps_button::bump_heartbeat();
         let mut egui_events = Vec::new();
         let mut direct_commands = Vec::new();
-        if app.title_search_requested && !vita_ime_active {
-            app.title_search_requested = false;
+        if vita_ime_target.is_none()
+            && let Some(target) = app.ime_request.take()
+        {
             vita_ime_pending = None;
             video.text_input().start();
-            vita_ime_active = true;
+            vita_ime_target = Some(target);
         }
 
         for event in event_pump.poll_iter() {
             rear_touch_buttons.handle_event(&event);
-            let ime_owned_event = vita_ime_active;
+            let ime_owned_event = vita_ime_target.is_some();
             if ime_owned_event {
                 match &event {
                     Event::TextInput { text, .. } => vita_ime_pending = Some(text.clone()),
@@ -84,11 +85,13 @@ pub async fn run(mut app: App) -> Result<()> {
                         keycode: Some(sdl2::keyboard::Keycode::Return),
                         ..
                     } => {
-                        if let Some(text) = vita_ime_pending.take() {
-                            app.set_title_search_query(text);
+                        if let Some(text) = vita_ime_pending.take()
+                            && let Some(target) = vita_ime_target
+                        {
+                            app.submit_ime_text(target, text);
                         }
                         video.text_input().stop();
-                        vita_ime_active = false;
+                        vita_ime_target = None;
                     }
                     _ => {}
                 }
@@ -139,17 +142,18 @@ pub async fn run(mut app: App) -> Result<()> {
             }
         }
 
-        if vita_ime_active
+        if vita_ime_target.is_some()
             && !video
                 .text_input()
                 .is_screen_keyboard_shown(surface.canvas.window())
         {
             video.text_input().stop();
             vita_ime_pending = None;
-            vita_ime_active = false;
+            vita_ime_target = None;
         }
 
-        match (!vita_ime_active)
+        match vita_ime_target
+            .is_none()
             .then(|| held_menu_direction(controller.as_ref()))
             .flatten()
         {
