@@ -31,9 +31,12 @@ pub static ENABLED: AtomicBool = AtomicBool::new(false);
 /// direct path is active (the screen freezes if it is not).
 pub static STRICT: AtomicBool = AtomicBool::new(false);
 
-/// 2a: use the display framebuffer as the decode target (RGBA8888 only; the
-/// framebuffer is A8B8G8R8, 4 B/px). Single buffer -> tearing.
-pub static DIRECT_MODE: AtomicBool = AtomicBool::new(true);
+/// 2a: use the display framebuffer as the decode target. Disabled 2026-11-27:
+/// with the framebuffer as the target the decoder produced 0 frames (decoded=0,
+/// presented=0, hw_buffered=0 in 17 s) -- sceAvcdec cannot write into the
+/// display framebuffer (CRDAM/alignment). A real direct present needs our own
+/// CDRAM buffer as the target (2b), then SetFrameBuf on it.
+pub static DIRECT_MODE: AtomicBool = AtomicBool::new(false);
 
 static OK: AtomicU64 = AtomicU64::new(0);
 static FALLBACK: AtomicU64 = AtomicU64::new(0);
