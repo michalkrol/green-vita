@@ -388,7 +388,13 @@ match app.settings.stream_debug_mode {
     }
     _ => {}
 }
-    if let Some(progress) = hold_progress {
+    // 2b: in direct mode the SDL present overwrites the framebuffer, so the
+    // hold spinner is not drawn at all (the screen stays on the video). The
+    // present still happens, so the pause menu transition is unaffected.
+    if let Some(progress) = hold_progress
+        && !crate::shell::direct_present::DIRECT_MODE
+            .load(std::sync::atomic::Ordering::Relaxed)
+    {
         egui::Area::new(egui::Id::new("pause_hold_indicator"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::LEFT_TOP, egui::vec2(16.0, 16.0))

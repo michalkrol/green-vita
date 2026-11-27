@@ -292,11 +292,7 @@ impl VitaSurface {
             primitives,
             textures_delta,
         )?;
-        if !crate::shell::direct_present::SUPPRESS_PRESENT
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            self.canvas.present();
-        }
+        self.canvas.present();
         Ok(())
     }
 
